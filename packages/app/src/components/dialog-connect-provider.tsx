@@ -162,7 +162,7 @@ function ProviderPicker(props: {
   const language = useLanguage()
   const popularGroup = () => language.t("dialog.provider.group.popular")
   const otherGroup = () => language.t("dialog.provider.group.other")
-  const customLabel = () => language.t("settings.providers.tag.custom")
+  const customLabel = () => language.t("provider.koala.title")
   const note = (id: string) => {
     if (id === "anthropic") return language.t("dialog.provider.anthropic.note")
     if (id === "openai") return language.t("dialog.provider.openai.note")
@@ -238,7 +238,7 @@ function ProviderPickerV2(props: {
     connecting: undefined as string | undefined,
   })
   const featured = ["opencode", "opencode-go", "anthropic", "openai", "google", "openrouter", "vercel"]
-  const custom = () => ({ id: CUSTOM_ID, name: language.t("dialog.provider.custom.label") })
+  const custom = () => ({ id: CUSTOM_ID, name: language.t("provider.koala.title") })
   const all = createMemo(() => {
     language.locale()
     const query = store.filter.trim().toLowerCase()

@@ -84,6 +84,15 @@ work. It is not a substitute for the implementation plan or audit logs.
   of silently reverting to an empty profile set.
 - Profile mutations dispose active instances after persistence so subsequent
   provider state reloads from the canonical document.
+- The local/private model form persists canonical profiles through the generated
+  model-profile client and keeps raw API keys on the existing auth route.
+- An empty API-key field preserves an existing profile secret reference during
+  update; it does not clear credentials implicitly.
+- New Koala UI copy lives in a dedicated English fallback dictionary merged
+  before locale overlays. This avoids fabricated translations while retaining
+  typed `language.t(...)` calls.
+- Saving a profile is not a connectivity test. UI copy states that configuration
+  was saved rather than claiming the endpoint connected successfully.
 
 ## Sandbox
 
@@ -112,3 +121,7 @@ On 2026-09-17, after the first sovereignty slice:
 - Model-profile HTTP tests: 7 passed.
 - Existing global/control-plane HTTP tests: 5 passed.
 - Legacy SDK typecheck passed after generation.
+- Local/private provider form and Koala i18n tests: 28 passed.
+- Existing App i18n parity tests: 5 passed.
+- App and Desktop typechecks passed after form integration.
+- Desktop production build passed after form integration.

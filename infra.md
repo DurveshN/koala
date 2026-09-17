@@ -101,6 +101,25 @@ Implemented profile persistence:
 Profiles remain canonical JSON data. The OpenCode provider configuration is a
 derived in-memory view and is not written into `opencode.json`.
 
+Implemented Desktop profile flow:
+
+```text
+Local/private model form
+    +-- required model limits
+    +-- tri-state capabilities
+    +-- roles, enabled state and priority
+    +-- optional API key kept outside profile data
+    |
+Generated authenticated model-profile client
+    |
+Sidecar JSON profile repository
+    |
+Effective OpenCode provider projection
+```
+
+Active endpoint discovery and capability probes remain pending. A saved profile
+must not be presented as a verified connection until those checks succeed.
+
 ## Target Tool Infrastructure
 
 ```text

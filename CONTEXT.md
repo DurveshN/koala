@@ -76,12 +76,13 @@ Verification completed on 2026-09-17:
 - Sharing configuration tests: 3 passed.
 - `packages/opencode`: `bun typecheck` passed.
 
-Next, reframe the existing custom OpenAI-compatible provider flow as Koala's
-local/private model connection and save complete profiles through the generated
-CRUD client. Canonical profiles now persist in a locked, versioned JSON
-repository, project into effective OpenCode providers at runtime, and are
-available through authenticated global routes. Full deletion of dormant sharing
-APIs and persistence follows in dependency order.
+The existing custom OpenAI-compatible flow is now Koala's local/private model
+form. It collects required limits, tri-state capabilities, roles, enabled state,
+and routing priority, then saves canonical profiles through the generated CRUD
+client. Raw API keys remain on the existing auth route. The next milestone is
+endpoint policy, `/v1/models` discovery, and active capability probes for fields
+set to `unknown`. Full deletion of dormant sharing APIs and persistence follows
+in dependency order.
 
 ## Upstream OpenCode Session Runtime
 

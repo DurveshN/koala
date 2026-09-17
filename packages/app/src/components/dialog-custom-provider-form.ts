@@ -1,30 +1,32 @@
-const PROVIDER_ID = /^[a-z0-9][a-z0-9-_]*$/
-const OPENAI_COMPATIBLE = "@ai-sdk/openai-compatible"
+import { ModelProfile } from "@koala-ai/core/model/profile"
+import { Option, Schema } from "effect"
+
+const PROVIDER_ID = /^[a-z0-9][a-z0-9._-]*$/
+const POSITIVE_INTEGER = /^[1-9]\d*$/
+const INTEGER = /^-?\d+$/
 
 type Translator = (key: string, vars?: Record<string, string | number | boolean>) => string
 
 export type ModelErr = {
   id?: string
-  name?: string
-}
-
-export type HeaderErr = {
-  key?: string
-  value?: string
+  displayName?: string
+  contextWindow?: string
+  maxOutput?: string
+  priority?: string
+  input?: string
 }
 
 export type ModelRow = {
   row: string
   id: string
-  name: string
+  displayName: string
+  contextWindow: string
+  maxOutput: string
+  capabilities: Record<ModelProfile.Capability, ModelProfile.Detectable>
+  roles: ModelProfile.Role[]
+  enabled: boolean
+  priority: string
   err: ModelErr
-}
-
-export type HeaderRow = {
-  row: string
-  key: string
-  value: string
-  err: HeaderErr
 }
 
 export type FormState = {
@@ -33,11 +35,11 @@ export type FormState = {
   baseURL: string
   apiKey: string
   models: ModelRow[]
-  headers: HeaderRow[]
   err: {
     providerID?: string
     name?: string
     baseURL?: string
+    profile?: string
   }
 }
 
@@ -52,107 +54,142 @@ export function validateCustomProvider(input: ValidateArgs) {
   const providerID = input.form.providerID.trim()
   const name = input.form.name.trim()
   const baseURL = input.form.baseURL.trim()
-  const apiKey = input.form.apiKey.trim()
-
-  const env = apiKey.match(/^\{env:([^}]+)\}$/)?.[1]?.trim()
-  const key = apiKey && !env ? apiKey : undefined
-
+  const key = input.form.apiKey.trim() || undefined
   const idError = !providerID
-    ? input.t("provider.custom.error.providerID.required")
+    ? input.t("provider.koala.error.providerID.required")
     : !PROVIDER_ID.test(providerID)
-      ? input.t("provider.custom.error.providerID.format")
+      ? input.t("provider.koala.error.providerID.format")
       : undefined
-
-  const nameError = !name ? input.t("provider.custom.error.name.required") : undefined
+  const nameError = !name ? input.t("provider.koala.error.name.required") : undefined
   const urlError = !baseURL
-    ? input.t("provider.custom.error.baseURL.required")
-    : !/^https?:\/\//.test(baseURL)
-      ? input.t("provider.custom.error.baseURL.format")
+    ? input.t("provider.koala.error.baseURL.required")
+    : !URL.canParse(baseURL) || !["http:", "https:"].includes(new URL(baseURL).protocol)
+      ? input.t("provider.koala.error.baseURL.format")
       : undefined
-
-  const disabled = input.disabledProviders.includes(providerID)
   const existsError = idError
     ? undefined
-    : input.existingProviderIDs.has(providerID) && !disabled
-      ? input.t("provider.custom.error.providerID.exists")
+    : input.existingProviderIDs.has(providerID) && !input.disabledProviders.includes(providerID)
+      ? input.t("provider.koala.error.providerID.exists")
       : undefined
 
   const seenModels = new Set<string>()
-  const models = input.form.models.map((m) => {
-    const id = m.id.trim()
+  const models = input.form.models.map((model) => {
+    const id = model.id.trim()
+    const contextWindow = positiveInteger(model.contextWindow)
+    const maxOutput = positiveInteger(model.maxOutput)
+    const priority = integer(model.priority)
     const idError = !id
-      ? input.t("provider.custom.error.required")
+      ? input.t("provider.koala.error.required")
       : seenModels.has(id)
-        ? input.t("provider.custom.error.duplicate")
-        : (() => {
-            seenModels.add(id)
-            return undefined
-          })()
-    const nameError = !m.name.trim() ? input.t("provider.custom.error.required") : undefined
-    return { id: idError, name: nameError }
+        ? input.t("provider.koala.error.duplicate")
+        : undefined
+    if (id && !seenModels.has(id)) seenModels.add(id)
+
+    return {
+      id: idError,
+      displayName: !model.displayName.trim() ? input.t("provider.koala.error.required") : undefined,
+      contextWindow:
+        contextWindow === undefined
+          ? model.contextWindow.trim()
+            ? input.t("provider.koala.error.positiveInteger")
+            : input.t("provider.koala.error.required")
+          : undefined,
+      maxOutput:
+        maxOutput === undefined
+          ? model.maxOutput.trim()
+            ? input.t("provider.koala.error.positiveInteger")
+            : input.t("provider.koala.error.required")
+          : contextWindow !== undefined && maxOutput > contextWindow
+            ? input.t("provider.koala.error.maxOutput")
+            : undefined,
+      priority:
+        priority === undefined
+          ? model.priority.trim()
+            ? input.t("provider.koala.error.integer")
+            : input.t("provider.koala.error.required")
+          : undefined,
+      input:
+        model.capabilities.textInput === "no" && model.capabilities.imageInput === "no"
+          ? input.t("provider.koala.error.input")
+          : undefined,
+    }
   })
-  const modelsValid = models.every((m) => !m.id && !m.name)
-  const modelConfig = Object.fromEntries(input.form.models.map((m) => [m.id.trim(), { name: m.name.trim() }]))
-
-  const seenHeaders = new Set<string>()
-  const headers = input.form.headers.map((h) => {
-    const key = h.key.trim()
-    const value = h.value.trim()
-
-    if (!key && !value) return {}
-    const keyError = !key
-      ? input.t("provider.custom.error.required")
-      : seenHeaders.has(key.toLowerCase())
-        ? input.t("provider.custom.error.duplicate")
-        : (() => {
-            seenHeaders.add(key.toLowerCase())
-            return undefined
-          })()
-    const valueError = !value ? input.t("provider.custom.error.required") : undefined
-    return { key: keyError, value: valueError }
-  })
-  const headersValid = headers.every((h) => !h.key && !h.value)
-  const headerConfig = Object.fromEntries(
-    input.form.headers
-      .map((h) => ({ key: h.key.trim(), value: h.value.trim() }))
-      .filter((h) => !!h.key && !!h.value)
-      .map((h) => [h.key, h.value]),
-  )
-
+  const modelsValid = models.every((model) => Object.values(model).every((error) => !error))
   const err = {
     providerID: idError ?? existsError,
     name: nameError,
     baseURL: urlError,
+    profile: undefined as string | undefined,
   }
+  const valid = !idError && !existsError && !nameError && !urlError && modelsValid
+  if (!valid) return { err, models }
 
-  const ok = !idError && !existsError && !nameError && !urlError && modelsValid && headersValid
-  if (!ok) return { err, models, headers }
+  const profile = Option.getOrUndefined(
+    Schema.decodeUnknownOption(ModelProfile.Provider)({
+      id: providerID,
+      displayName: name,
+      baseURL,
+      ...(key ? { secretReference: `opencode-auth:${providerID}` } : {}),
+      models: input.form.models.map((model) => ({
+        id: model.id.trim(),
+        displayName: model.displayName.trim(),
+        capabilities: { ...model.capabilities },
+        contextWindow: Number(model.contextWindow),
+        maxOutput: Number(model.maxOutput),
+        roles: [...model.roles],
+        enabled: model.enabled,
+        priority: Number(model.priority),
+      })),
+    }),
+  )
+  if (!profile) return { err: { ...err, profile: input.t("provider.koala.error.profile") }, models }
 
   return {
     err,
     models,
-    headers,
     result: {
-      providerID,
-      name,
+      profile,
       key,
-      config: {
-        npm: OPENAI_COMPATIBLE,
-        name,
-        ...(env ? { env: [env] } : {}),
-        options: {
-          baseURL,
-          ...(Object.keys(headerConfig).length ? { headers: headerConfig } : {}),
-        },
-        models: modelConfig,
-      },
     },
   }
+}
+
+function positiveInteger(value: string) {
+  const trimmed = value.trim()
+  if (!POSITIVE_INTEGER.test(trimmed)) return undefined
+  const parsed = Number(trimmed)
+  if (!Number.isSafeInteger(parsed)) return undefined
+  return parsed
+}
+
+function integer(value: string) {
+  const trimmed = value.trim()
+  if (!INTEGER.test(trimmed)) return undefined
+  const parsed = Number(trimmed)
+  if (!Number.isSafeInteger(parsed)) return undefined
+  return parsed
 }
 
 let row = 0
 
 const nextRow = () => `row-${row++}`
 
-export const modelRow = (): ModelRow => ({ row: nextRow(), id: "", name: "", err: {} })
-export const headerRow = (): HeaderRow => ({ row: nextRow(), key: "", value: "", err: {} })
+export const modelRow = (): ModelRow => ({
+  row: nextRow(),
+  id: "",
+  displayName: "",
+  contextWindow: "",
+  maxOutput: "",
+  capabilities: {
+    textInput: "unknown",
+    imageInput: "unknown",
+    toolCalling: "unknown",
+    streaming: "unknown",
+    structuredOutput: "unknown",
+    reasoning: "unknown",
+  },
+  roles: [],
+  enabled: true,
+  priority: "0",
+  err: {},
+})
