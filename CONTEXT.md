@@ -77,10 +77,11 @@ Verification completed on 2026-09-17:
 - `packages/opencode`: `bun typecheck` passed.
 
 Next, reframe the existing custom OpenAI-compatible provider flow as Koala's
-local/private model connection and adapt saved profiles into the new validated
-model contracts. The pure model profile and deterministic routing core now
-exists in `packages/koala` with 21 passing tests. Full deletion of dormant
-sharing APIs and persistence follows in dependency order.
+local/private model connection and save complete profiles through the generated
+CRUD client. Canonical profiles now persist in a locked, versioned JSON
+repository, project into effective OpenCode providers at runtime, and are
+available through authenticated global routes. Full deletion of dormant sharing
+APIs and persistence follows in dependency order.
 
 ## Upstream OpenCode Session Runtime
 

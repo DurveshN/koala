@@ -20,6 +20,7 @@
 import { Effect } from "effect"
 import { OpenApi } from "effect/unstable/httpapi"
 import { TestLLMServer } from "../../lib/llm-server"
+import { mkdir } from "fs/promises"
 import path from "path"
 import { array, boolean, check, isRecord, message, object, stable } from "./assertions"
 import { controlledPtyInput, http, route } from "./dsl"
@@ -40,6 +41,42 @@ import { type Scenario } from "./types"
 function cursor(input: Record<string, unknown>) {
   return Buffer.from(JSON.stringify(input)).toString("base64url")
 }
+
+const exerciseModelProfile = (displayName = "HTTP API Provider") => ({
+  id: "httpapi-provider",
+  displayName,
+  baseURL: "http://127.0.0.1:11434/v1",
+  secretReference: "keychain:httpapi-provider",
+  models: [
+    {
+      id: "httpapi-model",
+      displayName: "HTTP API Model",
+      capabilities: {
+        textInput: "yes",
+        imageInput: "no",
+        toolCalling: "yes",
+        streaming: "yes",
+        structuredOutput: "yes",
+        reasoning: "unknown",
+      },
+      contextWindow: 32_768,
+      maxOutput: 4_096,
+      roles: ["general"],
+      enabled: true,
+      priority: 10,
+    },
+  ],
+})
+
+const seedModelProfiles = () =>
+  Effect.promise(async () => {
+    const directory = path.join(exerciseDataDirectory, "koala")
+    await mkdir(directory, { recursive: true })
+    await Bun.write(
+      path.join(directory, "model-profiles.json"),
+      JSON.stringify({ version: 1, profiles: [exerciseModelProfile()] }, null, 2),
+    )
+  })
 
 function data(validate: (value: any) => void) {
   return (body: any) => {
@@ -104,6 +141,36 @@ const scenarios: Scenario[] = [
         }),
       "status",
     ),
+  http.protected.get("/global/model-profile", "modelProfile.list").global().json(200, array),
+  http.protected
+    .post("/global/model-profile", "modelProfile.create")
+    .global()
+    .at(() => ({ path: "/global/model-profile", body: exerciseModelProfile("Created HTTP API Provider") }))
+    .mutating()
+    .json(200, (body) => {
+      object(body)
+      check(body.id === "httpapi-provider", "model profile create should return the provider")
+    }),
+  http.protected
+    .put("/global/model-profile/{providerID}", "modelProfile.update")
+    .global()
+    .seeded(seedModelProfiles)
+    .at(() => ({
+      path: "/global/model-profile/httpapi-provider",
+      body: exerciseModelProfile("Updated HTTP API Provider"),
+    }))
+    .mutating()
+    .json(200, (body) => {
+      object(body)
+      check(body.displayName === "Updated HTTP API Provider", "model profile update should return the replacement")
+    }),
+  http.protected
+    .delete("/global/model-profile/{providerID}", "modelProfile.delete")
+    .global()
+    .seeded(seedModelProfiles)
+    .at(() => ({ path: "/global/model-profile/httpapi-provider" }))
+    .mutating()
+    .json(200, boolean, "status"),
   http.protected
     .post("/global/dispose", "global.dispose")
     .global()

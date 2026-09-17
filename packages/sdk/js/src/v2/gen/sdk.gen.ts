@@ -111,6 +111,15 @@ import type {
   McpRemoteConfig,
   McpStatusErrors,
   McpStatusResponses,
+  ModelProfileCreateErrors,
+  ModelProfileCreateResponses,
+  ModelProfileDeleteErrors,
+  ModelProfileDeleteResponses,
+  ModelProfileListErrors,
+  ModelProfileListResponses,
+  ModelProfileProvider,
+  ModelProfileUpdateErrors,
+  ModelProfileUpdateResponses,
   ModelRef,
   MoveSessionDestination,
   OutputFormat,
@@ -1379,6 +1388,100 @@ export class Global extends HeyApiClient {
   private _config?: Config
   get config(): Config {
     return (this._config ??= new Config({ client: this.client }))
+  }
+}
+
+export class ModelProfile extends HeyApiClient {
+  /**
+   * List model profiles
+   *
+   * List all global Koala model provider profiles.
+   */
+  public list<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<ModelProfileListResponses, ModelProfileListErrors, ThrowOnError>({
+      url: "/global/model-profile",
+      ...options,
+    })
+  }
+
+  /**
+   * Create model profile
+   *
+   * Create a global Koala model provider profile.
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters?: {
+      modelProfileProvider?: ModelProfileProvider
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ key: "modelProfileProvider", map: "body" }] }])
+    return (options?.client ?? this.client).post<ModelProfileCreateResponses, ModelProfileCreateErrors, ThrowOnError>({
+      url: "/global/model-profile",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Delete model profile
+   *
+   * Delete a global Koala model provider profile.
+   */
+  public delete<ThrowOnError extends boolean = false>(
+    parameters: {
+      providerID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "providerID" }] }])
+    return (options?.client ?? this.client).delete<ModelProfileDeleteResponses, ModelProfileDeleteErrors, ThrowOnError>(
+      {
+        url: "/global/model-profile/{providerID}",
+        ...options,
+        ...params,
+      },
+    )
+  }
+
+  /**
+   * Update model profile
+   *
+   * Replace a global Koala model provider profile.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters: {
+      providerID: string
+      modelProfileProvider?: ModelProfileProvider
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "providerID" },
+            { key: "modelProfileProvider", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<ModelProfileUpdateResponses, ModelProfileUpdateErrors, ThrowOnError>({
+      url: "/global/model-profile/{providerID}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
   }
 }
 
@@ -7100,6 +7203,11 @@ export class OpencodeClient extends HeyApiClient {
   private _global?: Global
   get global(): Global {
     return (this._global ??= new Global({ client: this.client }))
+  }
+
+  private _modelProfile?: ModelProfile
+  get modelProfile(): ModelProfile {
+    return (this._modelProfile ??= new ModelProfile({ client: this.client }))
   }
 
   private _event?: Event

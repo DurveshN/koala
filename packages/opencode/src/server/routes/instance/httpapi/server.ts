@@ -19,6 +19,7 @@ import { Installation } from "@/installation"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
 import { McpAuth } from "@/mcp/auth"
+import { ModelProfileStore } from "@/koala/model-profile-store"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { PluginPtyEnvironment } from "@/plugin/pty-environment"
@@ -90,6 +91,7 @@ import { fileHandlers } from "./handlers/file"
 import { globalHandlers } from "./handlers/global"
 import { instanceHandlers } from "./handlers/instance"
 import { mcpHandlers } from "./handlers/mcp"
+import { modelProfileHandlers } from "./handlers/model-profile"
 import { permissionHandlers } from "./handlers/permission"
 import { projectHandlers } from "./handlers/project"
 import { projectCopyHandlers } from "./handlers/project-copy"
@@ -139,7 +141,7 @@ const ptyConnectHttpApiAuthLayer = ptyConnectAuthorizationLayer.pipe(Layer.provi
 const serverHttpApiAuthLayer = serverAuthorizationLayer.pipe(Layer.provide(ServerAuth.Config.layer))
 const workspaceRoutingLive = workspaceRoutingLayer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal))
 const rootApiRoutes = HttpApiBuilder.layer(RootHttpApi).pipe(
-  Layer.provide([controlHandlers, controlPlaneHandlers, globalHandlers]),
+  Layer.provide([controlHandlers, controlPlaneHandlers, globalHandlers, modelProfileHandlers]),
   Layer.provide(schemaErrorLayer),
   Layer.provide(httpApiAuthLayer),
 )
@@ -249,6 +251,7 @@ const app = LayerNode.group([
   LSP.node,
   MCP.node,
   McpAuth.node,
+  ModelProfileStore.node,
   Command.node,
   Truncate.node,
   ToolRegistry.node,

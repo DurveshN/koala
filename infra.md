@@ -86,6 +86,21 @@ Implemented in `packages/koala`:
 Pending infrastructure includes profile persistence, endpoint network policy,
 capability probes, health state, and OpenCode provider/session adapters.
 
+Implemented profile persistence:
+
+```text
+<Global data>/koala/model-profiles.json
+    |
+    +-- versioned canonical profile document
+    +-- locked atomic create/update/delete
+    +-- authenticated global CRUD API
+    +-- generated legacy SDK client
+    +-- effective V1 provider projection in the sidecar
+```
+
+Profiles remain canonical JSON data. The OpenCode provider configuration is a
+derived in-memory view and is not written into `opencode.json`.
+
 ## Target Tool Infrastructure
 
 ```text

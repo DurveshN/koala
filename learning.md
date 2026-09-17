@@ -76,6 +76,14 @@ work. It is not a substitute for the implementation plan or audit logs.
 - User overrides narrow model selection but do not bypass disabled-state or
   capability checks.
 - Routing order is deterministic: numeric priority, provider ID, then model ID.
+- OpenCode V1 config cannot retain all Koala routing metadata. Canonical profiles
+  are stored separately and projected into V1 provider configuration at runtime.
+- Profile persistence uses a versioned, schema-decoded JSON document with a
+  cross-process lock and same-directory atomic replacement.
+- A malformed or unknown-version profile document blocks config loading instead
+  of silently reverting to an empty profile set.
+- Profile mutations dispose active instances after persistence so subsequent
+  provider state reloads from the canonical document.
 
 ## Sandbox
 
@@ -100,3 +108,7 @@ On 2026-09-17, after the first sovereignty slice:
 - `packages/opencode`: `bun typecheck` passed.
 - `packages/koala`: 21 model profile and routing tests passed.
 - `packages/koala`: `bun typecheck` passed.
+- Profile store and runtime projection tests: 18 passed.
+- Model-profile HTTP tests: 7 passed.
+- Existing global/control-plane HTTP tests: 5 passed.
+- Legacy SDK typecheck passed after generation.

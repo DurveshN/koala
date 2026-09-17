@@ -9,11 +9,13 @@ import { SessionV2 } from "@opencode-ai/core/session"
 import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
 import { Installation } from "../../src/installation"
+import { ModelProfileStore } from "../../src/koala/model-profile-store"
 import { ServerAuth } from "../../src/server/auth"
 import { RootHttpApi } from "../../src/server/routes/instance/httpapi/api"
 import { controlHandlers } from "../../src/server/routes/instance/httpapi/handlers/control"
 import { controlPlaneHandlers } from "../../src/server/routes/instance/httpapi/handlers/control-plane"
 import { globalHandlers } from "../../src/server/routes/instance/httpapi/handlers/global"
+import { modelProfileHandlers } from "../../src/server/routes/instance/httpapi/handlers/model-profile"
 import { authorizationLayer } from "../../src/server/routes/instance/httpapi/middleware/authorization"
 import { schemaErrorLayer } from "../../src/server/routes/instance/httpapi/middleware/schema-error"
 import { testEffect } from "../lib/effect"
@@ -27,7 +29,7 @@ const called = Ref.makeUnsafe<MoveSession.Input | undefined>(undefined)
 
 const apiLayer = HttpRouter.serve(
   HttpApiBuilder.layer(RootHttpApi).pipe(
-    Layer.provide([controlHandlers, controlPlaneHandlers, globalHandlers]),
+    Layer.provide([controlHandlers, controlPlaneHandlers, globalHandlers, modelProfileHandlers]),
     Layer.provide([authorizationLayer, schemaErrorLayer]),
     // Raw HttpApi routes expose an opaque handler context at the request boundary.
     // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
@@ -39,6 +41,7 @@ const apiLayer = HttpRouter.serve(
   Layer.provide(Layer.mock(Auth.Service)({})),
   Layer.provide(Layer.mock(Config.Service)({})),
   Layer.provide(Layer.mock(Installation.Service)({})),
+  Layer.provide(Layer.mock(ModelProfileStore.Service)({})),
   Layer.provide(
     Layer.mock(MoveSession.Service)({
       moveSession: (value) => Ref.set(called, value),

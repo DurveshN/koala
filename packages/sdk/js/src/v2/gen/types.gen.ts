@@ -2032,6 +2032,24 @@ export type Config = {
   }
 }
 
+export type UnknownError1 = {
+  _tag: "UnknownError"
+  message: string
+  ref?: string
+}
+
+export type ConflictError = {
+  _tag: "ConflictError"
+  message: string
+  resource?: string
+}
+
+export type ProviderNotFoundError = {
+  _tag: "ProviderNotFoundError"
+  providerID: string
+  message: string
+}
+
 export type Model = {
   id: string
   providerID: string
@@ -2714,12 +2732,6 @@ export type PromptInput = {
   agents?: Array<PromptAgentAttachment>
 }
 
-export type ConflictError = {
-  _tag: "ConflictError"
-  message: string
-  resource?: string
-}
-
 export type ServiceUnavailableError = {
   _tag: "ServiceUnavailableError"
   message: string
@@ -2733,7 +2745,7 @@ export type MessageNotFoundError = {
   message: string
 }
 
-export type UnknownError1 = {
+export type UnknownError2 = {
   _tag: "UnknownError"
   message: string
   ref?: string
@@ -2782,12 +2794,6 @@ export type SessionMessagesResponse = {
     previous?: string
     next?: string
   }
-}
-
-export type ProviderNotFoundError = {
-  _tag: "ProviderNotFoundError"
-  providerID: string
-  message: string
 }
 
 export type OutputFormat1 =
@@ -3845,6 +3851,34 @@ export type ConfigV2ExperimentalPolicy = {
   action: "provider.use"
   effect: PolicyEffect
   resource: string
+}
+
+export type ModelProfileCapabilities = {
+  textInput: "yes" | "no" | "unknown"
+  imageInput: "yes" | "no" | "unknown"
+  toolCalling: "yes" | "no" | "unknown"
+  streaming: "yes" | "no" | "unknown"
+  structuredOutput: "yes" | "no" | "unknown"
+  reasoning: "yes" | "no" | "unknown"
+}
+
+export type ModelProfileModel = {
+  id: string
+  displayName: string
+  capabilities: ModelProfileCapabilities
+  contextWindow: number
+  maxOutput: number
+  roles: Array<"general" | "coding" | "document" | "vision" | "long-context" | "fast" | "embedding" | "reranking">
+  enabled: boolean
+  priority: number
+}
+
+export type ModelProfileProvider = {
+  id: string
+  displayName: string
+  baseURL: string
+  secretReference?: string
+  models: Array<ModelProfileModel>
 }
 
 export type ProjectDirectories = Array<{
@@ -7388,6 +7422,138 @@ export type GlobalUpgradeResponses = {
 }
 
 export type GlobalUpgradeResponse = GlobalUpgradeResponses[keyof GlobalUpgradeResponses]
+
+export type ModelProfileListData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/global/model-profile"
+}
+
+export type ModelProfileListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * UnknownError
+   */
+  500: UnknownError1
+}
+
+export type ModelProfileListError = ModelProfileListErrors[keyof ModelProfileListErrors]
+
+export type ModelProfileListResponses = {
+  /**
+   * Model profiles
+   */
+  200: Array<ModelProfileProvider>
+}
+
+export type ModelProfileListResponse = ModelProfileListResponses[keyof ModelProfileListResponses]
+
+export type ModelProfileCreateData = {
+  body?: ModelProfileProvider
+  path?: never
+  query?: never
+  url: "/global/model-profile"
+}
+
+export type ModelProfileCreateErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * ConflictError
+   */
+  409: ConflictError
+  /**
+   * UnknownError
+   */
+  500: UnknownError1
+}
+
+export type ModelProfileCreateError = ModelProfileCreateErrors[keyof ModelProfileCreateErrors]
+
+export type ModelProfileCreateResponses = {
+  /**
+   * Created model profile
+   */
+  200: ModelProfileProvider
+}
+
+export type ModelProfileCreateResponse = ModelProfileCreateResponses[keyof ModelProfileCreateResponses]
+
+export type ModelProfileDeleteData = {
+  body?: never
+  path: {
+    providerID: string
+  }
+  query?: never
+  url: "/global/model-profile/{providerID}"
+}
+
+export type ModelProfileDeleteErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * ProviderNotFoundError
+   */
+  404: ProviderNotFoundError
+  /**
+   * UnknownError
+   */
+  500: UnknownError1
+}
+
+export type ModelProfileDeleteError = ModelProfileDeleteErrors[keyof ModelProfileDeleteErrors]
+
+export type ModelProfileDeleteResponses = {
+  /**
+   * Model profile deleted
+   */
+  200: boolean
+}
+
+export type ModelProfileDeleteResponse = ModelProfileDeleteResponses[keyof ModelProfileDeleteResponses]
+
+export type ModelProfileUpdateData = {
+  body?: ModelProfileProvider
+  path: {
+    providerID: string
+  }
+  query?: never
+  url: "/global/model-profile/{providerID}"
+}
+
+export type ModelProfileUpdateErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * ProviderNotFoundError
+   */
+  404: ProviderNotFoundError
+  /**
+   * UnknownError
+   */
+  500: UnknownError1
+}
+
+export type ModelProfileUpdateError = ModelProfileUpdateErrors[keyof ModelProfileUpdateErrors]
+
+export type ModelProfileUpdateResponses = {
+  /**
+   * Updated model profile
+   */
+  200: ModelProfileProvider
+}
+
+export type ModelProfileUpdateResponse = ModelProfileUpdateResponses[keyof ModelProfileUpdateResponses]
 
 export type EventSubscribeData = {
   body?: never
@@ -11705,7 +11871,7 @@ export type V2SessionRevertStageErrors = {
   /**
    * UnknownError
    */
-  500: UnknownError1
+  500: UnknownError2
 }
 
 export type V2SessionRevertStageError = V2SessionRevertStageErrors[keyof V2SessionRevertStageErrors]
@@ -11746,7 +11912,7 @@ export type V2SessionRevertClearErrors = {
   /**
    * UnknownError
    */
-  500: UnknownError1
+  500: UnknownError2
 }
 
 export type V2SessionRevertClearError = V2SessionRevertClearErrors[keyof V2SessionRevertClearErrors]
@@ -11820,7 +11986,7 @@ export type V2SessionContextErrors = {
   /**
    * UnknownError
    */
-  500: UnknownError1
+  500: UnknownError2
 }
 
 export type V2SessionContextError = V2SessionContextErrors[keyof V2SessionContextErrors]
@@ -12020,7 +12186,7 @@ export type V2SessionMessagesErrors = {
   /**
    * UnknownError
    */
-  500: UnknownError1
+  500: UnknownError2
 }
 
 export type V2SessionMessagesError = V2SessionMessagesErrors[keyof V2SessionMessagesErrors]

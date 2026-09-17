@@ -26,6 +26,7 @@ import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { RemoteAuthError } from "@opencode-ai/core/v1/config/error"
 import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
 import { ConfigPluginV1 } from "@opencode-ai/core/v1/config/plugin"
+import { ConfigProviderV1 } from "@opencode-ai/core/v1/config/provider"
 import { ConfigAgent } from "./agent"
 import { ConfigCommand } from "./command"
 import { ConfigManaged } from "./managed"
@@ -36,6 +37,8 @@ import { ConfigVariable } from "./variable"
 import { ConfigV2Compat } from "./v2-compat"
 import { Npm } from "@opencode-ai/core/npm"
 import { withTransientReadRetry } from "@/util/effect-http-client"
+import { ModelProviderConfig } from "@koala-ai/core/model/provider-config"
+import { ModelProfileStore } from "@/koala/model-profile-store"
 
 // Custom merge function that concatenates array fields instead of replacing them
 // Keep remeda's deep conditional merge type out of hot config-loading paths; TS profiling showed it dominates here.
@@ -182,6 +185,7 @@ const layer = Layer.effect(
     const env = yield* Env.Service
     const npmSvc = yield* Npm.Service
     const http = yield* HttpClient.HttpClient
+    const modelProfileStore = yield* ModelProfileStore.Service
 
     const readConfigFile = (filepath: string) => fs.readFileStringSafe(filepath).pipe(Effect.orDie)
 
@@ -598,6 +602,19 @@ const layer = Layer.effect(
           result.compaction = { ...result.compaction, prune: false }
         }
 
+        const profileProviders = Object.fromEntries(
+          (yield* modelProfileStore.list())
+            .map(ModelProviderConfig.toV1OpenAICompatible)
+            .filter((entry) => Object.keys(entry.config.models).length > 0)
+            .map((entry) => [
+              entry.providerID,
+              ConfigParse.schema(ConfigProviderV1.Info, entry.config, `Koala model profile ${entry.providerID}`),
+            ]),
+        )
+        if (Object.keys(profileProviders).length > 0) {
+          result.provider = { ...result.provider, ...profileProviders }
+        }
+
         return {
           config: result,
           directories,
@@ -696,7 +713,7 @@ const layer = Layer.effect(
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [FSUtil.node, Auth.node, Account.node, Env.node, Npm.node, httpClient],
+  deps: [FSUtil.node, Auth.node, Account.node, Env.node, Npm.node, httpClient, ModelProfileStore.node],
 })
 
 export * as Config from "./config"
