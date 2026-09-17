@@ -73,6 +73,19 @@ OpenAI-compatible local/private endpoint
 The router records required capabilities, candidate rejection reasons, selected
 profile, fallback decision, and user override.
 
+Implemented in `packages/koala`:
+
+- OpenAI-compatible provider profile contracts
+- Secret references without raw credential storage
+- Tri-state model capabilities
+- Required context and output limits
+- Model roles, enabled state, and priority
+- Deterministic capability-aware routing
+- Capability-safe user overrides
+
+Pending infrastructure includes profile persistence, endpoint network policy,
+capability probes, health state, and OpenCode provider/session adapters.
+
 ## Target Tool Infrastructure
 
 ```text

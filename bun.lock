@@ -540,6 +540,17 @@
         "@typescript/native-preview": "catalog:",
       },
     },
+    "packages/koala": {
+      "name": "@koala-ai/core",
+      "dependencies": {
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@tsconfig/bun": "catalog:",
+        "@types/bun": "catalog:",
+        "@typescript/native-preview": "catalog:",
+      },
+    },
     "packages/llm": {
       "name": "@opencode-ai/llm",
       "version": "1.18.31",
@@ -1793,6 +1804,8 @@
     "@jsx-email/tailwind": ["@jsx-email/tailwind@2.4.4", "", { "dependencies": { "@jsx-email/render": "1.1.1", "react": "18.2.0", "react-dom": "18.2.0", "tw-to-css": "0.0.12" } }, "sha512-RqLD0y2le1ruFBt9MCa0PNnTVUgcS8vcOOWMJUkMezBZUAUkP5KSj3DO+6DdgVn67kH9cnnRvknXo8L6qd6BwA=="],
 
     "@jsx-email/text": ["@jsx-email/text@1.0.2", "", { "peerDependencies": { "react": "^18.2.0" } }, "sha512-0zzwEwrKtY6tfjPJF0r3krKCDpP/ySYDvkn4+MvIFrIH5RZKmn3XDa5o/3hkbxMwpLn4MsXGIXn9XzMTaqTfUA=="],
+
+    "@koala-ai/core": ["@koala-ai/core@workspace:packages/koala"],
 
     "@kobalte/core": ["@kobalte/core@0.13.11", "", { "dependencies": { "@floating-ui/dom": "^1.5.1", "@internationalized/date": "^3.4.0", "@internationalized/number": "^3.2.1", "@kobalte/utils": "^0.9.1", "@solid-primitives/props": "^3.1.8", "@solid-primitives/resize-observer": "^2.0.26", "solid-presence": "^0.1.8", "solid-prevent-scroll": "^0.1.4" }, "peerDependencies": { "solid-js": "^1.8.15" } }, "sha512-hK7TYpdib/XDb/r/4XDBFaO9O+3ZHz4ZWryV4/3BfES+tSQVgg2IJupDnztKXB0BqbSRy/aWlHKw1SPtNPYCFQ=="],
 

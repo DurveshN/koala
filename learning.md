@@ -69,6 +69,13 @@ work. It is not a substitute for the implementation plan or audit logs.
   probe these values before using the profile for routing.
 - `GET /v1/models` provides model IDs but does not provide a portable capability
   contract across OpenAI-compatible servers.
+- Koala model profiles store only secret references, never raw credentials.
+- Provider profiles require at least one model and unique model IDs.
+- Models use `yes`, `no`, or `unknown` for detectable capabilities. `unknown`
+  can be stored before probing but cannot satisfy a hard routing requirement.
+- User overrides narrow model selection but do not bypass disabled-state or
+  capability checks.
+- Routing order is deterministic: numeric priority, provider ID, then model ID.
 
 ## Sandbox
 
@@ -91,3 +98,5 @@ On 2026-09-17, after the first sovereignty slice:
 - `packages/desktop`: `bun run build` passed.
 - Sharing configuration tests: 3 passed.
 - `packages/opencode`: `bun typecheck` passed.
+- `packages/koala`: 21 model profile and routing tests passed.
+- `packages/koala`: `bun typecheck` passed.
