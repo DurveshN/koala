@@ -876,16 +876,48 @@ it.instance("handles command configuration", () =>
 )
 
 it.instance("migrates autoshare to share field", () =>
-  Effect.gen(function* () {
-    const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
-      autoshare: true,
-    })
-    const config = yield* Config.use.get()
-    expect(config.share).toBe("auto")
-    expect(config.autoshare).toBe(true)
-  }),
+  withProcessEnv(
+    "OPENCODE_DISABLE_SHARE",
+    undefined,
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* writeConfigEffect(test.directory, {
+        $schema: "https://opencode.ai/config.json",
+        autoshare: true,
+      })
+      const config = yield* Config.use.get()
+      expect(config.share).toBe("auto")
+      expect(config.autoshare).toBe(true)
+    }),
+  ),
+)
+
+it.instance(
+  "disables user-configured auto sharing when OPENCODE_DISABLE_SHARE is 1",
+  () =>
+    withProcessEnv(
+      "OPENCODE_DISABLE_SHARE",
+      "1",
+      Effect.gen(function* () {
+        expect((yield* Config.use.get()).share).toBe("disabled")
+      }),
+    ),
+  { config: { share: "auto" } },
+)
+
+it.instance(
+  "disables legacy autoshare when OPENCODE_DISABLE_SHARE is true",
+  () =>
+    withProcessEnv(
+      "OPENCODE_DISABLE_SHARE",
+      "true",
+      Effect.gen(function* () {
+        const config = yield* Config.use.get()
+        expect(config.share).toBe("disabled")
+        expect(config.autoshare).toBe(true)
+      }),
+    ),
+  { config: { autoshare: true } },
 )
 
 it.instance("migrates mode field to agent field", () =>

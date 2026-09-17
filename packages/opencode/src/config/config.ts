@@ -7,7 +7,7 @@ import os from "os"
 import { mergeDeep } from "remeda"
 import { Global } from "@opencode-ai/core/global"
 import fsNode from "fs/promises"
-import { Flag } from "@opencode-ai/core/flag/flag"
+import { Flag, truthy } from "@opencode-ai/core/flag/flag"
 import { Auth } from "../auth"
 import { Env } from "../env"
 import { applyEdits, modify } from "jsonc-parser"
@@ -589,6 +589,7 @@ const layer = Layer.effect(
         if (result.autoshare === true && !result.share) {
           result.share = "auto"
         }
+        if (truthy("OPENCODE_DISABLE_SHARE")) result.share = "disabled"
 
         if (Flag.OPENCODE_DISABLE_AUTOCOMPACT) {
           result.compaction = { ...result.compaction, auto: false }
