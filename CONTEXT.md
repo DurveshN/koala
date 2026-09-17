@@ -1,4 +1,49 @@
-# OpenCode Session Runtime
+# Koala Project Context
+
+Koala is a local-only sovereign agentic AI workbench for confidential
+industrial work. It is based on an independent import of OpenCode Desktop
+`v1.18.31` at upstream commit
+`014614d35b397775e5d397a490fc72368c894ec2`.
+
+## Product Decisions
+
+- Keep OpenCode Desktop's layout and interaction model initially.
+- Ship only a local Desktop product; CLI, TUI, web, and installers are outside
+  the current implementation target.
+- Connect only to user-configured OpenAI-compatible local or private-network
+  endpoints.
+- Support multiple model profiles with user-declared capabilities and optional
+  probes for `Don't know` values.
+- Require context-window and maximum-output values from the user.
+- Route coding, document, vision, and other tasks by required capabilities and
+  configured model roles, with a user override.
+- Remove cloud providers, sharing, remote tools, telemetry, public updates, and
+  other nonessential external communication paths.
+- Use `@anthropic-ai/sandbox-runtime` behind a Koala-owned interface with an
+  empty sandbox network allowlist and no unsandboxed fallback.
+- Add local document, OCR, vision, Office generation, calculation, knowledge,
+  artifact, audit, and network-activity capabilities.
+- Brand the product Koala with a professional geometric and friendly mascot
+  identity, eucalyptus green and charcoal palette, and system Light/Dark theme.
+- Keep Koala's top-level license separate while retaining required third-party
+  notices. The Koala license text has not yet been selected.
+
+## Repository State
+
+- Independent branch: `dev`
+- Untouched baseline commit: `41880aa`
+- Approved plan: `docs/plans/koala-implementation-plan.md`
+- Upstream provenance: `UPSTREAM.md`
+- Third-party notices: `THIRD_PARTY_NOTICES.md`
+- Packaging is deferred.
+
+## Current Milestone
+
+Document the approved architecture, inspect the actual Desktop build graph,
+then implement the first small local-only Desktop slice without deleting shared
+runtime dependencies prematurely.
+
+## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.
 
