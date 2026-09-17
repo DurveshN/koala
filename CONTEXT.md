@@ -35,7 +35,17 @@ industrial work. It is based on an independent import of OpenCode Desktop
 - Approved plan: `docs/plans/koala-implementation-plan.md`
 - Upstream provenance: `UPSTREAM.md`
 - Third-party notices: `THIRD_PARTY_NOTICES.md`
+- Infrastructure: `infra.md`
+- Implementation learnings: `learning.md`
+- Delegated work reports: `.subagent/`
 - Packaging is deferred.
+
+## Development Orchestration
+
+Use subagents for bounded research and implementation tasks. Store concise,
+non-sensitive reports in `.subagent/`. The orchestrating agent reviews all
+delegated changes, resolves integration concerns, runs verification, updates
+project context and learnings, and creates commits.
 
 ## Current Milestone
 
@@ -45,6 +55,8 @@ local-only Desktop slice is implemented:
 - Desktop binary updates are disabled in every channel.
 - The sidecar receives `OPENCODE_DISABLE_AUTOUPDATE=1` and
   `OPENCODE_DISABLE_SHARE=1`.
+- Effective sidecar configuration forces `share: "disabled"` when the sharing
+  switch is active, so existing App sharing controls are hidden.
 - Inherited OTLP endpoint, header, and resource metadata are removed before the
   sidecar starts.
 - Desktop Sentry initialization and Sentry source-map upload integration are
@@ -60,10 +72,12 @@ Verification completed on 2026-09-17:
 - `packages/desktop`: `bun typecheck` passed.
 - `packages/app`: `bun typecheck` passed.
 - `packages/desktop`: `bun run build` passed.
+- Sharing configuration tests: 3 passed.
+- `packages/opencode`: `bun typecheck` passed.
 
-Next, remove session-sharing UI and backend activation in dependency order,
-then reframe the existing custom OpenAI-compatible provider flow as Koala's
-local/private model connection.
+Next, reframe the existing custom OpenAI-compatible provider flow as Koala's
+local/private model connection. Full deletion of dormant sharing APIs and
+persistence follows in dependency order.
 
 ## Upstream OpenCode Session Runtime
 
