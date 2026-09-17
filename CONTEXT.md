@@ -39,9 +39,31 @@ industrial work. It is based on an independent import of OpenCode Desktop
 
 ## Current Milestone
 
-Document the approved architecture, inspect the actual Desktop build graph,
-then implement the first small local-only Desktop slice without deleting shared
-runtime dependencies prematurely.
+The independent baseline and implementation plan are committed. The first
+local-only Desktop slice is implemented:
+
+- Desktop binary updates are disabled in every channel.
+- The sidecar receives `OPENCODE_DISABLE_AUTOUPDATE=1` and
+  `OPENCODE_DISABLE_SHARE=1`.
+- Inherited OTLP endpoint, header, and resource metadata are removed before the
+  sidecar starts.
+- Desktop Sentry initialization and Sentry source-map upload integration are
+  removed.
+- Desktop release-note requests to `opencode.ai` are skipped.
+- Desktop notification icons use a bundled local asset.
+- The App custom-element declaration uses a portable TypeScript import so the
+  Windows checkout typechecks.
+
+Verification completed on 2026-09-17:
+
+- Desktop targeted tests: 12 passed.
+- `packages/desktop`: `bun typecheck` passed.
+- `packages/app`: `bun typecheck` passed.
+- `packages/desktop`: `bun run build` passed.
+
+Next, remove session-sharing UI and backend activation in dependency order,
+then reframe the existing custom OpenAI-compatible provider flow as Koala's
+local/private model connection.
 
 ## Upstream OpenCode Session Runtime
 

@@ -215,6 +215,10 @@ export const { use: useHighlights, provider: HighlightsProvider } = createSimple
       }
 
       if (previous === platform.version) return
+      if (platform.platform === "desktop") {
+        markSeen()
+        return
+      }
 
       setRange({ from: previous, to: platform.version })
       start(previous)

@@ -4,6 +4,7 @@ import { app, utilityProcess } from "electron"
 import type { Details } from "electron"
 import { getLogger } from "./logging"
 import { getUserShell, loadShellEnv } from "./shell-env"
+import { createSidecarEnv } from "./sidecar-env"
 import { getStore } from "./store"
 import { DEFAULT_SERVER_URL_KEY } from "./store-keys"
 
@@ -208,15 +209,6 @@ export async function checkHealth(url: string, password?: string | null): Promis
     } catch {}
   }
   return false
-}
-
-function createSidecarEnv(): Record<string, string> {
-  const env = Object.fromEntries(
-    Object.entries(process.env).flatMap(([key, value]) => (value === undefined ? [] : [[key, String(value)]])),
-  )
-  delete env.DEBUG
-  if (process.platform === "linux") delete env.LD_PRELOAD
-  return env
 }
 
 function delay(ms: number) {
