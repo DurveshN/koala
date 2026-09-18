@@ -114,6 +114,13 @@ work. It is not a substitute for the implementation plan or audit logs.
   merges returned IDs without deleting or resetting edited/manual model rows.
 - Discovery API keys are transient; only final profile submission writes a key
   through the auth service.
+- Actual AI SDK inference for canonical Koala profiles now uses the same pinned
+  endpoint transport as discovery. Profile config and plugin fetch overrides
+  cannot replace that transport.
+- Profile-backed providers remain on the AI SDK path because the current native
+  runtime gate accepts only OpenAI, Anthropic, and OpenCode provider IDs.
+- The Desktop sidecar disables EC2/GCP metadata discovery and removes inherited
+  metadata endpoint overrides as defense in depth.
 
 ## Sandbox
 
@@ -153,3 +160,5 @@ On 2026-09-17, after the first sovereignty slice:
   OpenCode suite; legacy SDK and Desktop production builds pass.
 - Discovery form and fallback-copy tests: 28 passed; locale parity tests: 5
   passed.
+- Profile inference transport and native-gate tests: 21 passed.
+- Sidecar environment hardening tests: 2 passed.

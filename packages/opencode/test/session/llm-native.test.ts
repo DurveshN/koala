@@ -425,6 +425,21 @@ describe("session.llm-native.request", () => {
     ).toEqual({ type: "unsupported", reason: "provider is not openai, opencode, or anthropic" })
     expect(
       LLMNativeRuntime.status({
+        model: {
+          ...baseModel,
+          providerID: ProviderV2.ID.make("profile-local"),
+          api: { ...baseModel.api, npm: "@ai-sdk/openai-compatible" },
+        },
+        provider: {
+          ...providerInfo,
+          id: ProviderV2.ID.make("profile-local"),
+          options: { apiKey: "profile-key", fetch: async () => new Response() },
+        },
+        auth: undefined,
+      }),
+    ).toEqual({ type: "unsupported", reason: "provider is not openai, opencode, or anthropic" })
+    expect(
+      LLMNativeRuntime.status({
         model: baseModel,
         provider: providerInfo,
         auth: { type: "oauth", refresh: "refresh", access: "access", expires: 1 },

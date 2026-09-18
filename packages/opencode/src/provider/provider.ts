@@ -31,6 +31,8 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
+import { ModelEndpointClient } from "@/koala/model-endpoint-client"
+import { ModelProfileStore } from "@/koala/model-profile-store"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 
@@ -1212,6 +1214,13 @@ interface State {
   sdk: Map<string, BundledSDK>
   modelLoaders: Record<string, CustomModelLoader>
   varsLoaders: Record<string, CustomVarsLoader>
+  profileEndpoints: Map<
+    string,
+    | ModelEndpointClient.BoundClient
+    | {
+        error: ModelEndpointClient.PolicyError
+      }
+  >
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Provider") {}
@@ -1396,6 +1405,8 @@ const layer = Layer.effect(
     const plugin = yield* Plugin.Service
     const modelsDevSvc = yield* ModelsDev.Service
     const runtimeFlags = yield* RuntimeFlags.Service
+    const modelProfileStore = yield* ModelProfileStore.Service
+    const modelEndpointClient = yield* ModelEndpointClient.Service
 
     const state = yield* InstanceState.make<State>(() =>
       Effect.gen(function* () {
@@ -1404,6 +1415,21 @@ const layer = Layer.effect(
         const modelsDev = yield* modelsDevSvc.get()
         const catalog = mapValues(modelsDev, fromModelsDevProvider)
         const database = mapValues(catalog, toPublicInfo)
+        const profiles = yield* modelProfileStore.list().pipe(Effect.orDie)
+        const profileEndpoints = new Map<
+          string,
+          ModelEndpointClient.BoundClient | { error: ModelEndpointClient.PolicyError }
+        >()
+        yield* Effect.forEach(
+          profiles.filter((profile) => profile.models.some((model) => model.enabled)),
+          (profile) =>
+            modelEndpointClient.bind({ providerID: profile.id, baseURL: profile.baseURL }).pipe(
+              Effect.match({
+                onFailure: (error) => profileEndpoints.set(profile.id, { error }),
+                onSuccess: (client) => profileEndpoints.set(profile.id, client),
+              }),
+            ),
+        )
 
         const providers: Record<ProviderV2.ID, Info> = {} as Record<ProviderV2.ID, Info>
         const languages = new Map<string, LanguageModelV3>()
@@ -1725,6 +1751,7 @@ const layer = Layer.effect(
           sdk,
           modelLoaders,
           varsLoaders,
+          profileEndpoints,
         }
       }),
     )
@@ -1735,6 +1762,8 @@ const layer = Layer.effect(
       try {
         const provider = s.providers[model.providerID]
         const options = { ...provider.options }
+        const profileEndpoint = s.profileEndpoints.get(model.providerID)
+        if (profileEndpoint && "error" in profileEndpoint) throw profileEndpoint.error
 
         if (
           model.providerID === "google-vertex" &&
@@ -1777,7 +1806,8 @@ const layer = Layer.effect(
           return url
         })
 
-        if (baseURL !== undefined) options["baseURL"] = baseURL
+        if (profileEndpoint) options["baseURL"] = profileEndpoint.baseURL
+        else if (baseURL !== undefined) options["baseURL"] = baseURL
         if (options["apiKey"] === undefined && provider.key) options["apiKey"] = provider.key
         if (model.headers)
           options["headers"] = {
@@ -1795,7 +1825,7 @@ const layer = Layer.effect(
         const existing = s.sdk.get(key)
         if (existing) return existing
 
-        const customFetch = options["fetch"]
+        const customFetch = profileEndpoint?.fetch ?? options["fetch"]
         const chunkTimeout = options["chunkTimeout"] ?? 300_000
         const headerTimeout = options["headerTimeout"] ?? 300_000
         delete options["chunkTimeout"]
@@ -2066,7 +2096,17 @@ export function parseModel(model: string) {
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [FSUtil.node, Config.node, Auth.node, Env.node, Plugin.node, ModelsDev.node, RuntimeFlags.node],
+  deps: [
+    FSUtil.node,
+    Config.node,
+    Auth.node,
+    Env.node,
+    Plugin.node,
+    ModelsDev.node,
+    RuntimeFlags.node,
+    ModelProfileStore.node,
+    ModelEndpointClient.node,
+  ],
 })
 
 export * as Provider from "./provider"

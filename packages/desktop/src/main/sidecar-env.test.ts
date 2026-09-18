@@ -6,6 +6,11 @@ describe("sidecar environment", () => {
     const env = createSidecarEnv(
       {
         DEBUG: "*",
+        AWS_CONTAINER_CREDENTIALS_FULL_URI: "http://credential-secret.internal",
+        AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: "/credential-secret",
+        AWS_EC2_METADATA_SERVICE_ENDPOINT: "http://metadata-secret.internal",
+        GCE_METADATA_HOST: "metadata-secret.internal",
+        GCE_METADATA_IP: "10.0.0.2",
         KOALA_LOCAL_MODEL: "http://127.0.0.1:8000/v1",
         OPENCODE_DISABLE_AUTOUPDATE: "0",
         OPENCODE_DISABLE_SHARE: "0",
@@ -17,7 +22,9 @@ describe("sidecar environment", () => {
     )
 
     expect(env).toEqual({
+      AWS_EC2_METADATA_DISABLED: "true",
       KOALA_LOCAL_MODEL: "http://127.0.0.1:8000/v1",
+      METADATA_SERVER_DETECTION: "none",
       OPENCODE_DISABLE_AUTOUPDATE: "1",
       OPENCODE_DISABLE_SHARE: "1",
     })
@@ -25,6 +32,8 @@ describe("sidecar environment", () => {
 
   test("removes Linux preload injection", () => {
     expect(createSidecarEnv({ LD_PRELOAD: "/tmp/inject.so", PATH: "/usr/bin" }, "linux")).toEqual({
+      AWS_EC2_METADATA_DISABLED: "true",
+      METADATA_SERVER_DETECTION: "none",
       PATH: "/usr/bin",
       OPENCODE_DISABLE_AUTOUPDATE: "1",
       OPENCODE_DISABLE_SHARE: "1",

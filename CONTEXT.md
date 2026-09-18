@@ -88,8 +88,9 @@ socket creation, preserves Host/SNI, avoids environment proxies, and rejects
 redirects. A read-only authenticated discovery API now lists model IDs through
 this transport with transient-key support, bounded responses, and redacted
 errors. The Desktop form now exposes this discovery action and merges model IDs
-without discarding manual edits. The next critical step is applying the same
-pinned transport to actual provider inference, followed by active probes for
+without discarding manual edits. Canonical profile-backed AI SDK inference now
+uses the same pinned transport, with profile base URL and fetch policy taking
+precedence over config/plugin overrides. The next step is active probes for
 `unknown` capabilities. Full deletion of dormant sharing APIs and persistence
 follows in dependency order.
 

@@ -120,6 +120,15 @@ Effective OpenCode provider projection
 Active endpoint discovery and capability probes remain pending. A saved profile
 must not be presented as a verified connection until those checks succeed.
 
+Profile-backed inference now obtains a bound pinned fetch during provider
+instance construction. The canonical profile base URL and transport take
+precedence over matching config/plugin values, while unrelated providers retain
+their existing transports. Binding or DNS policy denial fails the profile-backed
+model request without a global-fetch fallback.
+
+The Desktop sidecar also disables common EC2 and GCP metadata discovery
+variables and removes inherited metadata endpoint overrides.
+
 ## Target Tool Infrastructure
 
 ```text
