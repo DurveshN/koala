@@ -179,6 +179,19 @@ addresses, and sandbox traffic are denied by default.
 Koala records application network decisions, but organization deployments
 should also use host firewall policy or an independent network monitor.
 
+Implemented pure endpoint policy:
+
+- IPv4 loopback and RFC1918 allowlist
+- IPv6 loopback and ULA allowlist
+- Metadata, public, reserved, CGNAT, link-local, multicast, unspecified, and
+  IPv4-mapped IPv6 denials
+- Strict base URL component validation
+- DNS answer-set authorization with mixed-result denial
+- Endpoint origin and base-path request scoping
+- Redirect status classification
+
+The sidecar DNS-pinned transport remains the next network implementation layer.
+
 ## Deferred Deployment Infrastructure
 
 - Windows, macOS, and Linux installers

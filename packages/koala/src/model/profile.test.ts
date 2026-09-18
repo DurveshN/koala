@@ -73,6 +73,20 @@ describe("ModelProfile.Provider", () => {
     )
   })
 
+  test.each([
+    ["http://0.0.0.0/v1", "Unspecified addresses are not allowed"],
+    ["https://example.com/v1", undefined],
+    ["http://metadata.google.internal/v1", "Metadata service hostnames are not allowed"],
+    ["http://127.1/v1", "Noncanonical IP address notation is not allowed"],
+    ["http://user@localhost/v1", "Endpoint credentials are not allowed"],
+    ["http://localhost/v1?probe=true", "Endpoint query parameters are not allowed"],
+  ])("applies endpoint policy to base URL %s", (baseURL, message) => {
+    const decode = () => Schema.decodeUnknownSync(ModelProfile.Provider)({ ...provider(), baseURL })
+
+    if (message) expect(decode).toThrow(message)
+    else expect(String(decode().baseURL)).toBe(baseURL)
+  })
+
   test("rejects a raw value in place of a secret reference", () => {
     expect(() =>
       Schema.decodeUnknownSync(ModelProfile.Provider)({ ...provider(), secretReference: "raw-secret-value" }),

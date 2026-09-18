@@ -93,6 +93,12 @@ work. It is not a substitute for the implementation plan or audit logs.
   typed `language.t(...)` calls.
 - Saving a profile is not a connectivity test. UI copy states that configuration
   was saved rather than claiming the endpoint connected successfully.
+- Endpoint syntax is now checked by a shared Koala policy. Literal endpoints are
+  limited to loopback, RFC1918, IPv6 loopback, and IPv6 ULA ranges.
+- Hostnames remain pending until sidecar DNS authorization. Every returned
+  address must be permitted; mixed public/private answers fail closed.
+- URL validation rejects credentials, query strings, fragments, wildcard hosts,
+  metadata hosts, alternate IPv4 notation, and redirect escape paths.
 
 ## Sandbox
 
@@ -125,3 +131,4 @@ On 2026-09-17, after the first sovereignty slice:
 - Existing App i18n parity tests: 5 passed.
 - App and Desktop typechecks passed after form integration.
 - Desktop production build passed after form integration.
+- Koala endpoint policy suite: 139 tests passed.

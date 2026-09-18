@@ -1,6 +1,7 @@
 export * as ModelProfile from "./profile"
 
 import { Schema } from "effect"
+import { EndpointPolicy } from "../network/endpoint-policy"
 
 export const ProviderID = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9._-]*$/)).pipe(
   Schema.brand("ModelProfile.ProviderID"),
@@ -16,11 +17,10 @@ export const SecretReference = Schema.String.check(Schema.isPattern(/^[a-z][a-z0
 export type SecretReference = typeof SecretReference.Type
 
 export const BaseURL = Schema.String.check(
-  Schema.makeFilter((value) =>
-    URL.canParse(value) && ["http:", "https:"].includes(new URL(value).protocol)
-      ? undefined
-      : "Expected an absolute HTTP or HTTPS URL",
-  ),
+  Schema.makeFilter((value) => {
+    const result = EndpointPolicy.parseBaseURL(value)
+    return result.ok ? undefined : result.message
+  }),
 ).pipe(Schema.brand("ModelProfile.BaseURL"))
 export type BaseURL = typeof BaseURL.Type
 

@@ -5,14 +5,16 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./model/*": "./src/model/*.ts"
+    "./model/*": "./src/model/*.ts",
+    "./network/*": "./src/network/*.ts"
   },
   "scripts": {
     "test": "bun test --only-failures",
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "ipaddr.js": "2.5.0"
   },
   "devDependencies": {
     "@tsconfig/bun": "catalog:",

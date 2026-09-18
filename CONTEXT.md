@@ -81,7 +81,10 @@ form. It collects required limits, tri-state capabilities, roles, enabled state,
 and routing priority, then saves canonical profiles through the generated CRUD
 client. Raw API keys remain on the existing auth route. The next milestone is
 endpoint policy, `/v1/models` discovery, and active capability probes for fields
-set to `unknown`. Full deletion of dormant sharing APIs and persistence follows
+set to `unknown`. The pure endpoint policy now validates local/private literals,
+DNS answer sets, endpoint scope, metadata denials, and redirect statuses. The
+next step is a sidecar transport that performs and pins DNS authorization at
+socket creation. Full deletion of dormant sharing APIs and persistence follows
 in dependency order.
 
 ## Upstream OpenCode Session Runtime
