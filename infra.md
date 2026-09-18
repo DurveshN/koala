@@ -192,6 +192,22 @@ Implemented pure endpoint policy:
 
 The sidecar DNS-pinned transport remains the next network implementation layer.
 
+Implemented sidecar endpoint transport:
+
+```text
+Bound provider base URL
+    -> request origin/path authorization
+    -> fresh OS DNS lookup
+    -> complete answer-set authorization
+    -> approved address returned to socket lookup
+    -> direct Node HTTP/HTTPS request
+    -> redirect rejection
+```
+
+The original hostname remains available for HTTP Host and TLS verification.
+Environment proxy routing and insecure TLS overrides are not part of this
+transport.
+
 ## Deferred Deployment Infrastructure
 
 - Windows, macOS, and Linux installers

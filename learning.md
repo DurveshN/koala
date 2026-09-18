@@ -99,6 +99,12 @@ work. It is not a substitute for the implementation plan or audit logs.
   address must be permitted; mixed public/private answers fail closed.
 - URL validation rejects credentials, query strings, fragments, wildcard hosts,
   metadata hosts, alternate IPv4 notation, and redirect escape paths.
+- The sidecar model transport performs DNS authorization inside Node's socket
+  lookup callback, so the checked address is the address used for the connection.
+- The transport preserves the original hostname for Host, TLS SNI, and
+  certificate identity checks while avoiding environment proxies.
+- Redirects are rejected instead of followed, and each connection performs a
+  fresh DNS authorization because pooling is disabled initially.
 
 ## Sandbox
 
@@ -132,3 +138,5 @@ On 2026-09-17, after the first sovereignty slice:
 - App and Desktop typechecks passed after form integration.
 - Desktop production build passed after form integration.
 - Koala endpoint policy suite: 139 tests passed.
+- Sidecar resolver and pinned transport tests: 13 passed.
+- `packages/opencode`: `bun typecheck` passed with the transport services.
