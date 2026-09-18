@@ -12,7 +12,16 @@ export const dict = {
   "provider.koala.field.apiKey.label": "API key",
   "provider.koala.field.apiKey.placeholder": "API key",
   "provider.koala.field.apiKey.description":
-    "Optional. Leave empty to keep existing credentials or connect without authentication.",
+    "Optional. Discovery uses this key only for that request; submitting the form stores it. Leave empty to use existing credentials or no authentication.",
+  "provider.koala.discovery.action": "Discover models",
+  "provider.koala.discovery.pending": "Discovering models...",
+  "provider.koala.discovery.success": "Models added: {{count}}",
+  "provider.koala.discovery.duplicates": "Duplicate model IDs ignored: {{count}}",
+  "provider.koala.discovery.empty.title": "No models discovered",
+  "provider.koala.discovery.empty.description": "The provider returned no model IDs. Your model rows were not changed.",
+  "provider.koala.discovery.failure.title": "Model discovery failed",
+  "provider.koala.discovery.failure.description":
+    "The request could not be completed. Check the provider ID, base URL, and credentials, then try again.",
   "provider.koala.models.label": "Models",
   "provider.koala.models.legend": "Model {{index}}",
   "provider.koala.models.id.label": "Model ID",

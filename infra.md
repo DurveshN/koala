@@ -222,6 +222,18 @@ POST /global/model-profile/discover
 Discovery is read-only. It does not persist credentials, profiles, config, or
 instance state.
 
+Implemented Desktop discovery flow:
+
+```text
+Provider ID + base URL + optional transient key
+    -> Discover models
+    -> authenticated sidecar discovery API
+    -> ordered unique IDs
+    -> merge into existing model rows
+    -> user completes limits, capabilities and roles
+    -> Submit persists credentials and canonical profile
+```
+
 ## Deferred Deployment Infrastructure
 
 - Windows, macOS, and Linux installers

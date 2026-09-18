@@ -28,4 +28,13 @@ describe("Koala i18n fallback", () => {
     )
     expect(Object.keys(koala).some((key) => key.includes("toast.connected"))).toBeFalse()
   })
+
+  test("describes transient discovery credentials and redacted discovery outcomes", () => {
+    expect(koala["provider.koala.field.apiKey.description"]).toContain("Discovery uses this key only for that request")
+    expect(koala["provider.koala.field.apiKey.description"]).toContain("submitting the form stores it")
+    expect(koala["provider.koala.discovery.success"]).toContain("{{count}}")
+    expect(koala["provider.koala.discovery.duplicates"]).toContain("{{count}}")
+    expect(koala["provider.koala.discovery.empty.description"]).toContain("not changed")
+    expect(koala["provider.koala.discovery.failure.description"]).not.toContain("{{")
+  })
 })

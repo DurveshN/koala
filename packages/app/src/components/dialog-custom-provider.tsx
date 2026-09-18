@@ -14,7 +14,14 @@ import { useServerSync } from "@/context/server-sync"
 import { showToast } from "@/utils/toast"
 import { batch, For, Show } from "solid-js"
 import { createStore, produce } from "solid-js/store"
-import { type FormState, type ModelRow, modelRow, validateCustomProvider } from "./dialog-custom-provider-form"
+import {
+  type FormState,
+  mergeDiscoveredModelIDs,
+  type ModelRow,
+  modelRow,
+  validateCustomProvider,
+  validateModelDiscovery,
+} from "./dialog-custom-provider-form"
 
 type Props = {
   onBack: () => void
@@ -150,6 +157,51 @@ export function CustomProviderForm(props: { autofocus?: boolean } = {}) {
     return output.result
   }
 
+  const discoverMutation = useMutation(() => ({
+    mutationFn: async (input: NonNullable<ReturnType<typeof validateModelDiscovery>["result"]>) => {
+      const response = await serverSDK().client.modelProfile.discover({ modelDiscoveryInput: input })
+      if (!response.data) throw new Error()
+      return response.data
+    },
+    onSuccess: (result) => {
+      if (result.models.length === 0) {
+        showToast({
+          title: language.t("provider.koala.discovery.empty.title"),
+          description: language.t("provider.koala.discovery.empty.description"),
+        })
+        return
+      }
+
+      const merged = mergeDiscoveredModelIDs(form.models, result.models)
+      setForm("models", merged.models)
+      showToast({
+        variant: "success",
+        icon: "circle-check",
+        title: language.t("provider.koala.discovery.success", { count: merged.addedCount }),
+        description: language.t("provider.koala.discovery.duplicates", { count: result.duplicateCount }),
+      })
+    },
+    onError: () => {
+      showToast({
+        variant: "error",
+        title: language.t("provider.koala.discovery.failure.title"),
+        description: language.t("provider.koala.discovery.failure.description"),
+      })
+    },
+  }))
+
+  const discover = () => {
+    if (discoverMutation.isPending) return
+
+    const output = validateModelDiscovery({ form, t: language.t })
+    batch(() => {
+      setForm("err", "providerID", output.err.providerID)
+      setForm("err", "baseURL", output.err.baseURL)
+    })
+    if (!output.result) return
+    discoverMutation.mutate(output.result)
+  }
+
   const saveMutation = useMutation(() => ({
     mutationFn: async (result: NonNullable<ReturnType<typeof validate>>) => {
       const sdk = serverSDK()
@@ -262,6 +314,19 @@ export function CustomProviderForm(props: { autofocus?: boolean } = {}) {
             value={form.apiKey}
             onChange={(value) => setField("apiKey", value)}
           />
+          <Button
+            type="button"
+            size="small"
+            variant="secondary"
+            onClick={discover}
+            disabled={discoverMutation.isPending}
+            aria-busy={discoverMutation.isPending}
+            class="self-start"
+          >
+            {discoverMutation.isPending
+              ? language.t("provider.koala.discovery.pending")
+              : language.t("provider.koala.discovery.action")}
+          </Button>
         </div>
 
         <div class="flex flex-col gap-3">

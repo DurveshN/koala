@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { type FormState, type ModelRow, modelRow, validateCustomProvider } from "./dialog-custom-provider-form"
+import {
+  type FormState,
+  mergeDiscoveredModelIDs,
+  type ModelRow,
+  modelRow,
+  validateCustomProvider,
+  validateModelDiscovery,
+} from "./dialog-custom-provider-form"
 
 const t = (key: string) => key
 
@@ -269,5 +276,154 @@ describe("validateCustomProvider", () => {
 
     expect(result.err.profile).toBe("provider.koala.error.profile")
     expect(result.result).toBeUndefined()
+  })
+})
+
+describe("validateModelDiscovery", () => {
+  test("accepts partial forms and returns trimmed transient input", () => {
+    const result = validateModelDiscovery({
+      form: form({
+        providerID: " local-provider ",
+        name: "",
+        baseURL: " http://127.0.0.1:11434/v1 ",
+        apiKey: " transient-key ",
+        models: [],
+      }),
+      t,
+    })
+
+    expect(result).toEqual({
+      err: { providerID: undefined, baseURL: undefined },
+      result: {
+        providerID: "local-provider",
+        baseURL: "http://127.0.0.1:11434/v1",
+        apiKey: "transient-key",
+      },
+    })
+  })
+
+  test("omits an empty transient API key", () => {
+    const result = validateModelDiscovery({ form: form({ apiKey: "   " }), t })
+
+    expect(result.result).toEqual({
+      providerID: "local-provider",
+      baseURL: "http://127.0.0.1:11434/v1",
+    })
+  })
+
+  test.each([
+    ["", "provider.koala.error.providerID.required"],
+    ["Invalid Provider", "provider.koala.error.providerID.format"],
+  ])("rejects provider ID %s", (providerID, error) => {
+    const result = validateModelDiscovery({ form: form({ providerID }), t })
+
+    expect(result.err.providerID).toBe(error)
+    expect(result.result).toBeUndefined()
+  })
+
+  test.each([
+    ["", "provider.koala.error.baseURL.required"],
+    ["api.example.com/v1", "provider.koala.error.baseURL.format"],
+    ["http://user:secret@localhost/v1", "provider.koala.error.baseURL.format"],
+    ["http://localhost/v1?token=secret", "provider.koala.error.baseURL.format"],
+    ["http://169.254.169.254/v1", "provider.koala.error.baseURL.format"],
+  ])("applies endpoint policy to base URL %s", (baseURL, error) => {
+    const result = validateModelDiscovery({ form: form({ baseURL }), t })
+
+    expect(result.err.baseURL).toBe(error)
+    expect(result.result).toBeUndefined()
+  })
+})
+
+describe("mergeDiscoveredModelIDs", () => {
+  test("replaces the untouched starter row and defaults discovered rows through modelRow", () => {
+    const result = mergeDiscoveredModelIDs([modelRow()], [{ id: "model-a" }, { id: "model-b" }])
+
+    expect(result.addedCount).toBe(2)
+    expect(result.models).toHaveLength(2)
+    expect(result.models.map((item) => ({ id: item.id, displayName: item.displayName }))).toEqual([
+      { id: "model-a", displayName: "model-a" },
+      { id: "model-b", displayName: "model-b" },
+    ])
+    expect(result.models[0]).toMatchObject({
+      contextWindow: "",
+      maxOutput: "",
+      capabilities: {
+        textInput: "unknown",
+        imageInput: "unknown",
+        toolCalling: "unknown",
+        streaming: "unknown",
+        structuredOutput: "unknown",
+        reasoning: "unknown",
+      },
+      roles: [],
+      enabled: true,
+      priority: "0",
+      err: {},
+    })
+  })
+
+  test("leaves rows unchanged for an empty discovery result", () => {
+    const rows = [model(), model({ row: "m1", id: "manual", displayName: "Manual" })]
+    const result = mergeDiscoveredModelIDs(rows, [])
+
+    expect(result).toEqual({ models: rows, addedCount: 0 })
+    expect(result.models).toBe(rows)
+  })
+
+  test("preserves every manual row and appends only new IDs", () => {
+    const first = model({
+      id: " model-a ",
+      displayName: "Edited model",
+      contextWindow: "65536",
+      roles: ["coding"],
+      enabled: false,
+      err: { maxOutput: "Keep this error" },
+    })
+    const blank = modelRow()
+    blank.row = "m1"
+    blank.priority = "2"
+    const rows = [first, blank]
+    const result = mergeDiscoveredModelIDs(rows, [{ id: "model-a" }, { id: "model-b" }])
+
+    expect(result.addedCount).toBe(1)
+    expect(result.models.slice(0, 2)).toEqual(rows)
+    expect(result.models[0]).toBe(first)
+    expect(result.models[0]).toMatchObject({
+      displayName: "Edited model",
+      contextWindow: "65536",
+      roles: ["coding"],
+      enabled: false,
+      err: { maxOutput: "Keep this error" },
+    })
+    expect(result.models[1]).toBe(blank)
+    expect(result.models[2]).toMatchObject({ id: "model-b", displayName: "model-b" })
+  })
+
+  test("does not add duplicate discovered or existing trimmed IDs", () => {
+    const existing = model({ id: " model-a ", displayName: "Keep me" })
+    const result = mergeDiscoveredModelIDs(
+      [existing],
+      [{ id: "model-a" }, { id: " model-b " }, { id: "model-b" }, { id: "model-c" }, { id: "model-c" }],
+    )
+
+    expect(result.addedCount).toBe(2)
+    expect(result.models.map((item) => item.id)).toEqual([" model-a ", "model-b", "model-c"])
+    expect(result.models[0]).toBe(existing)
+  })
+
+  test("does not delete rows absent from discovery", () => {
+    const rows = [model({ id: "manual-a" }), model({ row: "m1", id: "manual-b" })]
+    const result = mergeDiscoveredModelIDs(rows, [{ id: "model-c" }])
+
+    expect(result.models.map((item) => item.id)).toEqual(["manual-a", "manual-b", "model-c"])
+  })
+
+  test("keeps an untouched starter row when all discovered IDs already exist as blanks", () => {
+    const rows = [modelRow()]
+    const result = mergeDiscoveredModelIDs(rows, [{ id: " " }, { id: "" }])
+
+    expect(result).toEqual({ models: rows, addedCount: 0 })
+    expect(result.models).toBe(rows)
   })
 })

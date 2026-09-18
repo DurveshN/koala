@@ -1,4 +1,5 @@
 import { ModelProfile } from "@koala-ai/core/model/profile"
+import { EndpointPolicy } from "@koala-ai/core/network/endpoint-policy"
 import { Option, Schema } from "effect"
 
 const PROVIDER_ID = /^[a-z0-9][a-z0-9._-]*$/
@@ -48,6 +49,60 @@ type ValidateArgs = {
   t: Translator
   disabledProviders: string[]
   existingProviderIDs: Set<string>
+}
+
+type DiscoveryArgs = {
+  form: Pick<FormState, "providerID" | "baseURL" | "apiKey">
+  t: Translator
+}
+
+export function validateModelDiscovery(input: DiscoveryArgs) {
+  const providerID = input.form.providerID.trim()
+  const baseURL = input.form.baseURL.trim()
+  const apiKey = input.form.apiKey.trim() || undefined
+  const providerIDError = !providerID
+    ? input.t("provider.koala.error.providerID.required")
+    : !PROVIDER_ID.test(providerID)
+      ? input.t("provider.koala.error.providerID.format")
+      : undefined
+  const baseURLError = !baseURL
+    ? input.t("provider.koala.error.baseURL.required")
+    : !EndpointPolicy.parseBaseURL(baseURL).ok
+      ? input.t("provider.koala.error.baseURL.format")
+      : undefined
+  const err = { providerID: providerIDError, baseURL: baseURLError }
+  if (providerIDError || baseURLError) return { err }
+
+  return {
+    err,
+    result: {
+      providerID,
+      baseURL,
+      ...(apiKey ? { apiKey } : {}),
+    },
+  }
+}
+
+export function mergeDiscoveredModelIDs(models: ModelRow[], discovered: ReadonlyArray<{ id: string }>) {
+  const ids = [...new Set(discovered.map((model) => model.id.trim()).filter(Boolean))]
+  if (ids.length === 0) return { models, addedCount: 0 }
+
+  const current = models.length === 1 && isStarterModelRow(models[0]) ? [] : models
+  const seen = new Set(current.map((model) => model.id.trim()).filter(Boolean))
+  const added = ids.filter((id) => !seen.has(id))
+  if (added.length === 0) return { models, addedCount: 0 }
+
+  return {
+    models: [
+      ...current,
+      ...added.map((id) => ({
+        ...modelRow(),
+        id,
+        displayName: id,
+      })),
+    ],
+    addedCount: added.length,
+  }
 }
 
 export function validateCustomProvider(input: ValidateArgs) {
@@ -193,3 +248,17 @@ export const modelRow = (): ModelRow => ({
   priority: "0",
   err: {},
 })
+
+function isStarterModelRow(model: ModelRow | undefined) {
+  return (
+    !!model &&
+    !model.id &&
+    !model.displayName &&
+    !model.contextWindow &&
+    !model.maxOutput &&
+    Object.values(model.capabilities).every((value) => value === "unknown") &&
+    model.roles.length === 0 &&
+    model.enabled &&
+    model.priority === "0"
+  )
+}

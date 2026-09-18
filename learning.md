@@ -110,6 +110,10 @@ work. It is not a substitute for the implementation plan or audit logs.
 - Discovery returns only validated model IDs and a duplicate count; the standard
   model-list response does not provide dependable capabilities or token limits.
 - Discovery response bodies are limited to 1 MiB and 10,000 entries.
+- The Desktop discovery action validates only provider ID and endpoint, then
+  merges returned IDs without deleting or resetting edited/manual model rows.
+- Discovery API keys are transient; only final profile submission writes a key
+  through the auth service.
 
 ## Sandbox
 
@@ -147,3 +151,5 @@ On 2026-09-17, after the first sovereignty slice:
 - `packages/opencode`: `bun typecheck` passed with the transport services.
 - Model discovery and HTTP integration tests are included in the focused
   OpenCode suite; legacy SDK and Desktop production builds pass.
+- Discovery form and fallback-copy tests: 28 passed; locale parity tests: 5
+  passed.

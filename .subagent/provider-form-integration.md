@@ -17,6 +17,14 @@
 
 The existing dialog and scroll container remain in place. Provider fields now describe a local or private OpenAI-compatible endpoint, with no external documentation link or arbitrary header editor. Each model is a vertical card containing identity, limits, six tri-state capability selects, role checkboxes, an enabled switch, and integer priority. Capability and role groups use `fieldset` and `legend`; visible labels and select trigger relationships provide keyboard-accessible names. Legacy and V2 provider pickers and settings use the same local/private model title while retaining the Custom tag.
 
+Model discovery is available next to the base URL and API key fields before submission. It validates only the provider ID and endpoint, disables its action while pending, and leaves model capabilities, roles, and limits for the user to complete. An empty response preserves all rows and reports that no IDs were returned. Success reports the number of rows added and the server-provided duplicate count; request failures use fixed credential-free copy.
+
+## Discovery
+
+Discovery calls only the generated `modelProfile.discover` operation with the trimmed provider ID, base URL, and optional transient API key. It does not write auth, profiles, or config. The base URL is checked with Koala's static `EndpointPolicy.parseBaseURL` before the request.
+
+Discovered IDs are merged without deleting existing rows. A single untouched starter row is replaced; otherwise every row remains in order. Existing edited data wins when its trimmed ID matches, and only new trimmed IDs are appended. New rows use `modelRow` defaults and initially use the model ID as their display name.
+
 ## Persistence
 
 Submission requires the V1 protocol. Validation returns a `ModelProfile.Provider` decoded by the Koala schema and a separate optional raw key. When supplied, the key is written through `auth.set` and the profile contains only `opencode-auth:<providerID>` as its secret reference. The form lists profiles through the generated SDK, updates an existing provider ID or creates a new one, then removes the provider ID from `disabled_providers` through `updateConfig`. It does not write a provider config subtree. Empty-key updates skip auth writes and preserve an existing profile secret reference. The success toast reports that the configuration was saved and does not claim endpoint connectivity or availability.
@@ -32,11 +40,16 @@ New copy intentionally exists only in `i18n/koala.ts`. It is merged into the Eng
 - `packages/app` typecheck: passed.
 - `packages/desktop` typecheck: passed.
 - Prettier formatting: completed for changed app files.
-- Targeted Oxlint: 0 errors; 21 existing warnings outside the revised lines in the checked legacy files.
+- Targeted Oxlint: 0 warnings, 0 errors.
+- Desktop production build: passed.
 - Git diff check: passed.
+
+Discovery validation and merge tests cover partial forms, transient keys, endpoint-policy denials, starter replacement, empty responses, edited-row preservation, deduplication, defaults, append order, and retention of rows absent from discovery.
 
 ## Risks
 
 - Saving a valid profile does not verify that the configured endpoint is reachable or OpenAI-compatible.
 - Auth, profile, and config updates are separate requests, so a later request failure can leave an earlier successful write in place.
 - Non-English users see the intentional English fallback until reviewed translations are added.
+- Discovery verifies only that the endpoint can list model IDs; users must still enter limits and review capabilities and roles before submission.
+- A successful discovery response can become stale before the profile is submitted, and model IDs that disappear later remain in the form by design.
