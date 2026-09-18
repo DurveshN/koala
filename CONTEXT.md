@@ -90,9 +90,12 @@ this transport with transient-key support, bounded responses, and redacted
 errors. The Desktop form now exposes this discovery action and merges model IDs
 without discarding manual edits. Canonical profile-backed AI SDK inference now
 uses the same pinned transport, with profile base URL and fetch policy taking
-precedence over config/plugin overrides. The next step is active probes for
-`unknown` capabilities. Full deletion of dormant sharing APIs and persistence
-follows in dependency order.
+precedence over config/plugin overrides. Capability probing is now implemented
+end to end: a read-only authenticated API runs a text control followed by
+requested OpenAI-compatible streaming, tool, structured-output, image, and
+reasoning probes in a fixed sequential order. The Desktop applies only verified
+yes/no results to fields that remain unknown and ignores stale responses. Full
+deletion of dormant sharing APIs and persistence follows in dependency order.
 
 ## Upstream OpenCode Session Runtime
 

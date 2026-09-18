@@ -111,6 +111,7 @@ import type {
   McpRemoteConfig,
   McpStatusErrors,
   McpStatusResponses,
+  ModelCapabilityProbeInput,
   ModelDiscoveryInput,
   ModelProfileCreateErrors,
   ModelProfileCreateResponses,
@@ -120,6 +121,8 @@ import type {
   ModelProfileDiscoverResponses,
   ModelProfileListErrors,
   ModelProfileListResponses,
+  ModelProfileProbeErrors,
+  ModelProfileProbeResponses,
   ModelProfileProvider,
   ModelProfileUpdateErrors,
   ModelProfileUpdateResponses,
@@ -1449,6 +1452,30 @@ export class ModelProfile extends HeyApiClient {
       ThrowOnError
     >({
       url: "/global/model-profile/discover",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Probe model capabilities
+   *
+   * Probe model capabilities through an OpenAI-compatible provider endpoint.
+   */
+  public probe<ThrowOnError extends boolean = false>(
+    parameters?: {
+      modelCapabilityProbeInput?: ModelCapabilityProbeInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ key: "modelCapabilityProbeInput", map: "body" }] }])
+    return (options?.client ?? this.client).post<ModelProfileProbeResponses, ModelProfileProbeErrors, ThrowOnError>({
+      url: "/global/model-profile/probe",
       ...options,
       ...params,
       headers: {

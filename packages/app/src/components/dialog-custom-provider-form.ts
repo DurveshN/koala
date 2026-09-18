@@ -5,6 +5,16 @@ import { Option, Schema } from "effect"
 const PROVIDER_ID = /^[a-z0-9][a-z0-9._-]*$/
 const POSITIVE_INTEGER = /^[1-9]\d*$/
 const INTEGER = /^-?\d+$/
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/
+const MAXIMUM_PROBE_MODEL_ID_LENGTH = 512
+const PROBE_CAPABILITIES = [
+  "textInput",
+  "imageInput",
+  "toolCalling",
+  "streaming",
+  "structuredOutput",
+  "reasoning",
+] as const satisfies ReadonlyArray<ModelProfile.Capability>
 
 type Translator = (key: string, vars?: Record<string, string | number | boolean>) => string
 
@@ -54,6 +64,152 @@ type ValidateArgs = {
 type DiscoveryArgs = {
   form: Pick<FormState, "providerID" | "baseURL" | "apiKey">
   t: Translator
+}
+
+type ProbeArgs = {
+  form: Pick<FormState, "providerID" | "baseURL" | "apiKey">
+  model: ModelRow
+  t: Translator
+}
+
+export type ModelCapabilityProbeSnapshot = {
+  row: string
+  providerID: string
+  baseURL: string
+  apiKey: string
+  modelID: string
+  requestedCapabilities: ModelProfile.Capability[]
+  input: {
+    providerID: string
+    baseURL: string
+    modelID: string
+    capabilities: ModelProfile.Capability[]
+    apiKey?: string
+  }
+}
+
+type ModelCapabilityProbeResult = {
+  modelID: string
+  results: ReadonlyArray<{
+    capability: ModelProfile.Capability
+    classification: ModelProfile.Detectable
+  }>
+}
+
+export function validateModelCapabilityProbe(input: ProbeArgs) {
+  const requestedCapabilities = PROBE_CAPABILITIES.filter(
+    (capability) => input.model.capabilities[capability] === "unknown",
+  )
+  if (requestedCapabilities.length === 0) {
+    return {
+      err: { providerID: undefined, baseURL: undefined, modelID: undefined },
+      complete: true as const,
+    }
+  }
+
+  const providerID = input.form.providerID.trim()
+  const baseURL = input.form.baseURL.trim()
+  const apiKey = input.form.apiKey.trim() || undefined
+  const modelID = input.model.id.trim()
+  const providerIDError = !providerID
+    ? input.t("provider.koala.error.providerID.required")
+    : !PROVIDER_ID.test(providerID)
+      ? input.t("provider.koala.error.providerID.format")
+      : undefined
+  const baseURLError = !baseURL
+    ? input.t("provider.koala.error.baseURL.required")
+    : !EndpointPolicy.parseBaseURL(baseURL).ok
+      ? input.t("provider.koala.error.baseURL.format")
+      : undefined
+  const modelIDError = !modelID
+    ? input.t("provider.koala.error.required")
+    : modelID.length > MAXIMUM_PROBE_MODEL_ID_LENGTH || CONTROL_CHARACTERS.test(modelID)
+      ? input.t("provider.koala.probe.error.modelID")
+      : undefined
+  const err = { providerID: providerIDError, baseURL: baseURLError, modelID: modelIDError }
+  if (providerIDError || baseURLError || modelIDError) return { err, complete: false as const }
+
+  return {
+    err,
+    complete: false as const,
+    result: {
+      row: input.model.row,
+      providerID: input.form.providerID,
+      baseURL: input.form.baseURL,
+      apiKey: input.form.apiKey,
+      modelID: input.model.id,
+      requestedCapabilities: [...requestedCapabilities],
+      input: {
+        providerID,
+        baseURL,
+        modelID,
+        capabilities: [...requestedCapabilities],
+        ...(apiKey ? { apiKey } : {}),
+      },
+    } satisfies ModelCapabilityProbeSnapshot,
+  }
+}
+
+export function applyModelCapabilityProbeResult(
+  form: Pick<FormState, "providerID" | "baseURL" | "apiKey" | "models">,
+  snapshot: ModelCapabilityProbeSnapshot,
+  result: ModelCapabilityProbeResult,
+) {
+  const summary = summarizeProbeResult(snapshot.requestedCapabilities, result.results)
+  const index = form.models.findIndex((model) => model.row === snapshot.row)
+  const model = form.models[index]
+  const stale =
+    !model ||
+    form.providerID !== snapshot.providerID ||
+    form.baseURL !== snapshot.baseURL ||
+    form.apiKey !== snapshot.apiKey ||
+    model.id !== snapshot.modelID ||
+    result.modelID !== snapshot.input.modelID
+  if (stale) return { models: form.models, stale: true, summary }
+
+  const results = new Map(
+    result.results
+      .filter((entry) => snapshot.requestedCapabilities.includes(entry.capability))
+      .map((entry) => [entry.capability, entry.classification]),
+  )
+  const capabilities = snapshot.requestedCapabilities.reduce((current, capability) => {
+    const classification = results.get(capability)
+    if (current[capability] !== "unknown" || (classification !== "yes" && classification !== "no")) return current
+    return { ...current, [capability]: classification }
+  }, model.capabilities)
+  const changed = snapshot.requestedCapabilities.some(
+    (capability) => capabilities[capability] !== model.capabilities[capability],
+  )
+  if (!changed) return { models: form.models, stale: false, summary }
+
+  return {
+    models: form.models.map((current, currentIndex) =>
+      currentIndex === index ? { ...current, capabilities } : current,
+    ),
+    stale: false,
+    summary,
+  }
+}
+
+function summarizeProbeResult(
+  requested: ReadonlyArray<ModelProfile.Capability>,
+  results: ModelCapabilityProbeResult["results"],
+) {
+  const classifications = new Map(
+    results
+      .filter((entry) => requested.includes(entry.capability))
+      .map((entry) => [entry.capability, entry.classification]),
+  )
+  return requested.reduce(
+    (counts, capability) => {
+      const classification = classifications.get(capability)
+      if (classification === "yes") counts.verified++
+      if (classification === "no") counts.rejected++
+      if (classification !== "yes" && classification !== "no") counts.unknown++
+      return counts
+    },
+    { verified: 0, rejected: 0, unknown: 0 },
+  )
 }
 
 export function validateModelDiscovery(input: DiscoveryArgs) {
@@ -118,7 +274,7 @@ export function validateCustomProvider(input: ValidateArgs) {
   const nameError = !name ? input.t("provider.koala.error.name.required") : undefined
   const urlError = !baseURL
     ? input.t("provider.koala.error.baseURL.required")
-    : !URL.canParse(baseURL) || !["http:", "https:"].includes(new URL(baseURL).protocol)
+    : !EndpointPolicy.parseBaseURL(baseURL).ok
       ? input.t("provider.koala.error.baseURL.format")
       : undefined
   const existsError = idError

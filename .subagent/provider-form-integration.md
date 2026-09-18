@@ -19,11 +19,19 @@ The existing dialog and scroll container remain in place. Provider fields now de
 
 Model discovery is available next to the base URL and API key fields before submission. It validates only the provider ID and endpoint, disables its action while pending, and leaves model capabilities, roles, and limits for the user to complete. An empty response preserves all rows and reports that no IDs were returned. Success reports the number of rows added and the server-provided duplicate count; request failures use fixed credential-free copy.
 
+Each model capability fieldset also provides one probe action. A shared mutation probes one row at a time and disables every probe action, discovery, and submission while pending. Capability selectors remain editable so a manual choice made during a probe stays authoritative. Rows with no unknown capabilities report that no request was sent. Help copy explains that reasoning uses observable response metadata and structured output uses the native JSON Schema response format.
+
 ## Discovery
 
 Discovery calls only the generated `modelProfile.discover` operation with the trimmed provider ID, base URL, and optional transient API key. It does not write auth, profiles, or config. The base URL is checked with Koala's static `EndpointPolicy.parseBaseURL` before the request.
 
 Discovered IDs are merged without deleting existing rows. A single untouched starter row is replaced; otherwise every row remains in order. Existing edited data wins when its trimmed ID matches, and only new trimmed IDs are appended. New rows use `modelRow` defaults and initially use the model ID as their display name.
+
+## Capability Probing
+
+The generated `modelProfile.probe` operation receives the trimmed provider ID, base URL, model ID, canonical list of currently unknown capabilities, and optional transient API key. The request snapshot also retains exact raw provider, endpoint, credential, model, and row identity values. It does not write auth, profiles, or config.
+
+On success, the form rejects the entire result if any snapshotted identity changed, the row was removed or replaced, or the returned model ID differs. Otherwise it applies only requested `yes` or `no` classifications that are still `unknown`; unknown classifications, manual choices, unrequested capabilities, and unrelated row fields remain unchanged. The success toast reports verified yes, endpoint-rejected no, and still-unknown counts without showing evidence details, request data, endpoint errors, or credentials.
 
 ## Persistence
 
@@ -35,7 +43,7 @@ New copy intentionally exists only in `i18n/koala.ts`. It is merged into the Eng
 
 ## Verification
 
-- Focused form and Koala i18n tests: 28 passed, 0 failed.
+- Focused form and Koala i18n tests: 68 passed, 0 failed.
 - App i18n parity tests: 5 passed, 0 failed.
 - `packages/app` typecheck: passed.
 - `packages/desktop` typecheck: passed.
@@ -46,6 +54,8 @@ New copy intentionally exists only in `i18n/koala.ts`. It is merged into the Eng
 
 Discovery validation and merge tests cover partial forms, transient keys, endpoint-policy denials, starter replacement, empty responses, edited-row preservation, deduplication, defaults, append order, and retention of rows absent from discovery.
 
+Capability-probe tests cover canonical unknown selection, endpoint and bounded model-ID validation, transient keys, no-request completion, yes/no/unknown application, manual override precedence, unrequested results, summary counts, and stale provider, endpoint, credential, model, row, removal, and response identities.
+
 ## Risks
 
 - Saving a valid profile does not verify that the configured endpoint is reachable or OpenAI-compatible.
@@ -53,3 +63,4 @@ Discovery validation and merge tests cover partial forms, transient keys, endpoi
 - Non-English users see the intentional English fallback until reviewed translations are added.
 - Discovery verifies only that the endpoint can list model IDs; users must still enter limits and review capabilities and roles before submission.
 - A successful discovery response can become stale before the profile is submitted, and model IDs that disappear later remain in the form by design.
+- Capability probes make active model requests and can consume endpoint resources. Results describe one bounded observation and can vary with deployment state or model behavior.

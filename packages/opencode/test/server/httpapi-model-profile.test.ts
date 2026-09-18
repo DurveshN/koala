@@ -12,6 +12,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
 import { Installation } from "../../src/installation"
+import { ModelCapabilityProbe } from "../../src/koala/model-capability-probe"
 import { ModelDiscovery } from "../../src/koala/model-discovery"
 import { ModelProfileStore } from "../../src/koala/model-profile-store"
 import { InstanceStore } from "../../src/project/instance-store"
@@ -29,6 +30,7 @@ import { pollWithTimeout, testEffect } from "../lib/effect"
 const data = path.join(os.tmpdir(), `opencode-model-profile-http-${process.pid}`)
 let disposals = 0
 const discoveryInputs: ModelDiscovery.Input[] = []
+const probeInputs: ModelCapabilityProbe.Input[] = []
 
 const instanceStoreLayer = Layer.mock(InstanceStore.Service, {
   disposeAll: () => Effect.sync(() => disposals++).pipe(Effect.asVoid),
@@ -56,7 +58,52 @@ const discoveryErrorLayer = Layer.mock(ModelDiscovery.Service, {
   },
 })
 
-const routesWith = (modelDiscoveryLayer: Layer.Layer<ModelDiscovery.Service>) =>
+const capabilityProbeLayer = Layer.mock(ModelCapabilityProbe.Service, {
+  probe: (input) =>
+    Effect.sync(() => {
+      probeInputs.push(input)
+      return {
+        probeVersion: 1 as const,
+        modelID: input.modelID,
+        results: [
+          {
+            capability: "textInput" as const,
+            classification: "yes" as const,
+            kind: "verified" as const,
+            evidenceCode: "exact_text_nonce" as const,
+            outputSecret: "probe-output-secret-canary",
+          },
+          {
+            capability: "streaming" as const,
+            classification: "unknown" as const,
+            kind: "operational" as const,
+            evidenceCode: "rate_limited" as const,
+            httpStatus: 429,
+          },
+          {
+            capability: "toolCalling" as const,
+            classification: "no" as const,
+            kind: "endpoint-rejection" as const,
+            evidenceCode: "endpoint_rejection" as const,
+            httpStatus: 422,
+          },
+        ],
+        apiKey: "probe-output-secret-canary",
+      }
+    }),
+})
+
+const capabilityProbeErrorLayer = Layer.mock(ModelCapabilityProbe.Service, {
+  probe: (input) =>
+    input.providerID === "invalid-service"
+      ? Effect.fail(new ModelCapabilityProbe.InvalidInputError({ reason: "invalid-endpoint" }))
+      : Effect.fail(new ModelCapabilityProbe.InternalError()),
+})
+
+const routesWith = (
+  modelDiscoveryLayer: Layer.Layer<ModelDiscovery.Service>,
+  modelCapabilityProbeLayer: Layer.Layer<ModelCapabilityProbe.Service> = capabilityProbeLayer,
+) =>
   HttpRouter.serve(
     HttpApiBuilder.layer(RootHttpApi).pipe(
       Layer.provide([controlHandlers, controlPlaneHandlers, globalHandlers, modelProfileHandlers]),
@@ -71,6 +118,7 @@ const routesWith = (modelDiscoveryLayer: Layer.Layer<ModelDiscovery.Service>) =>
     Layer.provide(Layer.mock(Auth.Service)({})),
     Layer.provide(Layer.mock(Config.Service)({})),
     Layer.provide(modelDiscoveryLayer),
+    Layer.provide(modelCapabilityProbeLayer),
     Layer.provide(Layer.mock(MoveSession.Service)({})),
     Layer.provide(
       Layer.mock(Installation.Service)({
@@ -96,6 +144,9 @@ const failureStoreLayer = Layer.mock(ModelProfileStore.Service, {
 const it = testEffect(routes.pipe(Layer.provide(storeLayer)))
 const itFailure = testEffect(routes.pipe(Layer.provide(failureStoreLayer)))
 const itDiscoveryError = testEffect(routesWith(discoveryErrorLayer).pipe(Layer.provide(storeLayer)))
+const itCapabilityProbeError = testEffect(
+  routesWith(discoveryLayer, capabilityProbeErrorLayer).pipe(Layer.provide(storeLayer)),
+)
 
 const model = (id = "local-model") => ({
   id,
@@ -140,10 +191,87 @@ const waitForDisposals = (count: number) =>
 afterEach(async () => {
   disposals = 0
   discoveryInputs.length = 0
+  probeInputs.length = 0
   await rm(data, { recursive: true, force: true })
 })
 
 describe("model profile HttpApi", () => {
+  it.live("probes capabilities in service order with a transient redacted key and no mutations", () =>
+    Effect.gen(function* () {
+      const response = yield* request("POST", ModelProfilePaths.probe, {
+        providerID: "local",
+        baseURL: "http://127.0.0.1:11434/v1",
+        modelID: "local-model",
+        capabilities: ["toolCalling", "textInput", "streaming"],
+        apiKey: "transient-probe-secret-canary",
+      })
+      const body = yield* response.text
+
+      expect(response.status).toBe(200)
+      expect(body).toBe(
+        '{"probeVersion":1,"modelID":"local-model","results":[{"capability":"textInput","classification":"yes","kind":"verified","evidenceCode":"exact_text_nonce"},{"capability":"streaming","classification":"unknown","kind":"operational","evidenceCode":"rate_limited","httpStatus":429},{"capability":"toolCalling","classification":"no","kind":"endpoint-rejection","evidenceCode":"endpoint_rejection","httpStatus":422}]}',
+      )
+      expect(probeInputs).toHaveLength(1)
+      const probeInput = probeInputs[0]
+      if (!probeInput?.apiKey) throw new Error("expected probe input with transient API key")
+      expect(probeInput.capabilities).toEqual(["toolCalling", "textInput", "streaming"])
+      expect(Redacted.value(probeInput.apiKey)).toBe("transient-probe-secret-canary")
+      expect(body).not.toContain("transient-probe-secret-canary")
+      expect(body).not.toContain("probe-output-secret-canary")
+      expect((yield* request("GET", ModelProfilePaths.root)).status).toBe(200)
+      expect(yield* (yield* request("GET", ModelProfilePaths.root)).json).toEqual([])
+      expect(disposals).toBe(0)
+    }),
+  )
+
+  it.live("rejects invalid and duplicate capability payloads without invoking the service", () =>
+    Effect.gen(function* () {
+      const inputs = [
+        ["textInput", "unsupported"],
+        ["textInput", "textInput"],
+      ]
+
+      for (const capabilities of inputs) {
+        const response = yield* request("POST", ModelProfilePaths.probe, {
+          providerID: "local",
+          baseURL: "http://127.0.0.1:11434/v1",
+          modelID: "local-model",
+          capabilities,
+          apiKey: "invalid-probe-secret-canary",
+        })
+        const body = yield* response.text
+        expect(response.status).toBe(400)
+        expect(body).not.toContain("invalid-probe-secret-canary")
+      }
+      expect(probeInputs).toHaveLength(0)
+      expect(disposals).toBe(0)
+    }),
+  )
+
+  itCapabilityProbeError.live("maps probe service errors to the declared opaque statuses", () =>
+    Effect.gen(function* () {
+      const responses = yield* Effect.forEach(["invalid-service", "internal-service"], (providerID) =>
+        request("POST", ModelProfilePaths.probe, {
+          providerID,
+          baseURL: "http://127.0.0.1:11434/v1",
+          modelID: "local-model",
+          capabilities: ["textInput"],
+          apiKey: "service-probe-secret-canary",
+        }),
+      )
+      const bodies = yield* Effect.forEach(responses, (response) => response.text)
+
+      expect(responses.map((response) => response.status)).toEqual([400, 500])
+      expect(bodies[0]).toContain('"_tag":"InvalidRequestError"')
+      expect(bodies[0]).toContain('"kind":"invalid-endpoint"')
+      expect(bodies[1]).toContain('"_tag":"UnknownError"')
+      expect(bodies[1]).toContain("Failed to probe model capabilities")
+      expect(bodies.join("\n")).not.toContain("service-probe-secret-canary")
+      expect(bodies[1]).not.toContain("authentication")
+      expect(disposals).toBe(0)
+    }),
+  )
+
   it.live("discovers models with a redacted transient key without mutations or disposal", () =>
     Effect.gen(function* () {
       const response = yield* request("POST", ModelProfilePaths.discover, {

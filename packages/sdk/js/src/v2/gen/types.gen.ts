@@ -2072,6 +2072,56 @@ export type TimeoutError = {
   operation?: string
 }
 
+export type ModelCapabilityProbeInput = {
+  providerID: string
+  baseURL: string
+  modelID: string
+  capabilities: Array<"textInput" | "imageInput" | "toolCalling" | "streaming" | "structuredOutput" | "reasoning">
+  apiKey?: string
+}
+
+export type ModelCapabilityProbeResult = {
+  capability: "textInput" | "imageInput" | "toolCalling" | "streaming" | "structuredOutput" | "reasoning"
+  classification: "yes" | "no" | "unknown"
+  kind: "verified" | "endpoint-rejection" | "ambiguous-model-behavior" | "operational"
+  evidenceCode:
+    | "exact_text_nonce"
+    | "exact_stream_nonce"
+    | "exact_tool_arguments"
+    | "exact_structured_object"
+    | "exact_image_nonce"
+    | "correct_answer_with_reasoning"
+    | "endpoint_rejection"
+    | "baseline_unverified"
+    | "response_mismatch"
+    | "stream_terminal_missing"
+    | "authentication_rejected"
+    | "endpoint_not_found"
+    | "upstream_timeout"
+    | "rate_limited"
+    | "upstream_failure"
+    | "http_error"
+    | "policy_denied"
+    | "redirect_denied"
+    | "transport_error"
+    | "request_timeout"
+    | "suite_timeout"
+    | "request_limit"
+    | "response_limit"
+    | "assistant_text_limit"
+    | "tool_arguments_limit"
+    | "sse_event_limit"
+    | "sse_event_count_limit"
+    | "response_parse_error"
+  httpStatus?: number
+}
+
+export type ModelCapabilityProbeResultSet = {
+  probeVersion: 1
+  modelID: string
+  results: Array<ModelCapabilityProbeResult>
+}
+
 export type ProviderNotFoundError = {
   _tag: "ProviderNotFoundError"
   providerID: string
@@ -7549,6 +7599,35 @@ export type ModelProfileDiscoverResponses = {
 }
 
 export type ModelProfileDiscoverResponse = ModelProfileDiscoverResponses[keyof ModelProfileDiscoverResponses]
+
+export type ModelProfileProbeData = {
+  body?: ModelCapabilityProbeInput
+  path?: never
+  query?: never
+  url: "/global/model-profile/probe"
+}
+
+export type ModelProfileProbeErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnknownError
+   */
+  500: UnknownError1
+}
+
+export type ModelProfileProbeError = ModelProfileProbeErrors[keyof ModelProfileProbeErrors]
+
+export type ModelProfileProbeResponses = {
+  /**
+   * Model capability probe results
+   */
+  200: ModelCapabilityProbeResultSet
+}
+
+export type ModelProfileProbeResponse = ModelProfileProbeResponses[keyof ModelProfileProbeResponses]
 
 export type ModelProfileDeleteData = {
   body?: never

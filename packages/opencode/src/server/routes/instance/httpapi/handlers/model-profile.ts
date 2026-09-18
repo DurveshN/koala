@@ -2,6 +2,7 @@ import { ModelProfile } from "@koala-ai/core/model/profile"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { EffectBridge } from "@/effect/bridge"
+import { ModelCapabilityProbe } from "@/koala/model-capability-probe"
 import { ModelDiscovery } from "@/koala/model-discovery"
 import { ModelProfileStore } from "@/koala/model-profile-store"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
@@ -19,6 +20,7 @@ export const modelProfileHandlers = HttpApiBuilder.group(RootHttpApi, "modelProf
   Effect.gen(function* () {
     const store = yield* ModelProfileStore.Service
     const discovery = yield* ModelDiscovery.Service
+    const capabilityProbe = yield* ModelCapabilityProbe.Service
     const bridge = yield* EffectBridge.make()
     const dispose = () => bridge.fork(disposeAllInstancesAndEmitGlobalDisposed({ swallowErrors: true }))
 
@@ -42,6 +44,10 @@ export const modelProfileHandlers = HttpApiBuilder.group(RootHttpApi, "modelProf
 
     const discover = Effect.fn("ModelProfileHttpApi.discover")(function* (ctx: { payload: ModelDiscovery.Input }) {
       return yield* discovery.discover(ctx.payload).pipe(Effect.mapError(discoveryError))
+    })
+
+    const probe = Effect.fn("ModelProfileHttpApi.probe")(function* (ctx: { payload: ModelCapabilityProbe.Input }) {
+      return yield* capabilityProbe.probe(ctx.payload).pipe(Effect.mapError(capabilityProbeError))
     })
 
     const update = Effect.fn("ModelProfileHttpApi.update")(function* (ctx: {
@@ -83,6 +89,7 @@ export const modelProfileHandlers = HttpApiBuilder.group(RootHttpApi, "modelProf
       .handle("list", list)
       .handle("create", create)
       .handle("discover", discover)
+      .handle("probe", probe)
       .handle("update", update)
       .handle("remove", remove)
   }),
@@ -111,4 +118,11 @@ function discoveryError(error: ModelDiscovery.Error) {
     })
   }
   return new UnknownError({ message: error.message })
+}
+
+function capabilityProbeError(error: ModelCapabilityProbe.Error) {
+  if (error instanceof ModelCapabilityProbe.InvalidInputError) {
+    return new InvalidRequestError({ message: error.message, kind: error.reason })
+  }
+  return new UnknownError({ message: "Failed to probe model capabilities" })
 }

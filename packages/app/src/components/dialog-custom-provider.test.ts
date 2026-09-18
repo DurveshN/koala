@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import {
+  applyModelCapabilityProbeResult,
   type FormState,
   mergeDiscoveredModelIDs,
   type ModelRow,
   modelRow,
   validateCustomProvider,
+  validateModelCapabilityProbe,
   validateModelDiscovery,
 } from "./dialog-custom-provider-form"
 
@@ -51,6 +53,13 @@ const validate = (
     disabledProviders: options.disabledProviders ?? [],
     existingProviderIDs: options.existingProviderIDs ?? new Set(),
   })
+
+const probeSnapshot = (value: FormState, row = value.models[0]) => {
+  if (!row) throw new Error("Expected a model row")
+  const output = validateModelCapabilityProbe({ form: value, model: row, t })
+  if (!output.result) throw new Error("Expected a valid probe snapshot")
+  return output.result
+}
 
 describe("validateCustomProvider", () => {
   test("creates model rows with unknown capabilities and local-profile defaults", () => {
@@ -188,7 +197,13 @@ describe("validateCustomProvider", () => {
     expect(result.result).toBeUndefined()
   })
 
-  test.each(["api.example.com/v1", "ftp://api.example.com/v1", "https://"])(
+  test.each([
+    "api.example.com/v1",
+    "ftp://api.example.com/v1",
+    "https://",
+    "http://169.254.169.254/v1",
+    "http://user:secret@localhost/v1",
+  ])(
     "rejects malformed or non-HTTP URL %s",
     (baseURL) => {
       const result = validate(form({ baseURL }))
@@ -425,5 +440,239 @@ describe("mergeDiscoveredModelIDs", () => {
 
     expect(result).toEqual({ models: rows, addedCount: 0 })
     expect(result.models).toBe(rows)
+  })
+})
+
+describe("validateModelCapabilityProbe", () => {
+  test("selects only unknown capabilities in canonical order and snapshots exact identities", () => {
+    const value = form({
+      providerID: " local-provider ",
+      baseURL: " http://127.0.0.1:11434/v1 ",
+      apiKey: " transient-key ",
+      models: [
+        model({
+          id: " model-a ",
+          capabilities: {
+            textInput: "unknown",
+            imageInput: "yes",
+            toolCalling: "unknown",
+            streaming: "unknown",
+            structuredOutput: "no",
+            reasoning: "unknown",
+          },
+        }),
+      ],
+    })
+    const result = validateModelCapabilityProbe({ form: value, model: value.models[0], t })
+
+    expect(result.complete).toBeFalse()
+    expect(result.err).toEqual({ providerID: undefined, baseURL: undefined, modelID: undefined })
+    expect(result.result).toEqual({
+      row: "m0",
+      providerID: " local-provider ",
+      baseURL: " http://127.0.0.1:11434/v1 ",
+      apiKey: " transient-key ",
+      modelID: " model-a ",
+      requestedCapabilities: ["textInput", "toolCalling", "streaming", "reasoning"],
+      input: {
+        providerID: "local-provider",
+        baseURL: "http://127.0.0.1:11434/v1",
+        modelID: "model-a",
+        capabilities: ["textInput", "toolCalling", "streaming", "reasoning"],
+        apiKey: "transient-key",
+      },
+    })
+  })
+
+  test("omits a blank transient key", () => {
+    const value = form({ apiKey: "   " })
+
+    expect(probeSnapshot(value).input.apiKey).toBeUndefined()
+  })
+
+  test("accepts the bounded model ID without requiring other row fields", () => {
+    const row = modelRow()
+    row.id = "x".repeat(512)
+    const value = form({ models: [row] })
+    const result = validateModelCapabilityProbe({ form: value, model: row, t })
+
+    expect(result.result?.input.modelID).toBe("x".repeat(512))
+    expect(result.result?.input.capabilities).toHaveLength(6)
+  })
+
+  test.each([
+    ["a missing provider ID", form({ providerID: "" }), "providerID", "provider.koala.error.providerID.required"],
+    [
+      "a malformed provider ID",
+      form({ providerID: "Invalid Provider" }),
+      "providerID",
+      "provider.koala.error.providerID.format",
+    ],
+    ["a malformed base URL", form({ baseURL: "https://" }), "baseURL", "provider.koala.error.baseURL.format"],
+    [
+      "a denied endpoint",
+      form({ baseURL: "http://169.254.169.254/v1" }),
+      "baseURL",
+      "provider.koala.error.baseURL.format",
+    ],
+    ["a blank model ID", form({ models: [model({ id: " " })] }), "modelID", "provider.koala.error.required"],
+    [
+      "an oversized model ID",
+      form({ models: [model({ id: "x".repeat(513) })] }),
+      "modelID",
+      "provider.koala.probe.error.modelID",
+    ],
+    [
+      "a model ID with control characters",
+      form({ models: [model({ id: "bad\nmodel" })] }),
+      "modelID",
+      "provider.koala.probe.error.modelID",
+    ],
+  ] as const)("rejects %s", (_label, value, field, error) => {
+    const result = validateModelCapabilityProbe({ form: value, model: value.models[0]!, t })
+
+    expect(result.err[field]).toBe(error)
+    expect(result.result).toBeUndefined()
+  })
+
+  test("returns a no-request outcome when every capability is complete", () => {
+    const value = form({
+      models: [
+        model({
+          capabilities: {
+            textInput: "yes",
+            imageInput: "yes",
+            toolCalling: "yes",
+            streaming: "yes",
+            structuredOutput: "yes",
+            reasoning: "yes",
+          },
+        }),
+      ],
+    })
+    const result = validateModelCapabilityProbe({ form: value, model: value.models[0], t })
+
+    expect(result.complete).toBeTrue()
+    expect(result.result).toBeUndefined()
+  })
+})
+
+describe("applyModelCapabilityProbeResult", () => {
+  test("applies requested yes and no values, leaves unknown values, and reports summary counts", () => {
+    const current = model({
+      displayName: "Edited display name",
+      roles: ["coding"],
+      priority: "7",
+    })
+    const value = form({ models: [current] })
+    const snapshot = probeSnapshot(value)
+    const result = applyModelCapabilityProbeResult(value, snapshot, {
+      modelID: "model-a",
+      results: [
+        { capability: "textInput", classification: "yes" },
+        { capability: "imageInput", classification: "no" },
+        { capability: "toolCalling", classification: "unknown" },
+        { capability: "streaming", classification: "yes" },
+        { capability: "structuredOutput", classification: "no" },
+        { capability: "reasoning", classification: "unknown" },
+      ],
+    })
+
+    expect(result.stale).toBeFalse()
+    expect(result.summary).toEqual({ verified: 2, rejected: 2, unknown: 2 })
+    expect(result.models[0]).toMatchObject({
+      displayName: "Edited display name",
+      roles: ["coding"],
+      priority: "7",
+      capabilities: {
+        textInput: "yes",
+        imageInput: "no",
+        toolCalling: "unknown",
+        streaming: "yes",
+        structuredOutput: "no",
+        reasoning: "unknown",
+      },
+    })
+  })
+
+  test("preserves a manual capability override made while the request is pending", () => {
+    const value = form()
+    const snapshot = probeSnapshot(value)
+    const current = form({
+      models: [
+        model({
+          capabilities: { ...value.models[0].capabilities, textInput: "no", reasoning: "yes" },
+        }),
+      ],
+    })
+    const result = applyModelCapabilityProbeResult(current, snapshot, {
+      modelID: "model-a",
+      results: [
+        { capability: "textInput", classification: "yes" },
+        { capability: "reasoning", classification: "no" },
+        { capability: "streaming", classification: "yes" },
+      ],
+    })
+
+    expect(result.stale).toBeFalse()
+    expect(result.models[0]?.capabilities).toMatchObject({ textInput: "no", reasoning: "yes", streaming: "yes" })
+  })
+
+  test("ignores unrequested results and counts missing requested results as unknown", () => {
+    const value = form({
+      models: [
+        model({
+          capabilities: {
+            textInput: "unknown",
+            imageInput: "yes",
+            toolCalling: "yes",
+            streaming: "yes",
+            structuredOutput: "yes",
+            reasoning: "yes",
+          },
+        }),
+      ],
+    })
+    const snapshot = probeSnapshot(value)
+    const result = applyModelCapabilityProbeResult(value, snapshot, {
+      modelID: "model-a",
+      results: [{ capability: "imageInput", classification: "no" }],
+    })
+
+    expect(result.summary).toEqual({ verified: 0, rejected: 0, unknown: 1 })
+    expect(result.models).toBe(value.models)
+    expect(result.models[0]?.capabilities).toMatchObject({ textInput: "unknown", imageInput: "yes" })
+  })
+
+  test.each([
+    ["provider ID", (value: FormState) => ({ ...value, providerID: "other-provider" })],
+    ["base URL", (value: FormState) => ({ ...value, baseURL: "http://localhost:11434/v1" })],
+    ["API key", (value: FormState) => ({ ...value, apiKey: "changed-key" })],
+    ["model ID", (value: FormState) => ({ ...value, models: [model({ id: "model-b" })] })],
+    ["row identity", (value: FormState) => ({ ...value, models: [model({ row: "replacement-row" })] })],
+    ["removed row", (value: FormState) => ({ ...value, models: [] })],
+  ])("ignores stale results after a changed %s", (_label, change) => {
+    const original = form({ apiKey: "original-key" })
+    const snapshot = probeSnapshot(original)
+    const current = change(original)
+    const result = applyModelCapabilityProbeResult(current, snapshot, {
+      modelID: "model-a",
+      results: [{ capability: "textInput", classification: "yes" }],
+    })
+
+    expect(result.stale).toBeTrue()
+    expect(result.models).toBe(current.models)
+  })
+
+  test("ignores a response for a different returned model ID", () => {
+    const value = form()
+    const snapshot = probeSnapshot(value)
+    const result = applyModelCapabilityProbeResult(value, snapshot, {
+      modelID: "model-b",
+      results: [{ capability: "textInput", classification: "yes" }],
+    })
+
+    expect(result.stale).toBeTrue()
+    expect(result.models).toBe(value.models)
   })
 })

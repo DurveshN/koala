@@ -121,6 +121,14 @@ work. It is not a substitute for the implementation plan or audit logs.
   runtime gate accepts only OpenAI, Anthropic, and OpenCode provider IDs.
 - The Desktop sidecar disables EC2/GCP metadata discovery and removes inherited
   metadata endpoint overrides as defense in depth.
+- Unknown capability probes run sequentially behind a verified text baseline.
+  Exact nonce/shape evidence becomes yes, controlled optional-feature rejection
+  becomes no, and ambiguous or operational outcomes remain unknown.
+- The image probe generates a local RGB PNG with a random visual nonce and no
+  text metadata or external fetch.
+- Probe results are applied only when provider, endpoint, key, row, and model ID
+  still match the request snapshot; manual capability choices remain
+  authoritative.
 
 ## Sandbox
 
@@ -162,3 +170,5 @@ On 2026-09-17, after the first sovereignty slice:
   passed.
 - Profile inference transport and native-gate tests: 21 passed.
 - Sidecar environment hardening tests: 2 passed.
+- Capability-probe service and model-profile API tests: 34 passed.
+- Capability-probe form and fallback-copy tests: 68 passed.

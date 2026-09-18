@@ -15,11 +15,14 @@ import { showToast } from "@/utils/toast"
 import { batch, For, Show } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import {
+  applyModelCapabilityProbeResult,
   type FormState,
   mergeDiscoveredModelIDs,
+  type ModelCapabilityProbeSnapshot,
   type ModelRow,
   modelRow,
   validateCustomProvider,
+  validateModelCapabilityProbe,
   validateModelDiscovery,
 } from "./dialog-custom-provider-form"
 
@@ -157,6 +160,62 @@ export function CustomProviderForm(props: { autofocus?: boolean } = {}) {
     return output.result
   }
 
+  const probeMutation = useMutation(() => ({
+    mutationFn: async (snapshot: ModelCapabilityProbeSnapshot) => {
+      const response = await serverSDK().client.modelProfile.probe({ modelCapabilityProbeInput: snapshot.input })
+      if (!response.data) throw new Error()
+      return { snapshot, result: response.data }
+    },
+    onSuccess: ({ snapshot, result }) => {
+      const applied = applyModelCapabilityProbeResult(form, snapshot, result)
+      if (applied.stale) {
+        showToast({
+          title: language.t("provider.koala.probe.stale.title"),
+          description: language.t("provider.koala.probe.stale.description"),
+        })
+        return
+      }
+
+      if (applied.models !== form.models) setForm("models", applied.models)
+      showToast({
+        variant: "success",
+        icon: "circle-check",
+        title: language.t("provider.koala.probe.success.title"),
+        description: language.t("provider.koala.probe.success.description", applied.summary),
+      })
+    },
+    onError: () => {
+      showToast({
+        variant: "error",
+        title: language.t("provider.koala.probe.failure.title"),
+        description: language.t("provider.koala.probe.failure.description"),
+      })
+    },
+  }))
+
+  const probe = (model: ModelRow, index: number) => {
+    if (probeMutation.isPending || discoverMutation.isPending || saveMutation.isPending) return
+
+    const output = validateModelCapabilityProbe({ form, model, t: language.t })
+    if (output.complete) {
+      showToast({
+        title: language.t("provider.koala.probe.complete.title"),
+        description: language.t("provider.koala.probe.complete.description"),
+      })
+      return
+    }
+
+    if (!output.result) {
+      batch(() => {
+        setForm("err", "providerID", output.err.providerID)
+        setForm("err", "baseURL", output.err.baseURL)
+        setForm("models", index, "err", "id", output.err.modelID)
+      })
+      return
+    }
+    probeMutation.mutate(output.result)
+  }
+
   const discoverMutation = useMutation(() => ({
     mutationFn: async (input: NonNullable<ReturnType<typeof validateModelDiscovery>["result"]>) => {
       const response = await serverSDK().client.modelProfile.discover({ modelDiscoveryInput: input })
@@ -191,7 +250,7 @@ export function CustomProviderForm(props: { autofocus?: boolean } = {}) {
   }))
 
   const discover = () => {
-    if (discoverMutation.isPending) return
+    if (discoverMutation.isPending || probeMutation.isPending || saveMutation.isPending) return
 
     const output = validateModelDiscovery({ form, t: language.t })
     batch(() => {
@@ -262,7 +321,7 @@ export function CustomProviderForm(props: { autofocus?: boolean } = {}) {
 
   const save = (e: SubmitEvent) => {
     e.preventDefault()
-    if (saveMutation.isPending) return
+    if (saveMutation.isPending || discoverMutation.isPending || probeMutation.isPending) return
 
     const result = validate()
     if (!result) return
@@ -319,7 +378,7 @@ export function CustomProviderForm(props: { autofocus?: boolean } = {}) {
             size="small"
             variant="secondary"
             onClick={discover}
-            disabled={discoverMutation.isPending}
+            disabled={discoverMutation.isPending || probeMutation.isPending || saveMutation.isPending}
             aria-busy={discoverMutation.isPending}
             class="self-start"
           >
@@ -423,6 +482,20 @@ export function CustomProviderForm(props: { autofocus?: boolean } = {}) {
                   <Show when={model.err.input}>
                     <p class="text-12-regular text-text-danger-base">{model.err.input}</p>
                   </Show>
+                  <Button
+                    type="button"
+                    size="small"
+                    variant="secondary"
+                    onClick={() => probe(model, index())}
+                    disabled={probeMutation.isPending || discoverMutation.isPending || saveMutation.isPending}
+                    aria-busy={probeMutation.isPending && probeMutation.variables?.row === model.row}
+                    class="self-start"
+                  >
+                    {probeMutation.isPending && probeMutation.variables?.row === model.row
+                      ? language.t("provider.koala.probe.pending")
+                      : language.t("provider.koala.probe.action")}
+                  </Button>
+                  <p class="text-12-regular text-text-weak">{language.t("provider.koala.probe.help")}</p>
                 </fieldset>
 
                 <fieldset class="flex flex-col gap-3">
@@ -479,7 +552,7 @@ export function CustomProviderForm(props: { autofocus?: boolean } = {}) {
           type="submit"
           size="large"
           variant="primary"
-          disabled={saveMutation.isPending}
+          disabled={saveMutation.isPending || discoverMutation.isPending || probeMutation.isPending}
         >
           {saveMutation.isPending ? language.t("common.saving") : language.t("common.submit")}
         </Button>

@@ -129,6 +129,21 @@ model request without a global-fetch fallback.
 The Desktop sidecar also disables common EC2 and GCP metadata discovery
 variables and removes inherited metadata endpoint overrides.
 
+Implemented capability-probe flow:
+
+```text
+Unknown capabilities on one model row
+    -> stale-safe request snapshot
+    -> authenticated modelProfile.probe API
+    -> pinned sequential chat-completions requests
+    -> exact nonce/shape evidence classification
+    -> Yes/No applied only to fields still Unknown
+```
+
+Probe requests have per-request and suite deadlines, bounded request/response
+sizes, no retry, redacted outcomes, and no local profile or credential mutation.
+The visual probe generates its PNG entirely inside the sidecar.
+
 ## Target Tool Infrastructure
 
 ```text

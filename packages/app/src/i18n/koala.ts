@@ -12,7 +12,7 @@ export const dict = {
   "provider.koala.field.apiKey.label": "API key",
   "provider.koala.field.apiKey.placeholder": "API key",
   "provider.koala.field.apiKey.description":
-    "Optional. Discovery uses this key only for that request; submitting the form stores it. Leave empty to use existing credentials or no authentication.",
+    "Optional. Discovery and capability probing use this key only for their requests; submitting the form stores it. Leave empty to use existing credentials or no authentication.",
   "provider.koala.discovery.action": "Discover models",
   "provider.koala.discovery.pending": "Discovering models...",
   "provider.koala.discovery.success": "Models added: {{count}}",
@@ -42,6 +42,22 @@ export const dict = {
   "provider.koala.models.support.unknown": "Unknown",
   "provider.koala.models.support.yes": "Yes",
   "provider.koala.models.support.no": "No",
+  "provider.koala.probe.action": "Probe unknown capabilities",
+  "provider.koala.probe.pending": "Probing unknown capabilities...",
+  "provider.koala.probe.help":
+    "Reasoning checks observable response metadata. Structured output checks the native JSON Schema response format.",
+  "provider.koala.probe.complete.title": "No unknown capabilities",
+  "provider.koala.probe.complete.description": "Every capability already has a value. No request was sent.",
+  "provider.koala.probe.success.title": "Capability probe complete",
+  "provider.koala.probe.success.description":
+    "Verified yes: {{verified}}. Endpoint rejected no: {{rejected}}. Still unknown: {{unknown}}.",
+  "provider.koala.probe.stale.title": "Probe result ignored",
+  "provider.koala.probe.stale.description":
+    "The provider or model changed while probing. No capability values were updated.",
+  "provider.koala.probe.failure.title": "Capability probe failed",
+  "provider.koala.probe.failure.description":
+    "The request could not be completed. Check the provider, model ID, and credentials, then try again.",
+  "provider.koala.probe.error.modelID": "Use a model ID of 1 to 512 characters without control characters",
   "provider.koala.models.roles.legend": "Preferred roles",
   "provider.koala.models.roles.general": "General",
   "provider.koala.models.roles.coding": "Coding",

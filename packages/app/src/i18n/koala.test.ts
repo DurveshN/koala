@@ -30,11 +30,24 @@ describe("Koala i18n fallback", () => {
   })
 
   test("describes transient discovery credentials and redacted discovery outcomes", () => {
-    expect(koala["provider.koala.field.apiKey.description"]).toContain("Discovery uses this key only for that request")
+    expect(koala["provider.koala.field.apiKey.description"]).toContain(
+      "Discovery and capability probing use this key only for their requests",
+    )
     expect(koala["provider.koala.field.apiKey.description"]).toContain("submitting the form stores it")
     expect(koala["provider.koala.discovery.success"]).toContain("{{count}}")
     expect(koala["provider.koala.discovery.duplicates"]).toContain("{{count}}")
     expect(koala["provider.koala.discovery.empty.description"]).toContain("not changed")
     expect(koala["provider.koala.discovery.failure.description"]).not.toContain("{{")
+  })
+
+  test("describes bounded capability probing without exposing probe evidence", () => {
+    expect(koala["provider.koala.probe.action"]).toBe("Probe unknown capabilities")
+    expect(koala["provider.koala.probe.complete.description"]).toContain("No request was sent")
+    expect(koala["provider.koala.probe.success.description"]).toContain("{{verified}}")
+    expect(koala["provider.koala.probe.success.description"]).toContain("{{rejected}}")
+    expect(koala["provider.koala.probe.success.description"]).toContain("{{unknown}}")
+    expect(koala["provider.koala.probe.help"]).toContain("observable response metadata")
+    expect(koala["provider.koala.probe.help"]).toContain("native JSON Schema response format")
+    expect(koala["provider.koala.probe.failure.description"]).not.toContain("{{")
   })
 })
