@@ -1,13 +1,22 @@
 import { ModelProfile } from "@koala-ai/core/model/profile"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
-import { ConflictError, InvalidRequestError, ProviderNotFoundError, UnknownError } from "../errors"
+import { ModelDiscovery } from "@/koala/model-discovery"
+import {
+  ConflictError,
+  InvalidRequestError,
+  ProviderNotFoundError,
+  TimeoutError,
+  UnknownError,
+  UpstreamError,
+} from "../errors"
 import { described } from "./metadata"
 
 const root = "/global/model-profile"
 
 export const ModelProfilePaths = {
   root,
+  discover: `${root}/discover`,
   provider: `${root}/:providerID`,
 } as const
 
@@ -33,6 +42,17 @@ export const ModelProfileApi = HttpApi.make("modelProfile").add(
           identifier: "modelProfile.create",
           summary: "Create model profile",
           description: "Create a global Koala model provider profile.",
+        }),
+      ),
+      HttpApiEndpoint.post("discover", ModelProfilePaths.discover, {
+        payload: ModelDiscovery.Input,
+        success: described(ModelDiscovery.Result, "Discovered models"),
+        error: [InvalidRequestError, UpstreamError, TimeoutError, UnknownError],
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "modelProfile.discover",
+          summary: "Discover models",
+          description: "Discover models from an OpenAI-compatible provider endpoint.",
         }),
       ),
       HttpApiEndpoint.put("update", ModelProfilePaths.provider, {

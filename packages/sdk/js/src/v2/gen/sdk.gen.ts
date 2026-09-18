@@ -111,10 +111,13 @@ import type {
   McpRemoteConfig,
   McpStatusErrors,
   McpStatusResponses,
+  ModelDiscoveryInput,
   ModelProfileCreateErrors,
   ModelProfileCreateResponses,
   ModelProfileDeleteErrors,
   ModelProfileDeleteResponses,
+  ModelProfileDiscoverErrors,
+  ModelProfileDiscoverResponses,
   ModelProfileListErrors,
   ModelProfileListResponses,
   ModelProfileProvider,
@@ -1418,6 +1421,34 @@ export class ModelProfile extends HeyApiClient {
     const params = buildClientParams([parameters], [{ args: [{ key: "modelProfileProvider", map: "body" }] }])
     return (options?.client ?? this.client).post<ModelProfileCreateResponses, ModelProfileCreateErrors, ThrowOnError>({
       url: "/global/model-profile",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Discover models
+   *
+   * Discover models from an OpenAI-compatible provider endpoint.
+   */
+  public discover<ThrowOnError extends boolean = false>(
+    parameters?: {
+      modelDiscoveryInput?: ModelDiscoveryInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ key: "modelDiscoveryInput", map: "body" }] }])
+    return (options?.client ?? this.client).post<
+      ModelProfileDiscoverResponses,
+      ModelProfileDiscoverErrors,
+      ThrowOnError
+    >({
+      url: "/global/model-profile/discover",
       ...options,
       ...params,
       headers: {

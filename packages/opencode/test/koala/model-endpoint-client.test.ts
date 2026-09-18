@@ -12,14 +12,12 @@ import { it } from "../lib/effect"
 const providerID = Schema.decodeUnknownSync(ModelProfile.ProviderID)("local-test")
 const decodeBaseURL = Schema.decodeUnknownSync(ModelProfile.BaseURL)
 
-function clientLayer(
-  baseURL: string,
-  lookup: (hostname: string) => PromiseLike<ReadonlyArray<EndpointPolicy.ResolvedAddress>>,
-) {
-  return ModelEndpointClient.layerWith({ providerID, baseURL: decodeBaseURL(baseURL) }).pipe(
-    Layer.provide(NetworkResolver.layerWith({ lookup })),
-  )
+function clientLayer(lookup: (hostname: string) => PromiseLike<ReadonlyArray<EndpointPolicy.ResolvedAddress>>) {
+  return ModelEndpointClient.layer.pipe(Layer.provide(NetworkResolver.layerWith({ lookup })))
 }
+
+const bind = (client: ModelEndpointClient.Interface, baseURL: string) =>
+  client.bind({ providerID, baseURL: decodeBaseURL(baseURL) })
 
 function withServer<A, E, R>(
   handler: (request: IncomingMessage, response: ServerResponse) => void,
@@ -74,7 +72,8 @@ describe("ModelEndpointClient", () => {
       },
       (port) =>
         Effect.gen(function* () {
-          const client = yield* ModelEndpointClient.Service
+          const factory = yield* ModelEndpointClient.Service
+          const client = yield* bind(factory, `http://model.internal:${port}/v1`)
           const response = yield* Effect.promise(() =>
             client.fetch(`http://model.internal:${port}/v1/chat?mode=stream`, {
               method: "POST",
@@ -93,7 +92,7 @@ describe("ModelEndpointClient", () => {
           expect(calls).toEqual(["model.internal"])
         }).pipe(
           Effect.provide(
-            clientLayer(`http://model.internal:${port}/v1`, (hostname) => {
+            clientLayer((hostname) => {
               calls.push(hostname)
               return Promise.resolve([{ address: "127.0.0.1", family: 4 }])
             }),
@@ -107,14 +106,11 @@ describe("ModelEndpointClient", () => {
       (_request, response) => response.end("literal-ok"),
       (port) =>
         Effect.gen(function* () {
-          const client = yield* ModelEndpointClient.Service
+          const factory = yield* ModelEndpointClient.Service
+          const client = yield* bind(factory, `http://127.0.0.1:${port}/v1`)
           const response = yield* Effect.promise(() => client.fetch(`http://127.0.0.1:${port}/v1/models`))
           expect(yield* Effect.promise(() => response.text())).toBe("literal-ok")
-        }).pipe(
-          Effect.provide(
-            clientLayer(`http://127.0.0.1:${port}/v1`, () => Promise.reject(new Error("DNS must not run"))),
-          ),
-        ),
+        }).pipe(Effect.provide(clientLayer(() => Promise.reject(new Error("DNS must not run"))))),
     ),
   )
 
@@ -124,7 +120,8 @@ describe("ModelEndpointClient", () => {
       (_request, response) => response.end("ok"),
       (port) =>
         Effect.gen(function* () {
-          const client = yield* ModelEndpointClient.Service
+          const factory = yield* ModelEndpointClient.Service
+          const client = yield* bind(factory, `http://model.internal:${port}/v1`)
           yield* Effect.promise(() =>
             client.fetch(`http://model.internal:${port}/v1/first`).then((response) => response.text()),
           )
@@ -134,7 +131,7 @@ describe("ModelEndpointClient", () => {
           expect(calls).toEqual(["model.internal", "model.internal"])
         }).pipe(
           Effect.provide(
-            clientLayer(`http://model.internal:${port}/v1`, (hostname) => {
+            clientLayer((hostname) => {
               calls.push(hostname)
               return Promise.resolve([{ address: "127.0.0.1", family: 4 }])
             }),
@@ -159,12 +156,13 @@ describe("ModelEndpointClient", () => {
       (_request, response) => response.end("private-ok"),
       (port) =>
         Effect.gen(function* () {
-          const client = yield* ModelEndpointClient.Service
+          const factory = yield* ModelEndpointClient.Service
+          const client = yield* bind(factory, `http://model.internal:${port}/v1`)
           const response = yield* Effect.promise(() => client.fetch(`http://model.internal:${port}/v1/models`))
           expect(yield* Effect.promise(() => response.text())).toBe("private-ok")
         }).pipe(
           Effect.provide(
-            clientLayer(`http://model.internal:${port}/v1`, () =>
+            clientLayer(() =>
               Promise.resolve([{ address: address.address, family: address.family === "IPv4" ? 4 : 6 }]),
             ),
           ),
@@ -175,6 +173,14 @@ describe("ModelEndpointClient", () => {
 
   it.live("denies mixed, public, and metadata DNS answers before connecting", () => {
     let requests = 0
+    const resolutions: Readonly<Record<string, ReadonlyArray<EndpointPolicy.ResolvedAddress>>> = {
+      "mixed.internal": [
+        { address: "127.0.0.1", family: 4 },
+        { address: "8.8.8.8", family: 4 },
+      ],
+      "public.internal": [{ address: "8.8.8.8", family: 4 }],
+      "metadata.internal": [{ address: "169.254.169.254", family: 4 }],
+    }
     return withServer(
       (_request, response) => {
         requests++
@@ -182,32 +188,25 @@ describe("ModelEndpointClient", () => {
       },
       (port) =>
         Effect.gen(function* () {
+          const factory = yield* ModelEndpointClient.Service
           yield* Effect.forEach(
             [
-              [
-                [
-                  { address: "127.0.0.1", family: 4 },
-                  { address: "8.8.8.8", family: 4 },
-                ],
-                "mixed-resolution",
-              ],
-              [[{ address: "8.8.8.8", family: 4 }], "public-address"],
-              [[{ address: "169.254.169.254", family: 4 }], "metadata-address"],
+              ["mixed.internal", "mixed-resolution"],
+              ["public.internal", "public-address"],
+              ["metadata.internal", "metadata-address"],
             ] as const,
-            ([addresses, rule]) =>
+            ([hostname, rule]) =>
               Effect.gen(function* () {
-                const client = yield* ModelEndpointClient.Service
+                const client = yield* bind(factory, `http://${hostname}:${port}/v1`)
                 yield* Effect.promise(async () => {
-                  const error = await client.fetch(`http://model.internal:${port}/v1/models`).catch((cause) => cause)
+                  const error = await client.fetch(`http://${hostname}:${port}/v1/models`).catch((cause) => cause)
                   expect(error).toBeInstanceOf(ModelEndpointClient.PolicyError)
                   expect(error.rule).toBe(rule)
                 })
-              }).pipe(
-                Effect.provide(clientLayer(`http://model.internal:${port}/v1`, () => Promise.resolve(addresses))),
-              ),
+              }),
           )
           expect(requests).toBe(0)
-        }),
+        }).pipe(Effect.provide(clientLayer((hostname) => Promise.resolve(resolutions[hostname] ?? [])))),
     )
   })
 
@@ -225,7 +224,8 @@ describe("ModelEndpointClient", () => {
       },
       (port) =>
         Effect.gen(function* () {
-          const client = yield* ModelEndpointClient.Service
+          const factory = yield* ModelEndpointClient.Service
+          const client = yield* bind(factory, `http://model.internal:${port}/v1`)
           yield* Effect.promise(async () => {
             const error = await client.fetch(`http://model.internal:${port}/v1/redirect`).catch((cause) => cause)
             expect(error).toBeInstanceOf(ModelEndpointClient.RedirectError)
@@ -233,19 +233,14 @@ describe("ModelEndpointClient", () => {
             expect(error.message).not.toContain("location-secret-canary")
             expect(targetCalls).toBe(0)
           })
-        }).pipe(
-          Effect.provide(
-            clientLayer(`http://model.internal:${port}/v1`, () =>
-              Promise.resolve([{ address: "127.0.0.1", family: 4 }]),
-            ),
-          ),
-        ),
+        }).pipe(Effect.provide(clientLayer(() => Promise.resolve([{ address: "127.0.0.1", family: 4 }])))),
     )
   })
 
   it.live("denies out-of-scope requests, unsafe headers, and transport overrides", () =>
     Effect.gen(function* () {
-      const client = yield* ModelEndpointClient.Service
+      const factory = yield* ModelEndpointClient.Service
+      const client = yield* bind(factory, "http://model.internal:49152/v1")
       yield* Effect.promise(async () => {
         const proxyInit: RequestInit = {}
         Object.defineProperty(proxyInit, "proxy", { value: "http://escape.internal" })
@@ -272,11 +267,7 @@ describe("ModelEndpointClient", () => {
         expect(errors.map((error) => error.message).join(" ")).not.toContain("secret-canary")
         expect(errors.map((error) => error.message).join(" ")).not.toContain("escape.internal")
       })
-    }).pipe(
-      Effect.provide(
-        clientLayer("http://model.internal:49152/v1", () => Promise.resolve([{ address: "127.0.0.1", family: 4 }])),
-      ),
-    ),
+    }).pipe(Effect.provide(clientLayer(() => Promise.resolve([{ address: "127.0.0.1", family: 4 }])))),
   )
 
   it.live("propagates abort as a standard AbortError", () => {
@@ -285,7 +276,8 @@ describe("ModelEndpointClient", () => {
       (_request, _response) => abort(),
       (port) =>
         Effect.gen(function* () {
-          const client = yield* ModelEndpointClient.Service
+          const factory = yield* ModelEndpointClient.Service
+          const client = yield* bind(factory, `http://model.internal:${port}/v1`)
           yield* Effect.promise(async () => {
             const controller = new AbortController()
             abort = () => controller.abort("abort-secret-canary")
@@ -295,13 +287,7 @@ describe("ModelEndpointClient", () => {
             expect(error.name).toBe("AbortError")
             expect(error.message).not.toContain("abort-secret-canary")
           })
-        }).pipe(
-          Effect.provide(
-            clientLayer(`http://model.internal:${port}/v1`, () =>
-              Promise.resolve([{ address: "127.0.0.1", family: 4 }]),
-            ),
-          ),
-        ),
+        }).pipe(Effect.provide(clientLayer(() => Promise.resolve([{ address: "127.0.0.1", family: 4 }])))),
     )
   })
 
@@ -318,7 +304,8 @@ describe("ModelEndpointClient", () => {
       },
       (port) =>
         Effect.gen(function* () {
-          const client = yield* ModelEndpointClient.Service
+          const factory = yield* ModelEndpointClient.Service
+          const client = yield* bind(factory, `http://model.internal:${port}/v1`)
           const response = yield* Effect.promise(() => client.fetch(`http://model.internal:${port}/v1/stream`))
           if (!response.body) return yield* Effect.die("Expected a response body")
           const reader = response.body.getReader()
@@ -328,31 +315,20 @@ describe("ModelEndpointClient", () => {
           const second = yield* Effect.promise(() => reader.read())
           expect(new TextDecoder().decode(second.value)).toBe("second")
           expect((yield* Effect.promise(() => reader.read())).done).toBe(true)
-        }).pipe(
-          Effect.provide(
-            clientLayer(`http://model.internal:${port}/v1`, () =>
-              Promise.resolve([{ address: "127.0.0.1", family: 4 }]),
-            ),
-          ),
-        ),
+        }).pipe(Effect.provide(clientLayer(() => Promise.resolve([{ address: "127.0.0.1", family: 4 }])))),
     )
   })
 
   it.live("redacts raw resolver and transport failures", () =>
     Effect.gen(function* () {
-      const client = yield* ModelEndpointClient.Service
+      const factory = yield* ModelEndpointClient.Service
+      const client = yield* bind(factory, "http://failure-secret.internal:49152/v1")
       yield* Effect.promise(async () => {
         const error = await client.fetch("http://failure-secret.internal:49152/v1/models").catch((cause) => cause)
         expect(error).toBeInstanceOf(ModelEndpointClient.TransportError)
         expect(error.message).not.toContain("resolver-secret-canary")
         expect(error.origin).toBe("http://failure-secret.internal:49152")
       })
-    }).pipe(
-      Effect.provide(
-        clientLayer("http://failure-secret.internal:49152/v1", () =>
-          Promise.reject(new Error("resolver-secret-canary")),
-        ),
-      ),
-    ),
+    }).pipe(Effect.provide(clientLayer(() => Promise.reject(new Error("resolver-secret-canary"))))),
   )
 })

@@ -3,6 +3,7 @@ import https from "node:https"
 import type { LookupFunction } from "node:net"
 import { EndpointPolicy } from "@koala-ai/core/network/endpoint-policy"
 import { ModelProfile } from "@koala-ai/core/model/profile"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Context, Effect, Layer, Schema } from "effect"
 import { NetworkResolver } from "./network-resolver"
 
@@ -75,13 +76,11 @@ export class RedirectError extends Schema.TaggedErrorClass<RedirectError>()("Koa
   }
 }
 
-export interface Interface {
+export interface BoundClient {
   readonly providerID: ModelProfile.ProviderID
   readonly baseURL: ModelProfile.BaseURL
   readonly fetch: Fetch
 }
-
-export class Service extends Context.Service<Service, Interface>()("@opencode/KoalaModelEndpointClient") {}
 
 export interface Options {
   readonly providerID: ModelProfile.ProviderID
@@ -90,11 +89,17 @@ export interface Options {
 
 export type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
-export const layerWith = (options: Options) =>
-  Layer.effect(
-    Service,
-    Effect.gen(function* () {
-      const resolver = yield* NetworkResolver.Service
+export interface Interface {
+  readonly bind: (options: Options) => Effect.Effect<BoundClient, PolicyError>
+}
+
+export class Service extends Context.Service<Service, Interface>()("@opencode/KoalaModelEndpointClient") {}
+
+export const layer = Layer.effect(
+  Service,
+  Effect.gen(function* () {
+    const resolver = yield* NetworkResolver.Service
+    const bind = Effect.fn("ModelEndpointClient.bind")(function* (options: Options) {
       const parsed = EndpointPolicy.parseBaseURL(options.baseURL)
       if (!parsed.ok) return yield* new PolicyError({ rule: parsed.code, origin: "invalid" })
 
@@ -163,9 +168,14 @@ export const layerWith = (options: Options) =>
         }
       }
 
-      return Service.of({ providerID: options.providerID, baseURL: options.baseURL, fetch })
-    }),
-  )
+      return { providerID: options.providerID, baseURL: options.baseURL, fetch }
+    })
+
+    return Service.of({ bind })
+  }),
+)
+
+export const node = LayerNode.make({ service: Service, layer, deps: [NetworkResolver.node] })
 
 function dispatch(request: Request, url: URL, endpoint: EndpointPolicy.Endpoint, lookup: LookupFunction | undefined) {
   return new Promise<Response>((resolve, reject) => {

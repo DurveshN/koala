@@ -9,6 +9,7 @@ import { SessionV2 } from "@opencode-ai/core/session"
 import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
 import { Installation } from "../../src/installation"
+import { ModelDiscovery } from "../../src/koala/model-discovery"
 import { ModelProfileStore } from "../../src/koala/model-profile-store"
 import { ServerAuth } from "../../src/server/auth"
 import { RootHttpApi } from "../../src/server/routes/instance/httpapi/api"
@@ -41,6 +42,7 @@ const apiLayer = HttpRouter.serve(
   Layer.provide(Layer.mock(Auth.Service)({})),
   Layer.provide(Layer.mock(Config.Service)({})),
   Layer.provide(Layer.mock(Installation.Service)({})),
+  Layer.provide(Layer.mock(ModelDiscovery.Service)({})),
   Layer.provide(Layer.mock(ModelProfileStore.Service)({})),
   Layer.provide(
     Layer.mock(MoveSession.Service)({

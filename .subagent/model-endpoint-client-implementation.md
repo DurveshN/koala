@@ -9,10 +9,12 @@ order: "verbatim" })`. It validates the runtime result, rejects more than 32
   answers, applies a five-second timeout, and exposes only a typed redacted
   resolution rule on failure. `layerWith` accepts an injected lookup and timing
   limits for tests.
-- `ModelEndpointClient` binds one canonical Koala `baseURL` and `providerID` to
-  a Fetch-compatible function. It uses `node:http` or `node:https` directly,
-  never consults environment proxy settings, disables agent reuse, and installs
-  a custom lookup callback for hostname endpoints.
+- `ModelEndpointClient` is a stable factory service. Its live `layer` and
+  `LayerNode` depend on `NetworkResolver` once, and its `bind` method parses one
+  canonical Koala `baseURL` plus `providerID` into a `BoundClient` containing a
+  Fetch-compatible function. The bound function uses `node:http` or
+  `node:https` directly, never consults environment proxy settings, disables
+  agent reuse, and installs a custom lookup callback for hostname endpoints.
 
 Each request is checked with `EndpointPolicy.authorizeRequest`. At socket
 connection time, the lookup callback resolves all answers, authorizes the full
@@ -43,8 +45,9 @@ No provider integration was added.
 
 ## Coverage
 
-The focused tests use injectable resolvers and local Node HTTP servers. They
-cover:
+The focused tests build the stable service with an injectable resolver and call
+`bind` for each endpoint while using local Node HTTP servers. The DNS denial
+matrix binds three endpoints through one service instance. Coverage includes:
 
 - resolver ordering, malformed results, answer caps, timeout, and redaction;
 - loopback and available private-interface success;

@@ -105,6 +105,11 @@ work. It is not a substitute for the implementation plan or audit logs.
   certificate identity checks while avoiding environment proxies.
 - Redirects are rejected instead of followed, and each connection performs a
   fresh DNS authorization because pooling is disabled initially.
+- Model discovery uses the pinned endpoint transport and a five-second total
+  deadline. It accepts a transient redacted key without saving it.
+- Discovery returns only validated model IDs and a duplicate count; the standard
+  model-list response does not provide dependable capabilities or token limits.
+- Discovery response bodies are limited to 1 MiB and 10,000 entries.
 
 ## Sandbox
 
@@ -140,3 +145,5 @@ On 2026-09-17, after the first sovereignty slice:
 - Koala endpoint policy suite: 139 tests passed.
 - Sidecar resolver and pinned transport tests: 13 passed.
 - `packages/opencode`: `bun typecheck` passed with the transport services.
+- Model discovery and HTTP integration tests are included in the focused
+  OpenCode suite; legacy SDK and Desktop production builds pass.

@@ -208,6 +208,20 @@ The original hostname remains available for HTTP Host and TLS verification.
 Environment proxy routing and insecure TLS overrides are not part of this
 transport.
 
+Implemented discovery path:
+
+```text
+POST /global/model-profile/discover
+    -> optional transient key or stored provider API key
+    -> pinned endpoint transport
+    -> GET <baseURL>/models
+    -> bounded OpenAI-compatible response parser
+    -> ordered unique model IDs
+```
+
+Discovery is read-only. It does not persist credentials, profiles, config, or
+instance state.
+
 ## Deferred Deployment Infrastructure
 
 - Windows, macOS, and Linux installers

@@ -6,6 +6,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
 import { Installation } from "../../src/installation"
+import { ModelDiscovery } from "../../src/koala/model-discovery"
 import { ModelProfileStore } from "../../src/koala/model-profile-store"
 import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
 import { ServerAuth } from "../../src/server/auth"
@@ -33,6 +34,7 @@ const apiLayer = HttpRouter.serve(
   Layer.provide(Layer.mock(Auth.Service)({})),
   Layer.provide(Layer.mock(Config.Service)({})),
   Layer.provide(Layer.mock(MoveSession.Service)({})),
+  Layer.provide(Layer.mock(ModelDiscovery.Service)({})),
   Layer.provide(Layer.mock(ModelProfileStore.Service)({})),
   Layer.provide(
     Layer.mock(Installation.Service)({

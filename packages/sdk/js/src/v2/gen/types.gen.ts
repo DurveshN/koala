@@ -2044,6 +2044,34 @@ export type ConflictError = {
   resource?: string
 }
 
+export type ModelDiscoveryInput = {
+  providerID: string
+  baseURL: string
+  apiKey?: string
+}
+
+export type DiscoveredModel = {
+  id: string
+}
+
+export type ModelDiscoveryResult = {
+  models: Array<DiscoveredModel>
+  duplicateCount: number
+}
+
+export type UpstreamError = {
+  _tag: "UpstreamError"
+  message: string
+  service?: string
+  status?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type TimeoutError = {
+  _tag: "TimeoutError"
+  message: string
+  operation?: string
+}
+
 export type ProviderNotFoundError = {
   _tag: "ProviderNotFoundError"
   providerID: string
@@ -7484,6 +7512,43 @@ export type ModelProfileCreateResponses = {
 }
 
 export type ModelProfileCreateResponse = ModelProfileCreateResponses[keyof ModelProfileCreateResponses]
+
+export type ModelProfileDiscoverData = {
+  body?: ModelDiscoveryInput
+  path?: never
+  query?: never
+  url: "/global/model-profile/discover"
+}
+
+export type ModelProfileDiscoverErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnknownError
+   */
+  500: UnknownError1
+  /**
+   * UpstreamError
+   */
+  502: UpstreamError
+  /**
+   * TimeoutError
+   */
+  504: TimeoutError
+}
+
+export type ModelProfileDiscoverError = ModelProfileDiscoverErrors[keyof ModelProfileDiscoverErrors]
+
+export type ModelProfileDiscoverResponses = {
+  /**
+   * Discovered models
+   */
+  200: ModelDiscoveryResult
+}
+
+export type ModelProfileDiscoverResponse = ModelProfileDiscoverResponses[keyof ModelProfileDiscoverResponses]
 
 export type ModelProfileDeleteData = {
   body?: never

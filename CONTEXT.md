@@ -85,8 +85,11 @@ set to `unknown`. The pure endpoint policy now validates local/private literals,
 DNS answer sets, endpoint scope, metadata denials, and redirect statuses. The
 sidecar now also has a direct HTTP/HTTPS transport that pins authorized DNS at
 socket creation, preserves Host/SNI, avoids environment proxies, and rejects
-redirects. The next step is model discovery through this transport. Full
-deletion of dormant sharing APIs and persistence follows in dependency order.
+redirects. A read-only authenticated discovery API now lists model IDs through
+this transport with transient-key support, bounded responses, and redacted
+errors. The next step is integrating discovery into the Desktop form, followed
+by active probes for `unknown` capabilities. Full deletion of dormant sharing
+APIs and persistence follows in dependency order.
 
 ## Upstream OpenCode Session Runtime
 

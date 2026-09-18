@@ -143,6 +143,14 @@ const scenarios: Scenario[] = [
     ),
   http.protected.get("/global/model-profile", "modelProfile.list").global().json(200, array),
   http.protected
+    .post("/global/model-profile/discover", "modelProfile.discover")
+    .global()
+    .at(() => ({
+      path: "/global/model-profile/discover",
+      body: { providerID: "httpapi", baseURL: "http://127.0.0.1:11434/v1/models" },
+    }))
+    .status(400),
+  http.protected
     .post("/global/model-profile", "modelProfile.create")
     .global()
     .at(() => ({ path: "/global/model-profile", body: exerciseModelProfile("Created HTTP API Provider") }))

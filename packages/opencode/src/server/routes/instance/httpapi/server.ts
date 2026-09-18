@@ -19,6 +19,7 @@ import { Installation } from "@/installation"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
 import { McpAuth } from "@/mcp/auth"
+import { ModelDiscovery } from "@/koala/model-discovery"
 import { ModelProfileStore } from "@/koala/model-profile-store"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
@@ -251,6 +252,7 @@ const app = LayerNode.group([
   LSP.node,
   MCP.node,
   McpAuth.node,
+  ModelDiscovery.node,
   ModelProfileStore.node,
   Command.node,
   Truncate.node,

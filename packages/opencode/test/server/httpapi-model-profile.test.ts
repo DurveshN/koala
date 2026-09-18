@@ -6,12 +6,13 @@ import path from "path"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { Global } from "@opencode-ai/core/global"
 import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
-import { Context, Effect, Layer, Option } from "effect"
+import { Context, Effect, Layer, Option, Redacted } from "effect"
 import { HttpClient, HttpClientRequest, HttpRouter } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
 import { Installation } from "../../src/installation"
+import { ModelDiscovery } from "../../src/koala/model-discovery"
 import { ModelProfileStore } from "../../src/koala/model-profile-store"
 import { InstanceStore } from "../../src/project/instance-store"
 import { ServerAuth } from "../../src/server/auth"
@@ -27,35 +28,61 @@ import { pollWithTimeout, testEffect } from "../lib/effect"
 
 const data = path.join(os.tmpdir(), `opencode-model-profile-http-${process.pid}`)
 let disposals = 0
+const discoveryInputs: ModelDiscovery.Input[] = []
 
 const instanceStoreLayer = Layer.mock(InstanceStore.Service, {
   disposeAll: () => Effect.sync(() => disposals++).pipe(Effect.asVoid),
 })
 
-const routes = HttpRouter.serve(
-  HttpApiBuilder.layer(RootHttpApi).pipe(
-    Layer.provide([controlHandlers, controlPlaneHandlers, globalHandlers, modelProfileHandlers]),
-    Layer.provide([authorizationLayer, schemaErrorLayer]),
-    // Raw HttpApi routes expose an opaque handler context at the request boundary.
-    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
-    HttpRouter.provideRequest(Layer.succeedContext(Context.empty() as Context.Context<unknown>)),
-  ),
-  { disableListenLog: true, disableLogger: true },
-).pipe(
-  Layer.provideMerge(NodeHttpServer.layerTest),
-  Layer.provide(Layer.mock(Auth.Service)({})),
-  Layer.provide(Layer.mock(Config.Service)({})),
-  Layer.provide(Layer.mock(MoveSession.Service)({})),
-  Layer.provide(
-    Layer.mock(Installation.Service)({
-      method: () => Effect.succeed("npm"),
-      latest: () => Effect.succeed("9.9.9"),
-      upgrade: () => Effect.void,
+const discoveryLayer = Layer.mock(ModelDiscovery.Service, {
+  discover: (input) =>
+    Effect.sync(() => {
+      discoveryInputs.push(input)
+      return { models: [{ id: "first" }, { id: "second" }], duplicateCount: 1 }
     }),
-  ),
-  Layer.provide(instanceStoreLayer),
-  Layer.provide(ServerAuth.Config.configLayer({ password: Option.none(), username: "opencode" })),
-)
+})
+
+const discoveryErrorLayer = Layer.mock(ModelDiscovery.Service, {
+  discover: (input) => {
+    const errors: Record<string, ModelDiscovery.Error> = {
+      invalid: new ModelDiscovery.InvalidInputError({ reason: "models-endpoint" }),
+      endpoint: new ModelDiscovery.EndpointError({ status: 503 }),
+      timeout: new ModelDiscovery.TimeoutError(),
+      malformed: new ModelDiscovery.MalformedResponseError({ reason: "invalid-json" }),
+      large: new ModelDiscovery.TooLargeError({ limit: "body" }),
+      internal: new ModelDiscovery.InternalError(),
+    }
+    return Effect.fail(errors[input.providerID] ?? new ModelDiscovery.InternalError())
+  },
+})
+
+const routesWith = (modelDiscoveryLayer: Layer.Layer<ModelDiscovery.Service>) =>
+  HttpRouter.serve(
+    HttpApiBuilder.layer(RootHttpApi).pipe(
+      Layer.provide([controlHandlers, controlPlaneHandlers, globalHandlers, modelProfileHandlers]),
+      Layer.provide([authorizationLayer, schemaErrorLayer]),
+      // Raw HttpApi routes expose an opaque handler context at the request boundary.
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+      HttpRouter.provideRequest(Layer.succeedContext(Context.empty() as Context.Context<unknown>)),
+    ),
+    { disableListenLog: true, disableLogger: true },
+  ).pipe(
+    Layer.provideMerge(NodeHttpServer.layerTest),
+    Layer.provide(Layer.mock(Auth.Service)({})),
+    Layer.provide(Layer.mock(Config.Service)({})),
+    Layer.provide(modelDiscoveryLayer),
+    Layer.provide(Layer.mock(MoveSession.Service)({})),
+    Layer.provide(
+      Layer.mock(Installation.Service)({
+        method: () => Effect.succeed("npm"),
+        latest: () => Effect.succeed("9.9.9"),
+        upgrade: () => Effect.void,
+      }),
+    ),
+    Layer.provide(instanceStoreLayer),
+    Layer.provide(ServerAuth.Config.configLayer({ password: Option.none(), username: "opencode" })),
+  )
+const routes = routesWith(discoveryLayer)
 
 const storeLayer = AppNodeBuilder.build(ModelProfileStore.node, [
   [Global.node, Global.layerWith({ data, state: data })],
@@ -68,6 +95,7 @@ const failureStoreLayer = Layer.mock(ModelProfileStore.Service, {
 })
 const it = testEffect(routes.pipe(Layer.provide(storeLayer)))
 const itFailure = testEffect(routes.pipe(Layer.provide(failureStoreLayer)))
+const itDiscoveryError = testEffect(routesWith(discoveryErrorLayer).pipe(Layer.provide(storeLayer)))
 
 const model = (id = "local-model") => ({
   id,
@@ -111,10 +139,71 @@ const waitForDisposals = (count: number) =>
 
 afterEach(async () => {
   disposals = 0
+  discoveryInputs.length = 0
   await rm(data, { recursive: true, force: true })
 })
 
 describe("model profile HttpApi", () => {
+  it.live("discovers models with a redacted transient key without mutations or disposal", () =>
+    Effect.gen(function* () {
+      const response = yield* request("POST", ModelProfilePaths.discover, {
+        providerID: "local",
+        baseURL: "http://127.0.0.1:11434/v1",
+        apiKey: "transient-secret-canary",
+      })
+
+      expect(response.status).toBe(200)
+      expect(yield* response.json).toEqual({ models: [{ id: "first" }, { id: "second" }], duplicateCount: 1 })
+      expect(discoveryInputs).toHaveLength(1)
+      expect(Redacted.value(discoveryInputs[0]!.apiKey!)).toBe("transient-secret-canary")
+      expect((yield* request("GET", ModelProfilePaths.root)).status).toBe(200)
+      expect(disposals).toBe(0)
+    }),
+  )
+
+  it.live("redacts discovery credentials and endpoint queries from schema errors", () =>
+    Effect.gen(function* () {
+      const response = yield* request("POST", ModelProfilePaths.discover, {
+        providerID: "local",
+        baseURL: "http://127.0.0.1:11434/v1?token=query-secret-canary",
+        apiKey: "transient-secret-canary",
+      })
+      const body = yield* response.text
+
+      expect(response.status).toBe(400)
+      expect(body).not.toContain("query-secret-canary")
+      expect(body).not.toContain("transient-secret-canary")
+      expect(discoveryInputs).toHaveLength(0)
+      expect(disposals).toBe(0)
+    }),
+  )
+
+  itDiscoveryError.live("maps discovery errors to only the declared statuses", () =>
+    Effect.gen(function* () {
+      const cases = [
+        ["invalid", 400, "InvalidRequestError"],
+        ["endpoint", 502, "UpstreamError"],
+        ["timeout", 504, "TimeoutError"],
+        ["malformed", 502, "UpstreamError"],
+        ["large", 502, "UpstreamError"],
+        ["internal", 500, "UnknownError"],
+      ] as const
+
+      for (const [providerID, status, tag] of cases) {
+        const response = yield* request("POST", ModelProfilePaths.discover, {
+          providerID,
+          baseURL: "http://127.0.0.1:11434/v1",
+          apiKey: "status-secret-canary",
+        })
+        const body = yield* response.text
+        expect(response.status).toBe(status)
+        expect(body).toContain(`"_tag":"${tag}"`)
+        expect(body).not.toContain("status-secret-canary")
+      }
+      expect(disposals).toBe(0)
+    }),
+  )
+
   it.live("supports the CRUD lifecycle and disposes only after mutations", () =>
     Effect.gen(function* () {
       const initial = yield* request("GET", ModelProfilePaths.root)
