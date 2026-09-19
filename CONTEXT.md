@@ -127,6 +127,11 @@ Verification completed on 2026-09-19:
   `0.0.76`; strict filesystem and network enforcement does not depend on that
   reporting monitor.
 
+Phase 8 artifact-store design is recorded in
+`docs/superpowers/specs/2026-09-19-artifact-store-design.md`. The approved first
+slice uses the existing application database for metadata, content-addressed
+files under `<Global data>/koala/artifacts`, and explicit sandbox output paths.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.
