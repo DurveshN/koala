@@ -55,6 +55,8 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
+import { ArtifactStoreLive } from "@/koala/artifact-store"
+import { SandboxRuntime } from "@/sandbox/runtime"
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
   return (
@@ -456,6 +458,8 @@ export const node = LayerNode.make({
     MCP.node,
     Database.node,
     Ripgrep.node,
+    ArtifactStoreLive.node,
+    SandboxRuntime.node,
   ],
 })
 

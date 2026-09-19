@@ -131,6 +131,30 @@ Phase 8 artifact-store design is recorded in
 `docs/superpowers/specs/2026-09-19-artifact-store-design.md`. The approved first
 slice uses the existing application database for metadata, content-addressed
 files under `<Global data>/koala/artifacts`, and explicit sandbox output paths.
+The first artifact-store slice is implemented. Browser-safe Koala contracts
+define artifact identity, digest, output paths, validation, provenance, lineage,
+limits, and typed store errors. Core persists blob, artifact, and lineage
+metadata through generated migrations `20260919125324_koala_artifact_store`,
+`20260919125730_koala_artifact_sandbox_run_index`, and
+`20260919133950_koala_artifact_constraints`. The process-global OpenCode store
+creates private run staging, validates explicit outputs, streams SHA-256 hashing
+and copying, publishes immutable blobs without replacement, deduplicates equal
+content, and commits metadata and lineage transactionally. `sandbox_execute`
+promotes declared outputs only after a clean run, returns compact references,
+redacts private store paths, and always abandons staging. Artifact HTTP delivery,
+UI cards, garbage collection, deep document validation, and a separate
+`koala.db` remain later slices.
+
+Verification completed on 2026-09-19:
+
+- Koala artifact and sandbox contracts: 72 passed.
+- Core artifact database and migration suites: 20 passed.
+- OpenCode artifact store, sandbox runtime, worker, registry, and tool suites:
+  62 passed.
+- Koala, Core, and OpenCode typechecks passed.
+- Core migration check passed.
+- Desktop production build passed with the artifact store and generated
+  migrations in the sidecar bundle.
 
 ## Upstream OpenCode Session Runtime
 

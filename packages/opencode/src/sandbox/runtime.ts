@@ -1,5 +1,6 @@
 import { SandboxProtocol } from "@koala-ai/core/sandbox/protocol"
-import { Schema } from "effect"
+import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
+import { Context, Effect, Layer, Schema } from "effect"
 import { fork, spawn, type ChildProcess } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
@@ -25,6 +26,17 @@ export interface Runtime {
   ) => Promise<SandboxProtocol.WorkerResponse>
 }
 
+export interface Interface {
+  readonly availability: (options?: Options) => Effect.Effect<SandboxProtocol.WorkerResponse>
+  readonly execute: (
+    runID: SandboxProtocol.RunID,
+    request: SandboxProtocol.ExecutionRequest,
+    options?: Options,
+  ) => Effect.Effect<SandboxProtocol.WorkerResponse>
+}
+
+export class Service extends Context.Service<Service, Interface>()("@opencode/SandboxRuntime") {}
+
 export function create(): Runtime {
   return {
     availability: (options) => exchange({ protocolVersion: 1, type: "availability" }, options),
@@ -43,6 +55,16 @@ export async function execute(
 ) {
   return await create().execute(runID, request, options)
 }
+
+export const layer = Layer.succeed(
+  Service,
+  Service.of({
+    availability: (options) => Effect.promise(() => availability(options)),
+    execute: (runID, request, options) => Effect.promise(() => execute(runID, request, options)),
+  }),
+)
+
+export const node = makeGlobalNode({ service: Service, layer, deps: [] })
 
 export function resolveWorkerPath(
   environment: NodeJS.ProcessEnv = process.env,
@@ -184,6 +206,7 @@ async function stopWorker(child: ChildProcess) {
     child.kill("SIGKILL")
     return
   }
+  // Sandboxed Windows descendants are owned by upstream srt-win's Job Object; this only stops the worker tree.
   await new Promise<void>((resolve) => {
     const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
       env: workerEnvironment(process.env),

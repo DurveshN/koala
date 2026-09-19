@@ -184,24 +184,33 @@ The target sandbox has no network access, receives only explicit task inputs,
 writes to a temporary workspace and artifact output directory, removes
 credentials, and has no host execution fallback.
 
-The first implemented tool grants the active project as a read root and one
-host-created temporary directory as its working/write root. Artifact-store
-promotion is still pending. Desktop omits the host `bash` tool and the shell
-implementation rejects direct calls while sandbox mode is active. Each run uses
-schema-validated child-process IPC, bounded combined output, timeout and
-cancellation handling, process-tree termination, and runtime cleanup/reset.
+The implemented tool grants the active project as a read root and host-created
+`work/` and `artifacts/` directories as its only write roots. Explicit outputs
+are promoted only from clean executions. Desktop omits the host `bash` tool and
+the shell implementation rejects direct calls while sandbox mode is active.
+Each run uses schema-validated child-process IPC, bounded combined output,
+timeout and cancellation handling, process-tree termination, and runtime
+cleanup/reset.
 
-## Target Data Infrastructure
+## Implemented Artifact Infrastructure
 
 ```text
-<Koala data>/koala.db
 <Koala data>/artifacts/staging/<run-id>/
 <Koala data>/artifacts/blobs/sha256/<prefix>/<digest>
+<Application database>/koala_artifact*
 ```
 
-SQLite stores artifact metadata, model profiles, routing decisions, audit
-records, knowledge metadata, chunks, and citations. Immutable binary data is
-stored by digest outside SQLite.
+The existing application SQLite database stores artifact metadata, ownership,
+tool and sandbox provenance, validation, and source lineage. Immutable bytes are
+stored by digest outside SQLite. Logical artifact IDs remain distinct from blob
+digests so multiple provenance records can safely share one physical blob.
+
+Promotion rejects traversal, links, non-regular files, unstable files, and
+limit violations. It hashes and copies from one opened source handle, publishes
+without replacing an existing digest, verifies deduplicated blobs, and writes
+metadata only after the blob exists. The initial validator detects common media
+signatures and strict UTF-8 text; deep document-format validation remains a
+later phase.
 
 ## Target Network Boundary
 

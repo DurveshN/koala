@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import { SandboxProtocol } from "@koala-ai/core/sandbox/protocol"
-import { Schema } from "effect"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Effect, Schema } from "effect"
 import path from "node:path"
 import { SandboxRuntime } from "@/sandbox/runtime"
+import { testEffect } from "../lib/effect"
 
 const runID = Schema.decodeUnknownSync(SandboxProtocol.RunID)("run-ipc")
 const request = Schema.decodeUnknownSync(SandboxProtocol.ExecutionRequest)({
@@ -17,6 +19,7 @@ const request = Schema.decodeUnknownSync(SandboxProtocol.ExecutionRequest)({
 })
 
 const fixture = (name: string) => path.join(import.meta.dir, name)
+const it = testEffect(LayerNode.compile(SandboxRuntime.node))
 
 describe("sandbox runtime adapter", () => {
   test("passes only an explicit environment allowlist to the worker", () => {
@@ -38,6 +41,17 @@ describe("sandbox runtime adapter", () => {
       availability: { status: "available" },
     })
   })
+
+  it.live("exposes the child-process adapter through its Effect service", () =>
+    Effect.gen(function* () {
+      const runtime = yield* SandboxRuntime.Service
+      expect(yield* runtime.availability({ workerPath: fixture("ipc-worker.ts") })).toEqual({
+        protocolVersion: 1,
+        type: "availability",
+        availability: { status: "available" },
+      })
+    }),
+  )
 
   test("forwards one matching cancellation", async () => {
     const abort = new AbortController()

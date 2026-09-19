@@ -194,6 +194,7 @@ export function resolveSandboxAssets(moduleURL: string, platform: NodeJS.Platfor
     ...(platform === "linux" && architecture
       ? { seccompApplyPath: path.join(vendor, "seccomp", architecture, "apply-seccomp") }
       : {}),
+    // Upstream srt-win assigns sandboxed process descendants to its Windows Job Object.
     ...(platform === "win32" && architecture
       ? { srtWinPath: path.join(vendor, "srt-win", architecture, "srt-win.exe") }
       : {}),

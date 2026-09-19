@@ -159,6 +159,32 @@ work. It is not a substitute for the implementation plan or audit logs.
   because its monitor readiness is not exposed, while OS policy enforcement is
   independent of that reporting path.
 
+## Artifacts
+
+- Artifact metadata uses the existing application database so Session and tool
+  ownership remain in one transaction domain. A separate `koala.db` would need
+  an independent migration lifecycle and is deferred.
+- Logical `art_<uuid>` identity is distinct from lowercase SHA-256 blob identity.
+  Multiple artifacts can share immutable content while preserving separate
+  provenance and lineage.
+- Sandbox artifacts are opt-in outputs beneath a reserved `artifacts/`
+  directory. Recursive promotion is not used because temporary files are not
+  necessarily deliverables.
+- Promotion is serialized and derives run byte/count totals from committed
+  metadata rather than trusting callers. Limits are 10 outputs, 100 MiB per
+  artifact, and 250 MiB per run.
+- Candidate validation rejects traversal, cross-platform reserved paths,
+  directories, symbolic links, junctions, hard links, and files that change
+  while one opened handle is hashed and copied.
+- Blob publication uses a destination-local temporary file and no-overwrite hard
+  link. Filesystem publication precedes the metadata transaction, making an
+  orphan blob possible but not a committed row pointing to a missing blob.
+- The initial MIME validator recognizes PNG, JPEG, GIF, WebP, PDF, ZIP, strict
+  UTF-8 text, and generic binary. Deep Office/PDF/archive validation remains a
+  later phase.
+- Sandbox output and violation text redact the private artifact storage root;
+  returned artifact references contain no bytes or absolute storage paths.
+
 ## Verification Record
 
 On 2026-09-17, after the first sovereignty slice:

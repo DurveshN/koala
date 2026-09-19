@@ -8,6 +8,7 @@ import {
   availability,
   execute,
   parseViolation,
+  resolveSandboxAssets,
   runWrappedCommand,
   strictConfig,
   terminateProcessTree,
@@ -39,6 +40,12 @@ function execution(overrides: Record<string, unknown> = {}) {
 }
 
 describe("sandbox worker policy", () => {
+  test("uses upstream srt-win for Windows Job Object ownership of sandbox descendants", () => {
+    expect(resolveSandboxAssets(import.meta.url, "win32", "x64").srtWinPath).toEndWith(
+      path.join("srt-win", "x64", "srt-win.exe"),
+    )
+  })
+
   test("builds the strict SRT policy", () => {
     const request = execution({ readRoots: [process.cwd()], writeRoots: [path.join(process.cwd(), "tmp")] })
     const config = strictConfig(request, "linux", {

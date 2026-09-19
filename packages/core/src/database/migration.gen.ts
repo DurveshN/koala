@@ -40,5 +40,8 @@ export const migrations = (
     import("./migration/20260622142730_simplify_session_context_epoch"),
     import("./migration/20260622170816_reset_v2_session_state"),
     import("./migration/20260622202450_simplify_session_input"),
+    import("./migration/20260919125324_koala_artifact_store"),
+    import("./migration/20260919125730_koala_artifact_sandbox_run_index"),
+    import("./migration/20260919133950_koala_artifact_constraints"),
   ])
 ).map((module) => module.default) satisfies DatabaseMigration.Migration[]
