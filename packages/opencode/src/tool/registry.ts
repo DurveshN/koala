@@ -6,6 +6,7 @@ import { Session } from "@/session/session"
 import { QuestionTool } from "./question"
 import { ShellTool } from "./shell"
 import { SandboxExecuteTool } from "./sandbox-execute"
+import { SandboxTestTool } from "./sandbox-test"
 import { CalculateTool } from "./calculate"
 import { EditTool } from "./edit"
 import { GlobTool } from "./glob"
@@ -115,6 +116,7 @@ const layer = Layer.effect(
     const websearch = yield* WebSearchTool
     const shell = yield* ShellTool
     const sandbox = yield* SandboxExecuteTool
+    const sandboxTest = yield* SandboxTestTool
     const calculate = yield* CalculateTool
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
@@ -218,6 +220,7 @@ const layer = Layer.effect(
           invalid: Tool.init(invalid),
           shell: Tool.init(shell),
           sandbox: Tool.init(sandbox),
+          sandboxTest: Tool.init(sandboxTest),
           calculate: Tool.init(calculate),
           read: Tool.init(read),
           glob: Tool.init(globtool),
@@ -242,7 +245,9 @@ const layer = Layer.effect(
             tool.invalid,
             ...(questionEnabled ? [tool.question] : []),
             ...(flags.agentExecution === "host" || flags.agentExecution === "both" ? [tool.shell] : []),
-            ...(flags.agentExecution === "sandbox" || flags.agentExecution === "both" ? [tool.sandbox] : []),
+            ...(flags.agentExecution === "sandbox" || flags.agentExecution === "both"
+              ? [tool.sandbox, tool.sandboxTest]
+              : []),
             tool.calculate,
             tool.read,
             tool.glob,
@@ -303,7 +308,7 @@ const layer = Layer.effect(
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
       const filtered = (yield* all()).filter((tool) => {
         if (tool.id === ShellTool.id) return flags.agentExecution === "host" || flags.agentExecution === "both"
-        if (tool.id === SandboxExecuteTool.id)
+        if (tool.id === SandboxExecuteTool.id || tool.id === SandboxTestTool.id)
           return flags.agentExecution === "sandbox" || flags.agentExecution === "both"
         if (tool.id === WebSearchTool.id) {
           return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })

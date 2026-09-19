@@ -256,6 +256,46 @@ Each run uses schema-validated child-process IPC, bounded combined output,
 timeout and cancellation handling, process-tree termination, and runtime
 cleanup/reset.
 
+`sandbox_test` reuses this same runtime and engine identity but has no command,
+path, URL, timeout, or output parameter. It first queries runtime availability;
+an unavailable result is returned as normal diagnostics and no execution is
+attempted. For an available runtime, the host creates private nonces, fixed Node
+scripts, and fixed configuration for these named checks:
+
+- staging read and write;
+- project read and write denial;
+- separate external-temporary read and write denial;
+- loopback TCP denial;
+- readiness-driven local cancellation;
+- verified cleanup.
+
+The sandbox receives only its staging tree as a read root and its staging work
+directory as a write root. The host independently checks created or absent files
+and records whether its loopback listener accepted a connection. A second fixed
+run writes a readiness file before waiting; bounded polling observes that file,
+then a local `AbortSignal` requests cancellation. No probe artifact is promoted.
+The listener, canaries, external directory, staging tree, and cancellation
+controller are covered by idempotent explicit cleanup plus a finalizer.
+
+Preparation resources use scoped acquisition. The project boundary is one
+atomically created UUID-named directory containing both project canaries; no
+individual path is recorded before ownership is established, and cleanup removes
+only that directory. Staging, the external directory, listener, and host-written
+files also register releases before preparation advances. Diagnostic command
+arguments are not interpolated into Windows `cmd.exe` syntax: a fixed encoded
+PowerShell launcher starts the runtime/script, while base64 JSON arguments are
+passed through the closed `KOALA_SANDBOX_TEST_ARGUMENTS` environment key and
+decoded by the fixed script.
+
+Native CI remains blocked on machine provisioning rather than test code. The
+repository has no sandbox setup action or script. Windows runners need the
+elevated upstream `windows-install` operation to create the dedicated sandbox
+account and machine-wide WFP filters. Ubuntu runners need `bubblewrap`, `socat`,
+and `ripgrep`, plus either an AppArmor profile granting user namespaces or the
+privileged `kernel.apparmor_restrict_unprivileged_userns=0` setting. Existing CI
+runners do not establish these prerequisites, so the native test remains
+explicitly capability-gated and no OS-enforcement result is claimed.
+
 ## Implemented Artifact Infrastructure
 
 ```text

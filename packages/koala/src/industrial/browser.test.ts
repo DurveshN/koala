@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test"
+import { Schema } from "effect"
+import { SandboxTestTool } from "../index"
 
 test("bundles the complete Koala contract surface for browsers", async () => {
   const bundle = await Bun.build({
@@ -13,4 +15,14 @@ test("bundles the complete Koala contract surface for browsers", async () => {
   const output = bundle.outputs[0]
   if (!output) throw new Error("Browser bundle did not produce an output")
   expect(await output.text()).not.toMatch(/(?:from|require\()["'](?:node:|fs|path|child_process|crypto|stream)/)
+})
+
+test("exports the browser-safe sandbox diagnostic contract", () => {
+  expect(Schema.decodeUnknownSync(SandboxTestTool.Input)({})).toEqual({})
+  expect(SandboxTestTool.summarize()).toEqual({
+    sourceCount: 0,
+    artifactCount: 0,
+    pathCount: 0,
+    declaredOutputCount: 0,
+  })
 })

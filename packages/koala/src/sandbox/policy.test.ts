@@ -90,4 +90,18 @@ describe("SandboxPolicy", () => {
     expect(built.timeoutMs).toBe(1_000)
     expect(built.maxOutputBytes).toBe(4_096)
   })
+
+  test("accepts only protocol-approved host-controlled environment values", () => {
+    const roots = { cwd: "/sandbox/work", readRoots: ["/runtime"], writeRoots: ["/sandbox/work"] }
+    const built = SandboxPolicy.buildRequest(roots, "run diagnostic", {
+      env: { ELECTRON_RUN_AS_NODE: "1", KOALA_SANDBOX_TEST_ARGUMENTS: "encoded" },
+    })
+
+    expect(built.env).toEqual({ ELECTRON_RUN_AS_NODE: "1", KOALA_SANDBOX_TEST_ARGUMENTS: "encoded" })
+    expect(() =>
+      SandboxPolicy.buildRequest(roots, "run diagnostic", {
+        env: { UNSAFE: "value" } as SandboxProtocol.Environment,
+      }),
+    ).toThrow("Environment keys must be one of")
+  })
 })

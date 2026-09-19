@@ -248,6 +248,46 @@ Registry lookups require own properties, source-unit suffix powers apply to the
 unit rather than the coefficient (`2 m^2` is distinct from `(2 m)^2`), and all
 errors carry bounded source spans and curated audit-safe summaries.
 
+The Phase 9D `sandbox_test` diagnostic is also implemented and model-visible
+only when sandbox agent execution is enabled. Its Koala contract accepts exactly
+an empty object and returns every required probe through a closed stable reason
+vocabulary in the shared Industrial Result envelope. The OpenCode adapter asks
+for only the fixed `sandbox_test` permission token, checks native runtime
+availability before creating staging, and never uses host execution as a
+fallback.
+
+An available runtime receives two fixed host-authored runs. The first verifies
+private staging reads/writes while testing denial of project reads/writes,
+separate external-temporary reads/writes, and loopback TCP. Nonces, paths,
+scripts, configuration, native output, and violation details remain outside the
+result, projection, and audit; host-side checks independently inspect write
+effects and listener connections. The second run publishes a readiness file,
+after which the host aborts it with a local signal and accepts only
+`cancelled=true` with `timedOut=false`. Cleanup is idempotent, finalizer-backed,
+verified before the result is built, and promotes no artifacts. An unavailable
+runtime returns ordinary diagnostic data with all execution probes marked
+`not-run` and makes no execute call.
+
+The `sandbox_test` review remediation makes preparation interruption-safe.
+Staging, the project probe directory, the external temporary directory, the
+loopback listener, and each host-created file are acquired with scoped releases,
+so cancellation cannot leave an untracked completed acquisition. The project
+probe now atomically creates one UUID-named owned directory, places both
+canaries beneath it, and removes only that directory. Deterministic tests
+interrupt at the staging, project, external, and listener acquisition boundaries
+and wait for the suspended setup continuation before checking that resources
+were not recreated.
+
+Diagnostic command construction no longer interpolates Windows paths into a
+`cmd.exe` command. A fixed PowerShell encoded launcher decodes only the
+executable and script path, while script arguments travel as base64 JSON in the
+allowlisted `KOALA_SANDBOX_TEST_ARGUMENTS` environment field and are decoded by
+the fixed script. The request also sets the fixed `ELECTRON_RUN_AS_NODE=1` flag
+so a packaged Desktop utility process invokes its Electron executable as Node.
+The Windows test exercises real `cmd.exe` parsing with percent
+syntax, spaces, ampersand, caret, parentheses, a quote-bearing argument, and a
+trailing backslash.
+
 Combined verification completed on 2026-09-20:
 
 - Koala complete suite: 429 passed.
@@ -259,6 +299,38 @@ Combined verification completed on 2026-09-20:
 - Desktop document-runtime, sidecar-environment, and packaging suites: 25 passed.
 - Koala, Core, document-runtime, OpenCode, and Desktop typechecks passed.
 - Core migration consistency check passed.
+
+Sandbox diagnostic verification completed on 2026-09-20:
+
+- Koala complete suite: 438 passed.
+- OpenCode focused sandbox, tool-registry, artifact, audit, and Industrial
+  Execution suites: 113 passed and 1 capability-gated native test skipped.
+- OpenCode, Koala, and Desktop typechecks passed.
+- OpenCode Node build, single-target Windows x64 build/smoke test, and Desktop
+  production build passed.
+- Desktop sandbox-runtime, sidecar-environment, and document-runtime tests: 11
+  passed.
+- Native sandbox availability returned `initialization-failed` on this Windows
+  host, so no native policy execution result was claimed.
+- A broader OpenCode tool sweep reached 471 passed and 1 skipped but had 8
+  Windows path-normalization failures involving `C:\Users\...` and the
+  checkout's `E:\users\...` mapping. The failing source and test files were not
+  changed by this implementation.
+
+Sandbox diagnostic review verification completed on 2026-09-20:
+
+- Koala complete suite: 438 passed.
+- OpenCode focused sandbox, registry, artifact, audit, calculator, and Industrial
+  Execution suites: 113 passed and 1 capability-gated native test skipped.
+- Koala, OpenCode, and Desktop typechecks passed.
+- OpenCode single-target Windows x64 build/smoke test and Desktop production
+  build passed.
+- Native OS enforcement remains unverified. This repository has no sandbox host
+  provisioning script: Windows requires an elevated one-time
+  `windows-install` that creates the `srt-sandbox` account and machine-wide WFP
+  filters; Ubuntu requires `bubblewrap`, `socat`, `ripgrep`, and an AppArmor
+  policy or privileged sysctl allowing capability-bearing unprivileged user
+  namespaces. The existing CI jobs install neither configuration.
 
 Phase 9B runtime-review remediation details:
 

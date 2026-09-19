@@ -4,6 +4,7 @@ import { Schema } from "effect"
 import { Artifact } from "../artifact/artifact"
 import { IndustrialInput } from "../industrial/input"
 import { IndustrialResult } from "../industrial/result"
+import { IndustrialTool } from "../industrial/tool"
 import { SandboxProtocol } from "./protocol"
 
 export const MaxTimeoutMs = 120_000
@@ -12,6 +13,11 @@ export const MaxCapturedOutputBytes = 1024 * 1024
 export const MaxViolations = 100
 export const MaxSummaryBytes = 16 * 1024
 export const SummaryTruncationMarker = "sandbox_summary_truncated=true"
+
+export const Engine = Schema.decodeUnknownSync(IndustrialTool.Engine)({
+  name: "anthropic-sandbox-runtime",
+  version: "0.0.76",
+})
 
 export const Command = Schema.String.check(
   Schema.isNonEmpty(),

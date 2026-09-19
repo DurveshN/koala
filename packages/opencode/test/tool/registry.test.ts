@@ -100,6 +100,12 @@ const withSandboxExecution = testEffect(
     [RuntimeFlags.node, RuntimeFlags.layer({ agentExecution: "sandbox" })],
   ]),
 )
+const withBothExecutions = testEffect(
+  LayerNode.compile(root, [
+    [Config.node, configLayer],
+    [RuntimeFlags.node, RuntimeFlags.layer({ agentExecution: "both" })],
+  ]),
+)
 
 afterEach(async () => {
   await disposeAllInstances()
@@ -118,9 +124,32 @@ describe("tool.registry", () => {
       })
 
       expect(ids).toContain("sandbox_execute")
+      expect(ids).toContain("sandbox_test")
       expect(ids).not.toContain("bash")
       expect(tools.map((tool) => tool.id)).toContain("sandbox_execute")
+      expect(tools.map((tool) => tool.id)).toContain("sandbox_test")
       expect(tools.map((tool) => tool.id)).not.toContain("bash")
+    }),
+  )
+
+  withBothExecutions.instance("exposes sandbox diagnostics beside both execution tools", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const ids = yield* registry.ids()
+
+      expect(ids).toContain("bash")
+      expect(ids).toContain("sandbox_execute")
+      expect(ids).toContain("sandbox_test")
+    }),
+  )
+
+  it.instance("does not expose sandbox diagnostics for host-only execution", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const ids = yield* registry.ids()
+
+      expect(ids).not.toContain("sandbox_execute")
+      expect(ids).not.toContain("sandbox_test")
     }),
   )
 

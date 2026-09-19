@@ -30,7 +30,15 @@ export const Command = Schema.String.check(
 )
 export type Command = typeof Command.Type
 
-const EnvironmentKeys = ["HOME", "LANG", "LC_ALL", "PATH", "TMPDIR"] as const
+const EnvironmentKeys = [
+  "ELECTRON_RUN_AS_NODE",
+  "HOME",
+  "KOALA_SANDBOX_TEST_ARGUMENTS",
+  "LANG",
+  "LC_ALL",
+  "PATH",
+  "TMPDIR",
+] as const
 const environmentKeys = new Set<string>(EnvironmentKeys)
 
 export const EnvironmentKey = Schema.Literals(EnvironmentKeys)

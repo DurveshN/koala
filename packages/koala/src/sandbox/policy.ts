@@ -12,6 +12,7 @@ export interface HostRoots {
 export interface Limits {
   readonly timeoutMs?: number
   readonly maxOutputBytes?: number
+  readonly env?: SandboxProtocol.Environment
 }
 
 export const defaults = Object.freeze({
@@ -29,7 +30,7 @@ export function buildRequest(roots: HostRoots, command: string, limits: Limits =
     cwd: roots.cwd,
     readRoots: [...roots.readRoots],
     writeRoots: [...roots.writeRoots],
-    env: { ...defaults.env },
+    env: { ...defaults.env, ...limits.env },
     network: [...defaults.network],
     timeoutMs: limits.timeoutMs ?? defaults.timeoutMs,
     maxOutputBytes: limits.maxOutputBytes ?? defaults.maxOutputBytes,

@@ -4,7 +4,6 @@ import { Artifact } from "@koala-ai/core/artifact/artifact"
 import { ArtifactStore } from "@koala-ai/core/artifact/store"
 import { IndustrialProjection } from "@koala-ai/core/industrial/projection"
 import { IndustrialResult } from "@koala-ai/core/industrial/result"
-import { IndustrialTool } from "@koala-ai/core/industrial/tool"
 import { SandboxPolicy } from "@koala-ai/core/sandbox/policy"
 import { SandboxProtocol } from "@koala-ai/core/sandbox/protocol"
 import { SandboxTool } from "@koala-ai/core/sandbox/tool"
@@ -14,11 +13,6 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { IndustrialExecution } from "@/koala/industrial-execution"
 import { SandboxRuntime } from "@/sandbox/runtime"
 import { Tool } from "./tool"
-
-const Engine = Schema.decodeUnknownSync(IndustrialTool.Engine)({
-  name: "anthropic-sandbox-runtime",
-  version: "0.0.76",
-})
 
 type Metadata = {
   readonly result: SandboxTool.Result
@@ -56,7 +50,7 @@ export const SandboxExecuteTool = Tool.define<
           const common = {
             tool: "sandbox_execute" as const,
             contractVersion: 1 as const,
-            engine: Engine,
+            engine: SandboxTool.Engine,
             status: "error" as const,
             sources: [],
             outputs: [],
@@ -93,7 +87,7 @@ export const SandboxExecuteTool = Tool.define<
           .execute({
             tool: "sandbox_execute",
             permission: "sandbox_execute",
-            engine: Engine,
+            engine: SandboxTool.Engine,
             input: params,
             inputSchema: SandboxTool.Input,
             inputSummary: SandboxTool.summarize(params),
@@ -173,7 +167,7 @@ function executeSandbox(
         Schema.decodeUnknownSync(SandboxTool.Result)({
           tool: "sandbox_execute" as const,
           contractVersion: 1 as const,
-          engine: Engine,
+          engine: SandboxTool.Engine,
           status: "success",
           cancelled: false,
           timedOut: false,

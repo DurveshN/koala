@@ -158,6 +158,40 @@ work. It is not a substitute for the implementation plan or audit logs.
 - Filesystem violation reporting on Linux is best effort in version `0.0.76`
   because its monitor readiness is not exposed, while OS policy enforcement is
   independent of that reporting path.
+- Sandbox diagnostics must treat runtime unavailability as an observed product
+  state rather than an execution exception. Checking availability first also
+  makes it possible to prove that no execution was attempted.
+- A sandbox self-test cannot trust its own report for write or network denial.
+  Host-created nonce canaries, absent-target checks, and a host-owned loopback
+  listener provide independent observations without returning sensitive values.
+- Cancellation readiness must be explicit. A fixed sandbox script writes a
+  nonce-bound readiness file, bounded polling observes it, and only then does a
+  local abort request test the runtime cancellation path.
+- Diagnostic cleanup needs both an explicit verified pass before result
+  construction and an idempotent finalizer for interruption. This permits a
+  stable `cleanup-failed` outcome when the normal cleanup attempt does not
+  remove all resources.
+- Promise-backed setup must not mutate shared cleanup state before ownership is
+  acquired. `Effect.acquireRelease` makes acquisition and finalizer registration
+  atomic with respect to interruption; later setup can proceed only after the
+  owned resource has a registered release.
+- External probe paths should be grouped beneath one atomically created owned
+  directory. Recording prospective individual paths before creation risks
+  deleting a path the diagnostic never owned.
+- Dynamic Windows paths should not be interpolated into `cmd.exe` syntax.
+  `sandbox_test` uses a fixed encoded PowerShell launcher for the executable and
+  script and transports script arguments as base64 JSON through one allowlisted
+  environment key. It also supplies fixed `ELECTRON_RUN_AS_NODE=1` because the
+  packaged Desktop utility process uses the Electron executable for Node child
+  scripts.
+- Native sandbox CI is not meaningful until its host setup is explicit. Windows
+  needs the elevated sandbox-account/WFP installation; Ubuntu needs
+  `bubblewrap`, `socat`, `ripgrep`, and an AppArmor user-namespace allowance.
+  The current workflow provisions none of these, so the gated test must not be
+  described as OS-enforcement coverage.
+- Diagnostic result schemas and renderers should enumerate fixed probe names.
+  Iterating arbitrary decoded object properties could expose unknown fields even
+  when the TypeScript type appears closed.
 
 ## Artifacts
 
@@ -310,3 +344,13 @@ On 2026-09-17, after the first sovereignty slice:
 - OpenCode, Koala, and Desktop typechecks passed after sandbox integration.
 - The OpenCode Node build and Desktop production build passed with the
   standalone sandbox worker artifact.
+- The `sandbox_test` change passed 438 Koala tests, 113 focused OpenCode tests
+  with 1 native capability-gated skip, and 11 targeted Desktop tests. Koala,
+  OpenCode, and Desktop typechecks, the OpenCode Node build, the single-target
+  Windows x64 build/smoke test, and the Desktop production build passed.
+- This Windows host still reports sandbox availability as
+  `initialization-failed`; native diagnostics therefore remain capability-gated.
+- A broader OpenCode tool sweep had 8 Windows path-normalization failures with
+  differing `C:\Users\...` and `E:\users\...` views of temporary directories.
+  The failing source and test files were not changed in the `sandbox_test`
+  implementation.
