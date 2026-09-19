@@ -5,6 +5,7 @@ import { PlanExitTool } from "./plan"
 import { Session } from "@/session/session"
 import { QuestionTool } from "./question"
 import { ShellTool } from "./shell"
+import { SandboxExecuteTool } from "./sandbox-execute"
 import { EditTool } from "./edit"
 import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
@@ -108,6 +109,7 @@ const layer = Layer.effect(
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
     const shell = yield* ShellTool
+    const sandbox = yield* SandboxExecuteTool
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
     const edit = yield* EditTool
@@ -209,6 +211,7 @@ const layer = Layer.effect(
         const tool = yield* Effect.all({
           invalid: Tool.init(invalid),
           shell: Tool.init(shell),
+          sandbox: Tool.init(sandbox),
           read: Tool.init(read),
           glob: Tool.init(globtool),
           grep: Tool.init(greptool),
@@ -231,7 +234,8 @@ const layer = Layer.effect(
           builtin: [
             tool.invalid,
             ...(questionEnabled ? [tool.question] : []),
-            tool.shell,
+            ...(flags.agentExecution === "host" || flags.agentExecution === "both" ? [tool.shell] : []),
+            ...(flags.agentExecution === "sandbox" || flags.agentExecution === "both" ? [tool.sandbox] : []),
             tool.read,
             tool.glob,
             tool.grep,
@@ -290,6 +294,9 @@ const layer = Layer.effect(
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
       const filtered = (yield* all()).filter((tool) => {
+        if (tool.id === ShellTool.id) return flags.agentExecution === "host" || flags.agentExecution === "both"
+        if (tool.id === SandboxExecuteTool.id)
+          return flags.agentExecution === "sandbox" || flags.agentExecution === "both"
         if (tool.id === WebSearchTool.id) {
           return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
         }

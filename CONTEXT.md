@@ -97,6 +97,36 @@ reasoning probes in a fixed sequential order. The Desktop applies only verified
 yes/no results to fields that remain unknown and ignores stale responses. Full
 deletion of dormant sharing APIs and persistence follows in dependency order.
 
+The isolated sandbox worker and host adapter are implemented around
+`@anthropic-ai/sandbox-runtime@0.0.76`. Each availability check or execution
+uses one short-lived forked process and schema-validated Node IPC. Execution is
+fail-closed, uses strict filesystem and network policy, bounds combined output,
+handles cancellation and timeouts, terminates the command process tree, and
+performs SRT command cleanup and reset. The Node build emits a standalone
+`sandbox-runtime/sandbox-worker.mjs` with the required vendor runtime assets and
+license. Desktop packages that directory outside `app.asar`, passes its path to
+the sidecar, and selects sandbox-only agent execution. The model-facing registry
+exposes `sandbox_execute` instead of `bash`, while the shell implementation also
+rejects direct calls in sandbox mode. Artifact-store promotion remains pending.
+
+Verification completed on 2026-09-19:
+
+- OpenCode sandbox, runtime-flag, registry, and tool parameter tests: 82 passed.
+- Direct host-shell denial test: 1 passed.
+- Koala sandbox protocol and policy tests: 31 passed.
+- Desktop sandbox path, environment, and packaging tests: 12 passed.
+- `packages/opencode`: `bun typecheck` passed.
+- `packages/koala`: `bun typecheck` passed.
+- `packages/desktop`: `bun typecheck` passed.
+- `packages/opencode`: `bun run script/build-node.ts` passed.
+- `packages/desktop`: `bun run build` passed.
+- The emitted worker passed Node syntax and real IPC availability checks.
+- Native sandbox command execution was not exercised because this Windows host
+  reports `initialization-failed` until the required sandbox setup is provisioned.
+- Linux filesystem violation reporting remains best effort with runtime version
+  `0.0.76`; strict filesystem and network enforcement does not depend on that
+  reporting monitor.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.

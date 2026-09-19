@@ -49,6 +49,8 @@ packages/koala       Planned Koala domain services
 - Sidecar environment removes OTLP endpoint, headers, and resource attributes.
 - Sidecar environment sets `OPENCODE_DISABLE_AUTOUPDATE=1`.
 - Sidecar environment sets `OPENCODE_DISABLE_SHARE=1`.
+- Desktop sidecar environment sets `KOALA_AGENT_EXECUTION=sandbox` and passes
+  the packaged sandbox-worker path explicitly.
 
 These controls are the first layer. Cloud provider, sharing, remote plugin, web
 tool, MCP, server-selection, and external-link code still requires staged
@@ -163,7 +165,7 @@ Koala tool registry
 
 Binary outputs are artifact references, not data embedded in chat history.
 
-## Target Sandbox Infrastructure
+## Implemented Sandbox Infrastructure
 
 ```text
 sidecar
@@ -178,9 +180,16 @@ short-lived worker process
     +-- Windows restricted account, ACLs, WFP and job object
 ```
 
-The sandbox has no network access, receives only explicit task inputs, writes to
-a temporary workspace and artifact output directory, removes credentials, and
-has no host execution fallback.
+The target sandbox has no network access, receives only explicit task inputs,
+writes to a temporary workspace and artifact output directory, removes
+credentials, and has no host execution fallback.
+
+The first implemented tool grants the active project as a read root and one
+host-created temporary directory as its working/write root. Artifact-store
+promotion is still pending. Desktop omits the host `bash` tool and the shell
+implementation rejects direct calls while sandbox mode is active. Each run uses
+schema-validated child-process IPC, bounded combined output, timeout and
+cancellation handling, process-tree termination, and runtime cleanup/reset.
 
 ## Target Data Infrastructure
 

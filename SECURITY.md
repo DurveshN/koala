@@ -18,6 +18,15 @@ OpenCode does **not** sandbox the agent. The permission system exists as a UX fe
 
 If you need true isolation, run OpenCode inside a Docker container or VM.
 
+### Koala Desktop Command Sandbox
+
+Koala Desktop configures model-requested command execution through the native
+`sandbox_execute` tool and removes the host `bash` tool from the model-facing
+registry. If the platform sandbox is unavailable, command execution is refused
+without retrying on the host. This boundary applies to command execution;
+separately permissioned file tools and trusted internal application processes
+remain host operations.
+
 ### Server Mode
 
 Server mode is opt-in only. When enabled, set `OPENCODE_SERVER_PASSWORD` to require HTTP Basic Auth. Without this, the server runs unauthenticated (with a warning). It is the end user's responsibility to secure the server - any functionality it provides is not a vulnerability.

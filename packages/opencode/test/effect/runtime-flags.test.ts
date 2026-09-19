@@ -15,6 +15,30 @@ describe("RuntimeFlags", () => {
       const flags = yield* readFlags.pipe(Effect.provide(fromConfig({})))
 
       expect(flags.autoShare).toBe(false)
+      expect(flags.agentExecution).toBe("host")
+    }),
+  )
+
+  for (const input of ["host", "both", "sandbox"] as const) {
+    it.effect(`reads agent execution mode ${input}`, () =>
+      Effect.gen(function* () {
+        const flags = yield* readFlags.pipe(Effect.provide(fromConfig({ KOALA_AGENT_EXECUTION: input })))
+        expect(flags.agentExecution).toBe(input)
+      }),
+    )
+  }
+
+  it.effect("fails closed for an unknown agent execution mode", () =>
+    Effect.gen(function* () {
+      const flags = yield* readFlags.pipe(Effect.provide(fromConfig({ KOALA_AGENT_EXECUTION: "unexpected" })))
+      expect(flags.agentExecution).toBe("none")
+    }),
+  )
+
+  it.effect("defaults Desktop agent execution to sandbox", () =>
+    Effect.gen(function* () {
+      const flags = yield* readFlags.pipe(Effect.provide(fromConfig({ OPENCODE_CLIENT: "desktop" })))
+      expect(flags.agentExecution).toBe("sandbox")
     }),
   )
 

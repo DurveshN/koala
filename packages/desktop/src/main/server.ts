@@ -5,6 +5,7 @@ import type { Details } from "electron"
 import { getLogger } from "./logging"
 import { getUserShell, loadShellEnv } from "./shell-env"
 import { createSidecarEnv } from "./sidecar-env"
+import { resolveSandboxWorkerPath } from "./sandbox-runtime"
 import { getStore } from "./store"
 import { DEFAULT_SERVER_URL_KEY } from "./store-keys"
 
@@ -62,9 +63,14 @@ export async function spawnLocalServer(
   options: SpawnLocalServerOptions,
 ) {
   const sidecar = join(dirname(fileURLToPath(import.meta.url)), "sidecar.js")
+  const sandboxWorker = resolveSandboxWorkerPath({
+    packaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    moduleURL: import.meta.url,
+  })
   const child = utilityProcess.fork(sidecar, [], {
     cwd: process.cwd(),
-    env: createSidecarEnv(),
+    env: createSidecarEnv(process.env, process.platform, sandboxWorker),
     serviceName: SIDECAR_SERVICE_NAME,
     stdio: "pipe",
   })

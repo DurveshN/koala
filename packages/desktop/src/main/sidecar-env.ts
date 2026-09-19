@@ -1,4 +1,4 @@
-export function createSidecarEnv(source = process.env, platform = process.platform) {
+export function createSidecarEnv(source = process.env, platform = process.platform, sandboxWorkerPath?: string) {
   const env = Object.fromEntries(
     Object.entries(source).flatMap(([key, value]) => (value === undefined ? [] : [[key, String(value)]])),
   )
@@ -18,5 +18,7 @@ export function createSidecarEnv(source = process.env, platform = process.platfo
   env.METADATA_SERVER_DETECTION = "none"
   env.OPENCODE_DISABLE_AUTOUPDATE = "1"
   env.OPENCODE_DISABLE_SHARE = "1"
+  env.KOALA_AGENT_EXECUTION = "sandbox"
+  if (sandboxWorkerPath) env.KOALA_SANDBOX_WORKER_PATH = sandboxWorkerPath
   return env
 }

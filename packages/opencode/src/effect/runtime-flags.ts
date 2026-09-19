@@ -12,6 +12,23 @@ const enabledByExperimental = (name: string) =>
   Config.all({ experimental, enabled: Config.boolean(name).pipe(Config.option) }).pipe(
     Config.map((flags) => Option.getOrElse(flags.enabled, () => flags.experimental)),
   )
+const client = Config.string("OPENCODE_CLIENT").pipe(Config.withDefault("cli"))
+const agentExecution = Config.all({
+  client,
+  configured: Config.string("KOALA_AGENT_EXECUTION").pipe(Config.option),
+}).pipe(
+  Config.map((value) => {
+    const configured = Option.getOrUndefined(value.configured)
+    if (configured === "host" || configured === "both" || configured === "sandbox" || configured === "none") {
+      return configured
+    }
+    return configured === undefined && value.client === "desktop"
+      ? "sandbox"
+      : configured === undefined
+        ? "host"
+        : "none"
+  }),
+)
 
 export class Service extends ConfigService.Service<Service>()("@opencode/RuntimeFlags", {
   autoShare: bool("OPENCODE_AUTO_SHARE"),
@@ -51,9 +68,10 @@ export class Service extends ConfigService.Service<Service>()("@opencode/Runtime
   experimentalIconDiscovery: enabledByExperimental("OPENCODE_EXPERIMENTAL_ICON_DISCOVERY"),
   outputTokenMax: positiveInteger("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"),
   bashDefaultTimeoutMs: positiveInteger("OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
+  agentExecution,
   experimentalNativeLlm: bool("OPENCODE_EXPERIMENTAL_NATIVE_LLM"),
   experimentalWebSockets: bool("OPENCODE_EXPERIMENTAL_WEBSOCKETS"),
-  client: Config.string("OPENCODE_CLIENT").pipe(Config.withDefault("cli")),
+  client,
 }) {}
 
 export type Info = Context.Service.Shape<typeof Service>

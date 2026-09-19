@@ -73,6 +73,17 @@ test("bundles the CLI outside the dev app archive", async () => {
   })
 })
 
+test("bundles the sandbox worker and native assets outside the app archive", async () => {
+  const module = await import("./electron-builder.config.ts?sandbox-resource")
+  const config = module.default as Configuration
+
+  expect(config.extraResources).toContainEqual({
+    from: "../opencode/dist/node/sandbox-runtime/",
+    to: "sandbox-runtime/",
+    filter: ["**/*"],
+  })
+})
+
 for (const channel of ["beta", "prod"] as const) {
   test(`does not bundle the CLI in ${channel} builds`, async () => {
     const previous = process.env.OPENCODE_CHANNEL

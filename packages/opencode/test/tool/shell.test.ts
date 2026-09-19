@@ -1007,6 +1007,16 @@ describe("tool.shell permissions", () => {
 })
 
 describe("tool.shell abort", () => {
+  it.live("rejects direct host shell execution in sandbox mode", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const error = yield* fail({ command: "echo must-not-run" })
+        expect(error.message).toContain("Host shell execution is disabled")
+      }),
+    ).pipe(Effect.provide(RuntimeFlags.layer({ agentExecution: "sandbox" }))),
+  )
+
   it.live(
     "preserves output when aborted",
     () =>

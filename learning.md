@@ -132,14 +132,32 @@ work. It is not a substitute for the implementation plan or audit logs.
 
 ## Sandbox
 
-- Koala will use `@anthropic-ai/sandbox-runtime` behind a Koala-owned interface.
-- The upstream sandbox manager has process-global mutable state. Initial runs
-  should use one short-lived worker per execution rather than sharing policies
-  concurrently in the sidecar process.
+- Koala uses `@anthropic-ai/sandbox-runtime@0.0.76` behind versioned Koala IPC
+  contracts. The upstream sandbox manager has process-global mutable state, so
+  each availability check or execution uses a short-lived worker process.
 - Model requests stay in the Koala sidecar. Generated code receives no endpoint
   credential and runs with an empty network allowlist.
 - The strict sandbox must fail closed when the platform implementation is not
   available. It must not retry a blocked command directly on the host.
+- Windows requires the upstream sandbox user and WFP setup. This development
+  machine reports `initialization-failed`; the emitted worker returns that fixed
+  status without attempting host execution.
+- The worker must use `wrapWithSandboxArgv()` and `shell: false`. The string
+  wrapper is unsupported on Windows and would expose command bytes to a host
+  shell.
+- Desktop passes `KOALA_AGENT_EXECUTION=sandbox`, omits model-facing `bash`, and
+  separately rejects direct shell execution. Internal host subprocesses remain
+  available for trusted application operations.
+- Electron packages the worker, native helpers, Java agent, and Apache license
+  under `process.resourcesPath/sandbox-runtime`, outside `app.asar`.
+- Sandbox Runtime adds several compatibility write paths internally. Koala puts
+  its shared temporary/debug paths in `denyWrite` so only the per-run temporary
+  workspace remains writable; required device endpoints remain available.
+- Linux seccomp degradation is reported upstream as a warning. Koala treats a
+  missing/non-executable helper or any seccomp warning as unavailable.
+- Filesystem violation reporting on Linux is best effort in version `0.0.76`
+  because its monitor readiness is not exposed, while OS policy enforcement is
+  independent of that reporting path.
 
 ## Verification Record
 
@@ -172,3 +190,10 @@ On 2026-09-17, after the first sovereignty slice:
 - Sidecar environment hardening tests: 2 passed.
 - Capability-probe service and model-profile API tests: 34 passed.
 - Capability-probe form and fallback-copy tests: 68 passed.
+- Sandbox protocol and policy tests: 31 passed.
+- Sandbox worker, adapter, runtime-flag, registry, and parameter tests: 82
+  passed; the direct host-shell denial test also passed.
+- Desktop sandbox path, environment, and packaging tests: 12 passed.
+- OpenCode, Koala, and Desktop typechecks passed after sandbox integration.
+- The OpenCode Node build and Desktop production build passed with the
+  standalone sandbox worker artifact.

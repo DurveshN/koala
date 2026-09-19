@@ -36,6 +36,16 @@ Additional dependency notices will be maintained here as Koala's retained and
 new dependency set is finalized. Koala's root license is pending the owner's
 selected license text.
 
+## Anthropic Sandbox Runtime
+
+Koala uses `@anthropic-ai/sandbox-runtime` version `0.0.76` under the Apache
+License 2.0.
+
+- Source: https://github.com/anthropics/sandbox-runtime
+- License: https://www.apache.org/licenses/LICENSE-2.0
+- A copy of the dependency's `LICENSE` file is shipped beside the packaged
+  sandbox worker and native helper assets.
+
 ## ipaddr.js
 
 Koala uses `ipaddr.js` for local/private IP address and CIDR classification.

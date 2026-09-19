@@ -19,11 +19,14 @@ describe("sidecar environment", () => {
         OTEL_RESOURCE_ATTRIBUTES: "service.name=desktop",
       },
       "win32",
+      "C:\\Koala\\sandbox-worker.mjs",
     )
 
     expect(env).toEqual({
       AWS_EC2_METADATA_DISABLED: "true",
       KOALA_LOCAL_MODEL: "http://127.0.0.1:8000/v1",
+      KOALA_AGENT_EXECUTION: "sandbox",
+      KOALA_SANDBOX_WORKER_PATH: "C:\\Koala\\sandbox-worker.mjs",
       METADATA_SERVER_DETECTION: "none",
       OPENCODE_DISABLE_AUTOUPDATE: "1",
       OPENCODE_DISABLE_SHARE: "1",
@@ -35,6 +38,7 @@ describe("sidecar environment", () => {
       AWS_EC2_METADATA_DISABLED: "true",
       METADATA_SERVER_DETECTION: "none",
       PATH: "/usr/bin",
+      KOALA_AGENT_EXECUTION: "sandbox",
       OPENCODE_DISABLE_AUTOUPDATE: "1",
       OPENCODE_DISABLE_SHARE: "1",
     })
