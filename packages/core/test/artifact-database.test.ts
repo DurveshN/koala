@@ -4,6 +4,7 @@ import { DatabaseMigration } from "@opencode-ai/core/database/migration"
 import artifactStoreMigration from "@opencode-ai/core/database/migration/20260919125324_koala_artifact_store"
 import artifactIndexMigration from "@opencode-ai/core/database/migration/20260919125730_koala_artifact_sandbox_run_index"
 import artifactConstraintsMigration from "@opencode-ai/core/database/migration/20260919133950_koala_artifact_constraints"
+import industrialAuditMigration from "@opencode-ai/core/database/migration/20260919162426_koala_industrial_audit"
 import { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
 import { Effect, Exit } from "effect"
 import { sql } from "drizzle-orm"
@@ -73,6 +74,7 @@ describe("artifact database", () => {
           artifactStoreMigration,
           artifactIndexMigration,
           artifactConstraintsMigration,
+          industrialAuditMigration,
         ])
         yield* db.run(sql`INSERT INTO session (id) VALUES ('session')`)
         yield* db.run(sql`INSERT INTO message (id, session_id) VALUES ('message', 'session')`)
@@ -87,6 +89,7 @@ describe("artifact database", () => {
             readonly validator?: string
             readonly validatorVersion?: string
             readonly validation?: string
+            readonly sourceProjectPath?: string
           } = {},
         ) => {
           const state = options.state ?? "accepted"
@@ -97,11 +100,11 @@ describe("artifact database", () => {
             INSERT INTO koala_artifact (
               id, digest, name, mime, validation_state, validator, validator_version,
               validation, owner_session_id, owner_message_id, tool_name, tool_call_id,
-              sandbox_run_id, time_created
+              sandbox_run_id, source_project_path, time_created
             ) VALUES (
               ${id}, ${digest}, ${options.name ?? "report.txt"}, ${options.mime ?? "text/plain"},
               ${state}, ${validator}, ${validatorVersion}, ${validation}, 'session', 'message',
-              'sandbox_execute', 'call', 'run', 1
+              'sandbox_execute', 'call', 'run', ${options.sourceProjectPath ?? null}, 1
             )
           `)
         }
@@ -144,6 +147,33 @@ describe("artifact database", () => {
               insertArtifact("art_00000000-0000-4000-8000-000000000014", { name: "x".repeat(256) }),
               insertArtifact("art_00000000-0000-4000-8000-000000000015", { mime: "" }),
               insertArtifact("art_00000000-0000-4000-8000-000000000016", { mime: "x".repeat(128) }),
+              ...[
+                "",
+                "/reports/a.txt",
+                "reports/a.txt/",
+                "C:/reports/a.txt",
+                "reports\\a.txt",
+                "reports//a.txt",
+                ".",
+                "..",
+                "./reports/a.txt",
+                "../reports/a.txt",
+                "reports/./a.txt",
+                "reports/../a.txt",
+                "reports/.",
+                "reports/..",
+                "reports/name./a.txt",
+                "reports/name /a.txt",
+                "reports/NUL.txt",
+                "reports/com1",
+                "reports/LPT².log",
+                "reports/control\u0001name.txt",
+                "x".repeat(1025),
+              ].map((sourceProjectPath, index) =>
+                insertArtifact(`art_00000000-0000-4000-8000-${(100 + index).toString().padStart(12, "0")}`, {
+                  sourceProjectPath,
+                }),
+              ),
             ],
             (effect) => Effect.exit(effect),
           )).every(Exit.isFailure),
@@ -151,15 +181,15 @@ describe("artifact database", () => {
 
         const source = "art_00000000-0000-4000-8000-000000000001"
         const derived = "art_00000000-0000-4000-8000-000000000002"
-        yield* insertArtifact(source)
+        yield* insertArtifact(source, { sourceProjectPath: "reports/2026/inspection.txt" })
         yield* insertArtifact(derived)
         yield* db.run(
           sql`INSERT INTO koala_artifact_lineage (artifact_id, source_artifact_id, relation) VALUES (${derived}, ${source}, 'derived-from')`,
         )
 
-        expect(yield* db.all(sql`SELECT id, digest FROM koala_artifact ORDER BY id`)).toEqual([
-          { id: source, digest },
-          { id: derived, digest },
+        expect(yield* db.all(sql`SELECT id, digest, source_project_path FROM koala_artifact ORDER BY id`)).toEqual([
+          { id: source, digest, source_project_path: "reports/2026/inspection.txt" },
+          { id: derived, digest, source_project_path: null },
         ])
         expect(
           Exit.isFailure(

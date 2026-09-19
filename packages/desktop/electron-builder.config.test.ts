@@ -1,7 +1,48 @@
-import { expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import type { Configuration } from "electron-builder"
+import { mkdtemp, rm } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import {
+  documentRuntimeAttestation,
+  prepareReleaseDocumentRuntime,
+  stagedDocumentRuntime,
+} from "./scripts/document-runtime"
+import { productionRuntimeFixture } from "./test/fixture/document-runtime"
 
 const legacyDesktopEntry = "resources/linux/opencode-desktop.desktop"
+const releaseTarget = "x86_64-pc-windows-msvc" as const
+let releaseSource: string
+let trustedAttestation: string
+const previousRustTarget = process.env.RUST_TARGET
+const previousTrustedAttestation = process.env.KOALA_DOCUMENT_RUNTIME_ATTESTATION
+
+beforeAll(async () => {
+  releaseSource = await mkdtemp(path.join(os.tmpdir(), "desktop-config-runtime-"))
+  trustedAttestation = `${releaseSource}.attestation.json`
+  await productionRuntimeFixture(releaseSource, releaseTarget, trustedAttestation)
+  process.env.RUST_TARGET = releaseTarget
+  process.env.KOALA_DOCUMENT_RUNTIME_ATTESTATION = trustedAttestation
+  await prepareReleaseDocumentRuntime({
+    source: releaseSource,
+    trustedAttestation,
+    environment: { RUST_TARGET: releaseTarget },
+    probe: async () => ({ performed: true }),
+  })
+})
+
+afterAll(async () => {
+  await Promise.all([
+    rm(releaseSource, { recursive: true, force: true }),
+    rm(trustedAttestation, { force: true }),
+    rm(stagedDocumentRuntime, { recursive: true, force: true }),
+    rm(documentRuntimeAttestation, { force: true }),
+  ])
+  if (previousRustTarget === undefined) delete process.env.RUST_TARGET
+  else process.env.RUST_TARGET = previousRustTarget
+  if (previousTrustedAttestation === undefined) delete process.env.KOALA_DOCUMENT_RUNTIME_ATTESTATION
+  else process.env.KOALA_DOCUMENT_RUNTIME_ATTESTATION = previousTrustedAttestation
+})
 
 const channels = [
   { channel: "dev", appId: "ai.opencode.desktop.dev" },
@@ -99,4 +140,38 @@ for (const channel of ["beta", "prod"] as const) {
       filter: ["opencode-cli*"],
     })
   })
+
+  test(`bundles only the verified document runtime in ${channel} builds`, async () => {
+    const previous = process.env.OPENCODE_CHANNEL
+    process.env.OPENCODE_CHANNEL = channel
+    const module = await import(`./electron-builder.config.ts?document-runtime-resource=${channel}`)
+    const config = module.default as Configuration
+    if (previous === undefined) delete process.env.OPENCODE_CHANNEL
+    else process.env.OPENCODE_CHANNEL = previous
+
+    expect(config.extraResources).toContainEqual({
+      from: stagedDocumentRuntime,
+      to: "document-runtime/",
+      filter: ["**/*"],
+    })
+    expect(config.extraResources).toContainEqual({
+      from: documentRuntimeAttestation,
+      to: "document-runtime.attestation.json",
+    })
+  })
 }
+
+test("does not bundle an incomplete development runtime", async () => {
+  const previous = process.env.OPENCODE_CHANNEL
+  process.env.OPENCODE_CHANNEL = "dev"
+  const module = await import("./electron-builder.config.ts?no-development-document-runtime")
+  const config = module.default as Configuration
+  if (previous === undefined) delete process.env.OPENCODE_CHANNEL
+  else process.env.OPENCODE_CHANNEL = previous
+
+  expect(config.extraResources).not.toContainEqual({
+    from: expect.stringContaining("document-runtime"),
+    to: "document-runtime/",
+    filter: ["**/*"],
+  })
+})

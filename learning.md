@@ -185,6 +185,93 @@ work. It is not a substitute for the implementation plan or audit logs.
 - Sandbox output and violation text redact the private artifact storage root;
   returned artifact references contain no bytes or absolute storage paths.
 
+## Industrial Tools
+
+- Industrial tools share one browser-safe contract version and exhaustive
+  permission mapping. Tools remain absent from the registry until their engine
+  and hostile-input tests pass.
+- Durable audit starts before permission or engine side effects and stores only
+  canonical input digests, safe counts/types, terminal state, engine identity,
+  and artifact references. Producer and model-projection truncation are separate
+  durable facts.
+- Cancellation and deadline outcomes must be recorded when the abort event
+  occurs; cleanup grace cannot remain a window in which delayed operation
+  success wins outside an active publication commit.
+- Artifact publication needs an explicit commit handshake with execution.
+  Cancellation before commit remains terminal, cancellation during commit is
+  resolved by the transaction outcome, and a committed publication remains a
+  success even if caller cancellation arrives immediately afterward.
+- The final typed result must be handed off before leaving the uninterruptible
+  commit region. Otherwise a deferred Effect interruption can commit artifact
+  rows but interrupt the operation before Industrial Execution can return or
+  audit their IDs.
+- A worker-owned timeout and an outer timeout must not race without preserving
+  the first abort source. Sandbox execution uses the worker timeout as its single
+  timeout authority, while the shared boundary still owns caller cancellation.
+- Returned artifact references are untrusted protocol data until their complete
+  reference fields, Session ownership, and applicable output provenance match
+  ArtifactStore metadata.
+- Blob rollback cleanup must run under the same process-local and cross-process
+  promotion locks as deduplication, and may unlink only a blob created by the
+  failed batch after confirming no committed artifact references it.
+- Rollback cleanup errors cannot be discarded. ArtifactStore exposes typed
+  reconciliation, runs it at startup under the promotion locks, and logs failed
+  rollback/startup cleanup so residual orphans receive a later retry.
+- Reconciliation may remove valid digest blobs immediately after proving they
+  are unreferenced under the promotion lock. Temporary blob files and abandoned
+  run staging require an age threshold; current-process active runs and recent
+  entries remain untouched.
+- Audit call IDs are upstream opaque strings, not slug identifiers. They remain
+  bounded and reject control characters at both schema and database boundaries.
+- Permission waiting must race caller cancellation; engine deadlines begin only
+  after permission approval.
+- Project paths become stable artifacts only after external-directory/read
+  authorization. Same-Session artifact ownership is checked before materializing
+  a private processing snapshot.
+- Multi-output sandbox publication validates/copies every candidate before one
+  metadata transaction. Filesystem publication may leave reclaimable orphan
+  blobs, but failed batches leave no partial artifact metadata.
+- A deterministic calculator should share one generator-based evaluator between
+  synchronous tests and cooperative Effect execution. Yielding at bounded
+  operations keeps cancellation and deadlines observable without duplicating
+  arithmetic semantics.
+- Unit suffix precedence must distinguish `2 m^2` from `(2 m)^2`: the first
+  applies the exponent only to the unit dimension and scale, while the second
+  raises the complete quantity. Function and unit registries also need own-
+  property checks so prototype names cannot enter dispatch.
+
+## Document Runtime
+
+- Production document workers derive worker, PDF.js, canvas, Tesseract, and
+  tessdata paths from one verified root. Release staging and packaged startup
+  obtain the manifest digest from a detached attestation outside that root;
+  they do not derive trust from the manifest being checked.
+- PDF.js plus `@napi-rs/canvas` provides a permissively licensed local 300-DPI
+  renderer. Pages are allocated and released sequentially; fixed pixel, byte,
+  page, temporary-storage, and deadline limits apply before publication.
+- Tesseract output is TSV streamed through a bounded file. The selected command
+  uses English recognition with OSD-enabled page segmentation, one thread, a
+  reduced environment, shell-free execution, and process-tree cancellation.
+- Native canvas must load only after manifest verification, with system-font and
+  native-loader overrides disabled.
+- Release preparation and verification require explicit `RUST_TARGET` and
+  reject attestations or PE/ELF/Mach-O native headers for another target.
+  Development builds alone may infer the build-host target.
+- A runtime is not production-ready merely because JavaScript/PDF rendering
+  works. `releaseReady` also requires pinned Tesseract/Leptonica binaries,
+  English/OSD models, architecture/dependency checks, signatures, and complete
+  native licenses/notices for every target. The unresolved Koala license is not
+  represented by the OpenCode root license in document-runtime artifacts.
+- Runtime parsing requires a trusted native-confinement launcher dependency.
+  Environment variables cannot opt into unsandboxed parsing, so document work
+  remains unavailable until that launcher is implemented and wired.
+- Cross-target release staging needs externally attested target-native smoke
+  evidence bound to the manifest digest. A cross-target result is not itself a
+  successful probe.
+- Final native-process and confinement-launcher reaping must be time-bounded.
+  Missing exit confirmation is an explicit cleanup/runtime failure rather than
+  an unbounded wait.
+
 ## Verification Record
 
 On 2026-09-17, after the first sovereignty slice:

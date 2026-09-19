@@ -25,5 +25,7 @@ dist-ssr
 out/
 
 resources/opencode-cli*
+resources/document-runtime/
+resources/document-runtime.attestation.json
 resources/icons
 resources/*.metainfo.xml

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@koala-ai/document-runtime",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "bun ./script/build.ts",
+    "test": "bun run build && bun test --timeout 30000 --only-failures",
+    "typecheck": "tsgo --noEmit"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts",
+    "./render": "./src/render.ts",
+    "./tesseract": "./src/tesseract.ts"
+  },
+  "dependencies": {
+    "@koala-ai/core": "workspace:*",
+    "@napi-rs/canvas": "1.0.9",
+    "effect": "catalog:",
+    "pdfjs-dist": "6.3.289"
+  },
+  "optionalDependencies": {
+    "@napi-rs/canvas-darwin-arm64": "1.0.9",
+    "@napi-rs/canvas-darwin-x64": "1.0.9",
+    "@napi-rs/canvas-linux-arm64-gnu": "1.0.9",
+    "@napi-rs/canvas-linux-x64-gnu": "1.0.9",
+    "@napi-rs/canvas-win32-arm64-msvc": "1.0.9",
+    "@napi-rs/canvas-win32-x64-msvc": "1.0.9"
+  },
+  "devDependencies": {
+    "@tsconfig/bun": "catalog:",
+    "@types/bun": "catalog:",
+    "@types/node": "catalog:",
+    "@typescript/native-preview": "catalog:"
+  }
+}

@@ -1,0 +1,293 @@
+import { afterEach, describe, expect, test } from "bun:test"
+import { DocumentRuntimeLimits } from "@koala-ai/core/document-runtime/limits"
+import { DocumentRuntimeManifest } from "@koala-ai/core/document-runtime/manifest"
+import { DocumentRuntimeProtocol } from "@koala-ai/core/document-runtime/protocol"
+import { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
+import { Schema } from "effect"
+import { createHash } from "node:crypto"
+import { fork } from "node:child_process"
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { pdfFixture } from "./fixture/pdf"
+import { startWorker, type WorkerTransport } from "../src/worker"
+
+const roots: string[] = []
+const jobID = "job_123e4567-e89b-42d3-a456-426614174000" as DocumentRuntimeProtocol.JobID
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+})
+
+describe("document IPC worker", () => {
+  test("renders one page at a time, publishes relative paths, waits for release, and completes", async () => {
+    const jobRoot = await job()
+    const input = pdfFixture(2)
+    await mkdir(path.join(jobRoot, "input"), { mode: 0o700 })
+    await writeFile(path.join(jobRoot, "input", "source.pdf"), input)
+    const messages: DocumentRuntimeProtocol.WorkerEvent[] = []
+    let receive: (input: unknown) => void = () => undefined
+    let firstExisted = false
+    const completed = Promise.withResolvers<void>()
+    const transport: WorkerTransport = {
+      onMessage: (listener) => (receive = listener),
+      onDisconnect: () => undefined,
+      send: async (event) => {
+        messages.push(event)
+        if (event.type === "page-ready") {
+          expect(path.isAbsolute(event.outputPath)).toBe(false)
+          firstExisted ||= await Bun.file(path.join(jobRoot, ...event.outputPath.split("/"))).exists()
+          receive({ protocolVersion: 1, type: "release-page", jobID, page: event.page, pageID: event.pageID })
+        }
+        if (event.type === "completed") completed.resolve()
+      },
+      close: () => undefined,
+    }
+    startWorker(await config(jobRoot), transport)
+    receive({
+      protocolVersion: 1,
+      type: "render",
+      jobID,
+      inputPath: "input/source.pdf",
+      inputBytes: input.byteLength,
+      startPage: 1,
+      pageCount: 2,
+      limits: DocumentRuntimeLimits.requestedHard,
+    })
+    await completed.promise
+    expect(firstExisted).toBe(true)
+    expect(messages.map((message) => message.type)).toEqual(["started", "page-ready", "page-ready", "completed"])
+    expect(messages.filter((message) => message.type === "page-ready").map((message) => message.page)).toEqual([1, 2])
+  })
+
+  test("cancels while waiting for release and emits no raw error", async () => {
+    const jobRoot = await job()
+    const input = pdfFixture()
+    await mkdir(path.join(jobRoot, "input"), { mode: 0o700 })
+    await writeFile(path.join(jobRoot, "input", "source.pdf"), input)
+    let receive: (input: unknown) => void = () => undefined
+    const terminal = Promise.withResolvers<DocumentRuntimeProtocol.WorkerEvent>()
+    const transport: WorkerTransport = {
+      onMessage: (listener) => (receive = listener),
+      onDisconnect: () => undefined,
+      send: async (event) => {
+        if (event.type === "page-ready") receive({ protocolVersion: 1, type: "cancel", jobID })
+        if (event.type === "cancelled" || event.type === "failure") terminal.resolve(event)
+      },
+      close: () => undefined,
+    }
+    startWorker(await config(jobRoot), transport)
+    receive({
+      protocolVersion: 1,
+      type: "render",
+      jobID,
+      inputPath: "input/source.pdf",
+      inputBytes: input.byteLength,
+      startPage: 1,
+      pageCount: 1,
+      limits: DocumentRuntimeLimits.requestedHard,
+    })
+    expect(await terminal.promise).toEqual({ protocolVersion: 1, type: "cancelled", jobID })
+  })
+
+  test("runs the built worker over Node IPC", async () => {
+    const jobRoot = await job()
+    const input = pdfFixture()
+    await mkdir(path.join(jobRoot, "input"), { mode: 0o700 })
+    await writeFile(path.join(jobRoot, "input", "source.pdf"), input)
+    const workerConfig = await config(jobRoot)
+    const child = fork(path.join(workerConfig.runtimeRoot, "worker", "worker.js"), [], {
+      env: {
+        DOCUMENT_RUNTIME_ROOT: workerConfig.runtimeRoot,
+        DOCUMENT_JOB_ROOT: jobRoot,
+        DOCUMENT_RUNTIME_TARGET: workerConfig.target,
+        DOCUMENT_RUNTIME_MANIFEST_SHA256: workerConfig.manifestSha256,
+        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+        ...(process.env.WINDIR ? { WINDIR: process.env.WINDIR } : {}),
+      },
+      execArgv: [],
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+    })
+    const events: DocumentRuntimeProtocol.WorkerEvent[] = []
+    const terminal = new Promise<DocumentRuntimeProtocol.WorkerEvent>((resolve, reject) => {
+      child.on("error", reject)
+      child.on("exit", (code) => {
+        if (!events.some((event) => event.type === "completed")) reject(new Error(`worker exited ${code}`))
+      })
+      child.on("message", (input: unknown) => {
+        const event = Schema.decodeUnknownSync(DocumentRuntimeProtocol.WorkerEvent)(input)
+        events.push(event)
+        if (event.type === "page-ready") {
+          child.send({ protocolVersion: 1, type: "release-page", jobID, page: event.page, pageID: event.pageID })
+        }
+        if (event.type === "completed" || event.type === "failure") resolve(event)
+      })
+    })
+    child.send({
+      protocolVersion: 1,
+      type: "render",
+      jobID,
+      inputPath: "input/source.pdf",
+      inputBytes: input.byteLength,
+      startPage: 1,
+      pageCount: 1,
+      limits: DocumentRuntimeLimits.requestedHard,
+    })
+    try {
+      expect(await terminal).toEqual(expect.objectContaining({ type: "completed", pagesProcessed: 1 }))
+      expect(events.map((event) => event.type)).toEqual(["started", "page-ready", "completed"])
+    } finally {
+      child.kill()
+    }
+  })
+
+  test("maps invalid ordering to a curated terminal failure", async () => {
+    const jobRoot = await job()
+    const input = pdfFixture()
+    await mkdir(path.join(jobRoot, "input"), { mode: 0o700 })
+    await writeFile(path.join(jobRoot, "input", "source.pdf"), input)
+    let receive: (input: unknown) => void = () => undefined
+    const terminal = Promise.withResolvers<DocumentRuntimeProtocol.WorkerEvent>()
+    const transport: WorkerTransport = {
+      onMessage: (listener) => (receive = listener),
+      onDisconnect: () => undefined,
+      send: async (event) => {
+        if (event.type === "page-ready") {
+          receive({
+            protocolVersion: 1,
+            type: "release-page",
+            jobID: "job_223e4567-e89b-42d3-a456-426614174000",
+            page: event.page,
+            pageID: event.pageID,
+            stderr: "private-native-canary",
+          })
+        }
+        if (event.type === "failure") terminal.resolve(event)
+      },
+      close: () => undefined,
+    }
+    startWorker(await config(jobRoot), transport)
+    receive({
+      protocolVersion: 1,
+      type: "render",
+      jobID,
+      inputPath: "input/source.pdf",
+      inputBytes: input.byteLength,
+      startPage: 1,
+      pageCount: 1,
+      limits: DocumentRuntimeLimits.requestedHard,
+    })
+    const failure = await terminal.promise
+    expect(failure).toEqual({
+      protocolVersion: 1,
+      type: "failure",
+      jobID,
+      code: "job-mismatch",
+      stage: "worker",
+      retryable: false,
+    })
+    expect(JSON.stringify(failure)).not.toContain("canary")
+  })
+
+  test("requires the probe target and hash to match trusted worker configuration", async () => {
+    const jobRoot = await job()
+    let receive: (input: unknown) => void = () => undefined
+    const terminal = Promise.withResolvers<DocumentRuntimeProtocol.WorkerEvent>()
+    const workerConfig = await config(jobRoot)
+    startWorker(workerConfig, {
+      onMessage: (listener) => (receive = listener),
+      onDisconnect: () => undefined,
+      send: async (event) => {
+        if (event.type === "failure") terminal.resolve(event)
+      },
+      close: () => undefined,
+    })
+    receive({
+      protocolVersion: 1,
+      type: "probe",
+      jobID,
+      target: workerConfig.target,
+      manifestSha256: "0".repeat(64),
+    })
+    expect(await terminal.promise).toEqual(expect.objectContaining({ code: "runtime-unavailable", stage: "probe" }))
+  })
+
+  test("requires a Tesseract component in the verified manifest", async () => {
+    const jobRoot = await job()
+    let receive: (input: unknown) => void = () => undefined
+    const terminal = Promise.withResolvers<DocumentRuntimeProtocol.WorkerEvent>()
+    const workerConfig = await config(jobRoot)
+    startWorker(workerConfig, {
+      onMessage: (listener) => (receive = listener),
+      onDisconnect: () => undefined,
+      send: async (event) => {
+        if (event.type === "failure") terminal.resolve(event)
+      },
+      close: () => undefined,
+    })
+    receive({
+      protocolVersion: 1,
+      type: "probe",
+      jobID,
+      target: workerConfig.target,
+      manifestSha256: workerConfig.manifestSha256,
+    })
+    expect(await terminal.promise).toEqual(expect.objectContaining({ code: "runtime-unavailable", stage: "probe" }))
+  })
+
+  test("disconnect resolves a pending page command and removes generated output", async () => {
+    const jobRoot = await job()
+    const input = pdfFixture()
+    await mkdir(path.join(jobRoot, "input"), { mode: 0o700 })
+    await writeFile(path.join(jobRoot, "input", "source.pdf"), input)
+    let receive: (input: unknown) => void = () => undefined
+    let disconnect: () => void = () => undefined
+    const closed = Promise.withResolvers<void>()
+    let output = ""
+    startWorker(await config(jobRoot), {
+      onMessage: (listener) => (receive = listener),
+      onDisconnect: (listener) => (disconnect = listener),
+      send: async (event) => {
+        if (event.type !== "page-ready") return
+        output = path.join(jobRoot, ...event.outputPath.split("/"))
+        disconnect()
+      },
+      close: () => closed.resolve(),
+    })
+    receive({
+      protocolVersion: 1,
+      type: "render",
+      jobID,
+      inputPath: "input/source.pdf",
+      inputBytes: input.byteLength,
+      startPage: 1,
+      pageCount: 1,
+      limits: DocumentRuntimeLimits.requestedHard,
+    })
+    await closed.promise
+    expect(await Bun.file(output).exists()).toBe(false)
+  })
+})
+
+async function job() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "document-worker-"))
+  roots.push(root)
+  return root
+}
+
+async function config(jobRoot: string) {
+  const target = DocumentRuntimeTarget.fromHost(
+    process.platform as DocumentRuntimeTarget.HostPlatform,
+    process.arch as DocumentRuntimeTarget.HostArchitecture,
+  )
+  const runtimeRoot = path.resolve(import.meta.dir, "..", "dist", target)
+  const manifestSha256 = createHash("sha256")
+    .update(await readFile(path.join(runtimeRoot, "manifest.json")))
+    .digest("hex")
+  return {
+    runtimeRoot,
+    jobRoot,
+    target,
+    manifestSha256: DocumentRuntimeManifest.Digest.make(manifestSha256),
+  }
+}

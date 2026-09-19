@@ -46,6 +46,9 @@ export const OutputPath = Schema.String.check(
 ).pipe(Schema.brand("Artifact.OutputPath"))
 export type OutputPath = typeof OutputPath.Type
 
+export const SourceProjectPath = OutputPath.pipe(Schema.brand("Artifact.SourceProjectPath"))
+export type SourceProjectPath = typeof SourceProjectPath.Type
+
 export const OutputPaths = Schema.Array(OutputPath).check(
   Schema.isMaxLength(MaxOutputsPerRun),
   Schema.makeFilter((paths) => {
@@ -85,6 +88,13 @@ const BoundedIdentifier = Schema.String.check(
     value === value.trim() && !value.includes("\0") ? undefined : "Expected a trimmed identifier",
   ),
 )
+const ToolCallID = Schema.String.check(
+  Schema.isNonEmpty(),
+  Schema.isMaxLength(512),
+  Schema.makeFilter((value) =>
+    /[\u0000-\u001f\u007f]/.test(value) ? "Tool call IDs cannot contain control characters" : undefined,
+  ),
+)
 
 const ValidationFindingCode = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9._-]{0,63}$/)).pipe(
   Schema.brand("Artifact.ValidationFindingCode"),
@@ -117,8 +127,9 @@ export const Provenance = Schema.Struct({
   sessionID: BoundedIdentifier,
   messageID: BoundedIdentifier,
   toolName: BoundedIdentifier,
-  toolCallID: Schema.optionalKey(BoundedIdentifier),
+  toolCallID: Schema.optionalKey(ToolCallID),
   sandboxRunID: Schema.optionalKey(SandboxProtocol.RunID),
+  sourceProjectPath: Schema.optionalKey(SourceProjectPath),
 }).annotate({ identifier: "Artifact.Provenance" })
 
 export const LineageRelation = Schema.Literal("derived-from")

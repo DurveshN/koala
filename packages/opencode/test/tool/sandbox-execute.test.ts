@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { mkdir, writeFile } from "node:fs/promises"
+import { writeFile } from "node:fs/promises"
 import path from "node:path"
 import { Artifact } from "@koala-ai/core/artifact/artifact"
 import { ArtifactStore } from "@koala-ai/core/artifact/store"
+import { IndustrialResult } from "@koala-ai/core/industrial/result"
 import { SandboxProtocol } from "@koala-ai/core/sandbox/protocol"
+import { SandboxTool } from "@koala-ai/core/sandbox/tool"
 import { ArtifactTable } from "@opencode-ai/core/artifact/sql"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -11,14 +13,17 @@ import { Global } from "@opencode-ai/core/global"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionTable } from "@opencode-ai/core/session/sql"
+import { ToolAuditTable } from "@opencode-ai/core/tool-audit/sql"
 import { count, sql } from "drizzle-orm"
-import { Context, Effect, Exit, Layer, Result, Schema } from "effect"
+import { Context, Effect, Layer, Result, Schema } from "effect"
 import { Agent } from "@/agent/agent"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ArtifactStoreLive } from "@/koala/artifact-store"
+import { IndustrialAuditLive } from "@/koala/industrial-audit"
+import { IndustrialExecution } from "@/koala/industrial-execution"
 import { SandboxRuntime } from "@/sandbox/runtime"
 import { MessageID, SessionID } from "@/session/schema"
-import { Parameters, SandboxExecuteTool } from "@/tool/sandbox-execute"
+import { SandboxExecuteTool } from "@/tool/sandbox-execute"
 import { Tool } from "@/tool/tool"
 import { Truncate } from "@/tool/truncate"
 import { provideInstance, testInstanceStoreLayer, tmpdir } from "../fixture/fixture"
@@ -28,22 +33,22 @@ const outputPath = Schema.decodeUnknownSync(Artifact.OutputPath)
 const decodeResponse = Schema.decodeUnknownSync(SandboxProtocol.WorkerResponse)
 const agent: Agent.Info = { name: "build", mode: "primary", permission: [], options: {} }
 
-type SandboxTool = Omit<Tool.InferDef<typeof SandboxExecuteTool>, "id">
+type SandboxDefinition = Omit<Tool.InferDef<typeof SandboxExecuteTool>, "id">
 type Fixture = {
   readonly data: string
   readonly sessionID: SessionID
   readonly messageID: MessageID
-  readonly tool: SandboxTool
+  readonly tool: SandboxDefinition
   readonly store: ArtifactStore.Interface
   readonly db: Context.Service.Shape<typeof Database.Service>["db"]
 }
 
-const ctx = (fixture: Fixture): Tool.Context => ({
+const context = (fixture: Fixture, callID = "call-sandbox", abort = AbortSignal.any([])): Tool.Context => ({
   sessionID: fixture.sessionID,
   messageID: fixture.messageID,
-  callID: "call-artifact",
+  callID,
   agent: agent.name,
-  abort: AbortSignal.any([]),
+  abort,
   messages: [],
   metadata: () => Effect.void,
   ask: () => Effect.void,
@@ -73,12 +78,15 @@ const withTool = <A, E>(
   Effect.acquireUseRelease(
     Effect.promise(() => tmpdir()),
     (tmp) => {
-      const storeLayer = LayerNode.compile(LayerNode.group([ArtifactStoreLive.node, Database.node]), [
-        [Global.node, Global.layerWith({ data: tmp.path, state: tmp.path })],
-        [Database.node, Database.layerFromPath(path.join(tmp.path, "sandbox-artifacts.db"))],
-      ])
+      const services = LayerNode.compile(
+        LayerNode.group([ArtifactStoreLive.node, IndustrialAuditLive.node, IndustrialExecution.node, Database.node]),
+        [
+          [Global.node, Global.layerWith({ data: tmp.path, state: tmp.path })],
+          [Database.node, Database.layerFromPath(path.join(tmp.path, "sandbox-execute.db"))],
+        ],
+      )
       const layer = Layer.mergeAll(
-        storeLayer,
+        services,
         Layer.mock(SandboxRuntime.Service, { execute }),
         RuntimeFlags.layer({ agentExecution: "sandbox" }),
         Layer.mock(Agent.Service, { get: () => Effect.succeed(agent) }),
@@ -89,8 +97,8 @@ const withTool = <A, E>(
       )
       return Effect.gen(function* () {
         const { db } = yield* Database.Service
-        const sessionID = SessionID.make("ses_sandbox_artifacts")
-        const messageID = MessageID.make("msg_sandbox_artifacts")
+        const sessionID = SessionID.make("ses_sandbox_execute")
+        const messageID = MessageID.make("msg_sandbox_execute")
         const now = Date.now()
         yield* db
           .insert(SessionTable)
@@ -99,7 +107,7 @@ const withTool = <A, E>(
             project_id: ProjectV2.ID.global,
             slug: sessionID,
             directory: AbsolutePath.make(tmp.path),
-            title: "sandbox artifact test",
+            title: "sandbox execute test",
             version: "test",
             time_created: now,
             time_updated: now,
@@ -132,8 +140,8 @@ const withTool = <A, E>(
   )
 
 describe("tool.sandbox_execute parameters", () => {
-  test("accepts a command and bounded timeout", () => {
-    const decoded = Schema.decodeUnknownSync(Parameters)({
+  test("uses the shared sandbox input contract", () => {
+    const decoded = Schema.decodeUnknownSync(SandboxTool.Input)({
       command: "node script.js",
       timeout: 30_000,
       outputs: ["report.txt", "nested/chart.png"],
@@ -149,199 +157,294 @@ describe("tool.sandbox_execute parameters", () => {
     { command: "" },
     { command: " echo unsafe-spacing" },
     { command: "echo ok", timeout: 0 },
-    { command: "echo ok", timeout: 120_001 },
+    { command: "echo ok", timeout: SandboxTool.MaxTimeoutMs + 1 },
     { command: "echo ok", outputs: ["same.txt", "same.txt"] },
     { command: "echo ok", outputs: ["../outside.txt"] },
-    {
-      command: "echo ok",
-      outputs: Array.from({ length: Artifact.MaxOutputsPerRun + 1 }, (_, index) => `${index}.txt`),
-    },
   ])("rejects invalid parameters %#", (input) => {
-    expect(Result.isFailure(Schema.decodeUnknownResult(Parameters)(input))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(SandboxTool.Input)(input))).toBe(true)
   })
 })
 
-describe("tool.sandbox_execute artifact promotion", () => {
-  it.live("runs from private staging and promotes declared outputs in order", () => {
+describe("tool.sandbox_execute industrial result", () => {
+  it.live("promotes outputs only on clean exit and returns typed metadata plus projection", () => {
     const requests: SandboxProtocol.ExecutionRequest[] = []
     return withTool(
       (runID, request) =>
         Effect.promise(async () => {
           requests.push(request)
           await writeFile(path.join(request.cwd, "artifacts", "first.txt"), "first")
-          await writeFile(path.join(request.cwd, "artifacts", "second.txt"), "second output")
+          await writeFile(path.join(request.cwd, "artifacts", "second.txt"), "second")
           return workerResult(runID)
         }),
       (fixture) =>
         Effect.gen(function* () {
           const result = yield* fixture.tool.execute(
-            {
-              command: "produce artifacts",
-              outputs: [outputPath("first.txt"), outputPath("second.txt")],
-            },
-            ctx(fixture),
+            { command: "produce artifacts", outputs: [outputPath("first.txt"), outputPath("second.txt")] },
+            context(fixture),
           )
-
-          expect(requests).toHaveLength(1)
+          const typed = result.metadata.result
+          if (typed.status !== "success") return yield* Effect.die(new Error("expected sandbox success"))
+          const first = typed.outputs[0]
           const request = requests[0]
-          const first = result.metadata.artifacts[0]
-          const second = result.metadata.artifacts[1]
-          if (!request || !first || !second) return yield* Effect.die(new Error("missing sandbox artifact result"))
-          expect(
-            String(request.cwd).startsWith(path.join(fixture.data, "koala", "artifacts", "staging") + path.sep),
-          ).toBe(true)
-          expect(request.readRoots.map(String)).toEqual([fixture.data, String(request.cwd)])
-          expect(request.writeRoots.map(String)).toEqual([
-            path.join(request.cwd, "work"),
-            path.join(request.cwd, "artifacts"),
-          ])
-          expect(result.metadata.artifacts.map((reference) => String(reference.name))).toEqual([
-            "first.txt",
-            "second.txt",
-          ])
-          expect(result.output).toContain(`"id":"${first.id}"`)
-          expect(result.output).toContain(`"digest":"${second.digest}"`)
-          expect(result.output).not.toContain(fixture.data)
+          if (!first || !request) return yield* Effect.die(new Error("missing sandbox output"))
+
+          expect(String(typed.engine.name)).toBe("anthropic-sandbox-runtime")
+          expect(String(typed.engine.version)).toBe("0.0.76")
+          expect(typed.sandboxRunID).toBeDefined()
+          expect(typed.outputs.map((output) => String(output.name))).toEqual(["first.txt", "second.txt"])
+          expect(typed.data).toEqual({ exitCode: 0, stdout: "completed", stderr: "", violations: [] })
+          expect(result.output).toBe(result.metadata.projection.text)
+          expect(result.output).toContain(`output[0]=${first.id}`)
+          expect(result.metadata.projection.truncated).toBe(false)
           expect(yield* fixture.store.metadata(first.id)).toMatchObject({
-            name: "first.txt",
             provenance: {
               sessionID: fixture.sessionID,
               messageID: fixture.messageID,
-              toolName: "sandbox_execute",
-              toolCallID: "call-artifact",
+              toolCallID: "call-sandbox",
+              sandboxRunID: typed.sandboxRunID,
             },
           })
           expect(yield* Effect.promise(() => Bun.file(request.cwd).exists())).toBe(false)
+          expect(yield* fixture.db.select().from(ToolAuditTable).get()).toMatchObject({
+            state: "completed",
+            outcome_code: "success",
+            engine_name: "anthropic-sandbox-runtime",
+            engine_version: "0.0.76",
+            sandbox_run_id: typed.sandboxRunID,
+            output_artifact_ids: typed.outputs.map((output) => output.id),
+          })
         }),
     )
   })
 
-  it.live("does not promote outputs from any non-clean terminal result", () => {
+  it.live("maps worker and terminal failures to curated codes without promoting outputs", () => {
     const roots: string[] = []
-    const outcomes: Record<string, Partial<SandboxProtocol.ExecutionResult>> = {
-      exit: { exitCode: 2 },
+    const outcomes: Record<string, SandboxProtocol.WorkerResponse> = {
+      "worker-invalid": decodeResponse({
+        protocolVersion: 1,
+        type: "failure",
+        runID: null,
+        code: "invalid-request",
+      }),
+      "worker-protocol": decodeResponse({
+        protocolVersion: 1,
+        type: "failure",
+        runID: null,
+        code: "protocol-mismatch",
+      }),
+      unavailable: decodeResponse({
+        protocolVersion: 1,
+        type: "failure",
+        runID: null,
+        code: "sandbox-unavailable",
+      }),
+      "worker-failed": decodeResponse({ protocolVersion: 1, type: "failure", runID: null, code: "worker-failed" }),
+    }
+    const terminal: Record<string, Partial<SandboxProtocol.ExecutionResult>> = {
+      nonzero: { exitCode: 2 },
       timeout: { timedOut: true },
       cancelled: { cancelled: true },
       truncated: { outputTruncated: true },
       violation: { violations: [{ kind: "filesystem-write", operation: "open", target: "outside" }] },
     }
+    const expected: Record<string, IndustrialResult.ErrorCode> = {
+      "worker-invalid": "invalid-input",
+      "worker-protocol": "protocol-error",
+      unavailable: "engine-unavailable",
+      "worker-failed": "engine-failed",
+      nonzero: "sandbox-nonzero-exit",
+      timeout: "deadline-exceeded",
+      cancelled: "cancelled",
+      truncated: "output-truncated",
+      violation: "sandbox-violation",
+    }
+
     return withTool(
       (runID, request) =>
         Effect.promise(async () => {
           roots.push(request.cwd)
           await writeFile(path.join(request.cwd, "artifacts", "result.txt"), request.command)
-          return workerResult(runID, outcomes[request.command])
+          return outcomes[request.command] ?? workerResult(runID, terminal[request.command])
         }),
       (fixture) =>
         Effect.gen(function* () {
-          const results = yield* Effect.forEach(Object.keys(outcomes), (command) =>
-            fixture.tool.execute({ command, outputs: [outputPath("result.txt")] }, ctx(fixture)),
+          const results = yield* Effect.forEach(Object.keys(expected), (command, index) =>
+            fixture.tool.execute(
+              { command, outputs: [outputPath("result.txt")] },
+              context(fixture, `call-terminal-${index}`),
+            ),
           )
-          expect(results.every((result) => result.metadata.artifacts.length === 0)).toBe(true)
+          expect(
+            results.map((result) =>
+              result.metadata.result.status === "error" ? result.metadata.result.error.code : "success",
+            ),
+          ).toEqual(Object.values(expected))
+          expect(results.every((result) => result.metadata.result.outputs.length === 0)).toBe(true)
           expect((yield* fixture.db.select({ value: count() }).from(ArtifactTable).get())?.value).toBe(0)
-          expect(yield* Effect.promise(() => Promise.all(roots.map((root) => Bun.file(root).exists())))).toEqual([
-            false,
-            false,
-            false,
-            false,
-            false,
-          ])
-        }),
-    )
-  })
-
-  it.live("redacts real artifact-store and staging paths from model-visible output", () => {
-    const leaked: string[] = []
-    return withTool(
-      (runID, request) => {
-        const artifactRoot = path.dirname(path.dirname(request.cwd))
-        leaked.push(request.cwd, artifactRoot)
-        return Effect.succeed(
-          workerResult(runID, {
-            stdout: `staging=${request.cwd}\nstore=${artifactRoot}`,
-            stderr: `portable=${String(request.cwd).replaceAll("\\", "/")}`,
-            violations: [{ kind: "filesystem-read", operation: "open", target: request.cwd }],
-          }),
-        )
-      },
-      (fixture) =>
-        Effect.gen(function* () {
-          const result = yield* fixture.tool.execute({ command: "print real paths" }, ctx(fixture))
-          expect(result.output).toContain("[artifact-staging]")
-          expect(result.output).toContain("[artifact-store]")
-          expect(leaked.every((absolute) => !result.output.includes(absolute))).toBe(true)
-          expect(JSON.stringify(result.metadata)).not.toContain(fixture.data)
-          expect(result.metadata.violations[0]?.target).toBe("[artifact-staging]")
-        }),
-    )
-  })
-
-  it.live("abandons staging after a worker failure", () => {
-    const roots: string[] = []
-    return withTool(
-      (runID, request) => {
-        roots.push(request.cwd)
-        return Effect.succeed(decodeResponse({ protocolVersion: 1, type: "failure", runID, code: "execution-failed" }))
-      },
-      (fixture) =>
-        Effect.gen(function* () {
-          const exit = yield* fixture.tool
-            .execute({ command: "worker failure", outputs: [outputPath("result.txt")] }, ctx(fixture))
-            .pipe(Effect.exit)
-          expect(Exit.isFailure(exit)).toBe(true)
-          expect(roots).toHaveLength(1)
-          expect(yield* Effect.promise(() => Bun.file(roots[0]).exists())).toBe(false)
-          expect((yield* fixture.db.select({ value: count() }).from(ArtifactTable).get())?.value).toBe(0)
-        }),
-    )
-  })
-
-  it.live("keeps a completed result when staging cleanup fails", () =>
-    Effect.acquireUseRelease(
-      Effect.promise(() => tmpdir()),
-      (tmp) => {
-        const abandoned: SandboxProtocol.RunID[] = []
-        const layer = Layer.mergeAll(
-          Layer.mock(ArtifactStore.Service, {
-            stage: (runID) =>
-              Effect.promise(async () => {
-                const root = path.join(tmp.path, runID)
-                await mkdir(path.join(root, "work"), { recursive: true })
-                await mkdir(path.join(root, "artifacts"), { recursive: true })
-                return { runID, root, work: path.join(root, "work"), artifacts: path.join(root, "artifacts") }
-              }),
-            abandon: (runID) =>
-              Effect.sync(() => abandoned.push(runID)).pipe(
-                Effect.andThen(Effect.fail(new ArtifactStore.AbandonmentError({ runID }))),
-              ),
-          }),
-          Layer.mock(SandboxRuntime.Service, { execute: (runID) => Effect.succeed(workerResult(runID)) }),
-          RuntimeFlags.layer({ agentExecution: "sandbox" }),
-          Layer.mock(Agent.Service, { get: () => Effect.succeed(agent) }),
-          Layer.mock(Truncate.Service, {
-            output: (text) => Effect.succeed({ content: text, truncated: false as const }),
-          }),
-          testInstanceStoreLayer,
-        )
-        return Effect.gen(function* () {
-          const info = yield* SandboxExecuteTool
-          const result = yield* (yield* info.init()).execute(
-            { command: "completed despite cleanup" },
-            {
-              sessionID: SessionID.make("ses_cleanup"),
-              messageID: MessageID.make("msg_cleanup"),
-              agent: agent.name,
-              abort: AbortSignal.any([]),
-              messages: [],
-              metadata: () => Effect.void,
-              ask: () => Effect.void,
-            },
+          expect(yield* Effect.promise(() => Promise.all(roots.map((root) => Bun.file(root).exists())))).toEqual(
+            roots.map(() => false),
           )
-          expect(result.output).toBe("stdout:\ncompleted")
-          expect(abandoned).toHaveLength(1)
-        }).pipe(provideInstance(tmp.path), Effect.provide(layer))
+          expect(
+            (yield* fixture.db.select().from(ToolAuditTable).all()).every((row) => row.state === "completed"),
+          ).toBe(true)
+        }),
+    )
+  })
+
+  it.live("uses the worker timeout as the sandbox deadline authority", () => {
+    let operationSignal: AbortSignal | undefined
+    return withTool(
+      (runID, _request, options) => {
+        operationSignal = options?.signal
+        return Effect.sleep(10).pipe(Effect.as(workerResult(runID, { timedOut: true })))
       },
-      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      (fixture) =>
+        Effect.gen(function* () {
+          const result = yield* fixture.tool.execute({ command: "worker timeout", timeout: 5 }, context(fixture))
+
+          expect(operationSignal?.aborted).toBe(false)
+          expect(result.metadata.result).toMatchObject({
+            status: "error",
+            timedOut: true,
+            error: { code: "deadline-exceeded" },
+          })
+          expect(yield* fixture.db.select().from(ToolAuditTable).get()).toMatchObject({
+            outcome_code: "timeout",
+            error_code: "deadline-exceeded",
+          })
+        }),
+    )
+  })
+
+  it.live("does not publish a successful worker result after caller cancellation", () => {
+    const caller = new AbortController()
+    return withTool(
+      (runID, request) =>
+        Effect.promise(async () => {
+          await writeFile(path.join(request.cwd, "artifacts", "late.txt"), "late output")
+          caller.abort()
+          await Bun.sleep(5)
+          return workerResult(runID)
+        }),
+      (fixture) =>
+        Effect.gen(function* () {
+          const result = yield* fixture.tool.execute(
+            { command: "cancel before publish", outputs: [outputPath("late.txt")] },
+            context(fixture, "call-cancel-before-publish", caller.signal),
+          )
+
+          expect(result.metadata.result).toMatchObject({
+            status: "error",
+            cancelled: true,
+            error: { code: "cancelled" },
+          })
+          expect((yield* fixture.db.select({ value: count() }).from(ArtifactTable).get())?.value).toBe(0)
+          expect(yield* fixture.db.select().from(ToolAuditTable).get()).toMatchObject({ outcome_code: "cancelled" })
+        }),
+    )
+  })
+
+  it.live("publishes output metadata atomically when a later candidate fails", () =>
+    withTool(
+      (runID, request) =>
+        Effect.promise(async () => {
+          await writeFile(path.join(request.cwd, "artifacts", "first.txt"), "first")
+          return workerResult(runID)
+        }),
+      (fixture) =>
+        Effect.gen(function* () {
+          const result = yield* fixture.tool.execute(
+            { command: "partial outputs", outputs: [outputPath("first.txt"), outputPath("missing.txt")] },
+            context(fixture),
+          )
+
+          expect(result.metadata.result).toMatchObject({
+            status: "error",
+            outputs: [],
+            error: { code: "artifact-storage-failed" },
+          })
+          expect((yield* fixture.db.select({ value: count() }).from(ArtifactTable).get())?.value).toBe(0)
+        }),
     ),
   )
+
+  it.live("redacts typed output and tracks producer capture truncation separately", () =>
+    withTool(
+      (runID, request) => {
+        const artifactRoot = path.dirname(path.dirname(request.cwd))
+        return Effect.succeed(
+          workerResult(runID, {
+            stdout: `staging=${request.cwd}`,
+            stderr: `store=${artifactRoot}`,
+            violations:
+              request.command === "redact violation"
+                ? [{ kind: "filesystem-read", operation: "open", target: request.cwd }]
+                : [],
+          }),
+        )
+      },
+      (fixture) =>
+        Effect.gen(function* () {
+          const result = yield* fixture.tool.execute({ command: "redact paths" }, context(fixture, "call-redact"))
+          if (result.metadata.result.status !== "success") return yield* Effect.die(new Error("expected success"))
+          expect(result.metadata.result.data.stdout).toContain("[artifact-staging]")
+          expect(result.metadata.result.data.stderr).toContain("[artifact-store]")
+          expect(JSON.stringify(result.metadata)).not.toContain(fixture.data)
+
+          const violation = yield* fixture.tool.execute(
+            { command: "redact violation" },
+            context(fixture, "call-violation"),
+          )
+          expect(violation.metadata.result).toMatchObject({
+            status: "error",
+            error: { code: "sandbox-violation" },
+          })
+          expect(violation.metadata.result.summary).toContain('"target":"[artifact-staging]"')
+          expect(JSON.stringify(violation.metadata)).not.toContain(fixture.data)
+        }),
+    ),
+  )
+
+  it.live("marks worker capture truncation without conflating projection truncation", () =>
+    withTool(
+      (runID) => Effect.succeed(workerResult(runID, { outputTruncated: true, stdout: "partial" })),
+      (fixture) =>
+        Effect.gen(function* () {
+          const result = yield* fixture.tool.execute({ command: "large output" }, context(fixture))
+          expect(result.metadata.result).toMatchObject({
+            status: "error",
+            producerTruncated: true,
+            error: { code: "output-truncated" },
+          })
+          expect(result.metadata.projection.truncated).toBe(false)
+          expect(result.metadata.truncated).toBe(true)
+          expect(result.metadata.result.summary.length).toBeLessThanOrEqual(16 * 1024)
+          expect(yield* fixture.db.select().from(ToolAuditTable).get()).toMatchObject({ truncated: true })
+        }),
+    ),
+  )
+
+  it.live("marks bounded summary truncation while preserving full typed success data", () => {
+    const stdout = "x".repeat(SandboxTool.MaxSummaryBytes * 2)
+    return withTool(
+      (runID) => Effect.succeed(workerResult(runID, { stdout })),
+      (fixture) =>
+        Effect.gen(function* () {
+          const result = yield* fixture.tool.execute({ command: "large summary" }, context(fixture))
+          expect(result.metadata.result).toMatchObject({ status: "success", producerTruncated: true })
+          if (result.metadata.result.status !== "success") return yield* Effect.die(new Error("expected success"))
+          expect(result.metadata.result.data.stdout).toBe(stdout)
+          expect(result.metadata.result.summary.endsWith(SandboxTool.SummaryTruncationMarker)).toBe(true)
+          expect(new TextEncoder().encode(result.metadata.result.summary).byteLength).toBeLessThanOrEqual(
+            SandboxTool.MaxSummaryBytes,
+          )
+          expect(result.metadata.truncated).toBe(true)
+          expect(yield* fixture.db.select().from(ToolAuditTable).get()).toMatchObject({
+            producer_truncated: true,
+            projection_truncated: false,
+            truncated: true,
+          })
+        }),
+    )
+  })
 })

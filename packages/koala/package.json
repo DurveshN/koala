@@ -6,6 +6,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./artifact/*": "./src/artifact/*.ts",
+    "./calculate/*": "./src/calculate/*.ts",
+    "./document-runtime/*": "./src/document-runtime/*.ts",
+    "./industrial/*": "./src/industrial/*.ts",
     "./model/*": "./src/model/*.ts",
     "./network/*": "./src/network/*.ts",
     "./sandbox/*": "./src/sandbox/*.ts"
@@ -15,6 +18,7 @@
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
+    "decimal.js": "10.5.0",
     "effect": "catalog:",
     "ipaddr.js": "2.5.0"
   },

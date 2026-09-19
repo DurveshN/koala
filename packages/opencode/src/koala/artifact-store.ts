@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto"
 import { constants } from "node:fs"
 import type { BigIntStats } from "node:fs"
-import { chmod, link, lstat, mkdir, open, rm, unlink } from "node:fs/promises"
+import { chmod, link, lstat, mkdir, open, readdir, rm, unlink } from "node:fs/promises"
 import type { FileHandle } from "node:fs/promises"
 import path from "node:path"
 import { Artifact } from "@koala-ai/core/artifact/artifact"
@@ -11,8 +11,9 @@ import { ArtifactBlobTable, ArtifactLineageTable, ArtifactTable } from "@opencod
 import { Database } from "@opencode-ai/core/database/database"
 import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
 import { Global } from "@opencode-ai/core/global"
-import { count, eq, sql } from "drizzle-orm"
-import { Effect, Exit, Layer, Schema, Semaphore, Stream } from "effect"
+import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
+import { count, eq, isNull, sql } from "drizzle-orm"
+import { Cause, Context, Effect, Exit, Layer, Schema, Semaphore, Stream } from "effect"
 
 const ChunkBytes = 64 * 1024
 const ReadFlags = constants.O_RDONLY | (typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0)
@@ -42,6 +43,7 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const { db } = yield* Database.Service
     const global = yield* Global.Service
+    const flock = yield* EffectFlock.Service
     const root = path.join(global.data, "koala", "artifacts")
     const stagingRoot = path.join(root, "staging")
     const blobRoot = path.join(root, "blobs", "sha256")
@@ -62,6 +64,23 @@ const layer = Layer.effect(
       findings: [],
     })
     const promotionLock = yield* Semaphore.make(1)
+    const activeRuns = new Set<SandboxProtocol.RunID>()
+
+    const reconcile = Effect.fn("ArtifactStore.reconcile")(() =>
+      promotionLock.withPermit(
+        flock
+          .withLock(reconcileBlobs(db, blobRoot, stagingRoot, temporaryRoot, activeRuns), `artifact-promotion:${root}`)
+          .pipe(Effect.mapError(() => new ArtifactStore.ReconciliationError())),
+      ),
+    )
+
+    yield* reconcile().pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("artifact blob reconciliation failed; a later startup will retry", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    )
 
     const stage = Effect.fn("ArtifactStore.stage")(function* (unsafeRunID: SandboxProtocol.RunID) {
       const runID = yield* decodeRunID(unsafeRunID).pipe(
@@ -91,112 +110,161 @@ const layer = Layer.effect(
         catch: () => new ArtifactStore.StagingError({ runID }),
       })
 
+      activeRuns.add(runID)
       return { runID, root: runRoot, work, artifacts }
     })
 
-    const promote = Effect.fn("ArtifactStore.promote")(function* (input: ArtifactStore.PromoteInput) {
-      const outputPath = yield* decodeOutputPath(input.outputPath).pipe(
-        Effect.mapError(() => new ArtifactStore.InvalidOutputPathError({ path: String(input.outputPath) })),
+    const promoteBatch = Effect.fn("ArtifactStore.promoteBatch")(function* (
+      inputs: ReadonlyArray<ArtifactStore.PromoteInput>,
+      options?: ArtifactStore.PromoteOptions,
+    ) {
+      if (inputs.length === 0) return []
+      const candidates = yield* Effect.forEach(inputs, (input) =>
+        Effect.gen(function* () {
+          const outputPath = yield* decodeOutputPath(input.outputPath).pipe(
+            Effect.mapError(() => new ArtifactStore.InvalidOutputPathError({ path: String(input.outputPath) })),
+          )
+          const runID = yield* decodeRunID(input.runID).pipe(
+            Effect.mapError(() => new ArtifactStore.InvalidOutputPathError({ path: outputPath })),
+          )
+          if (input.provenance.sandboxRunID !== undefined && input.provenance.sandboxRunID !== runID) {
+            return yield* new ArtifactStore.PromotionError({ runID, outputPath })
+          }
+          const name = yield* decodeName(path.posix.basename(outputPath)).pipe(
+            Effect.mapError(() => invalidName(outputPath)),
+          )
+          const artifacts = path.join(stagingRoot, runID, "artifacts")
+          const candidate = resolveCandidate(artifacts, outputPath)
+          if (!candidate) return yield* new ArtifactStore.InvalidOutputPathError({ path: outputPath })
+          return { input, outputPath, runID, name, artifacts, candidate }
+        }),
       )
-      const runID = yield* decodeRunID(input.runID).pipe(
-        Effect.mapError(() => new ArtifactStore.InvalidOutputPathError({ path: outputPath })),
-      )
-      if (input.provenance.sandboxRunID !== undefined && input.provenance.sandboxRunID !== runID) {
-        return yield* new ArtifactStore.PromotionError({ runID, outputPath })
+      const first = candidates[0]
+      if (!first) return []
+      const mismatched = candidates.find((candidate) => candidate.runID !== first.runID)
+      if (mismatched) {
+        return yield* new ArtifactStore.PromotionError({
+          runID: mismatched.runID,
+          outputPath: mismatched.outputPath,
+        })
       }
-      const name = yield* decodeName(path.posix.basename(outputPath)).pipe(
-        Effect.mapError(
-          () =>
-            new ArtifactStore.ValidationError({
-              outputPath,
-              validation: Schema.decodeUnknownSync(Artifact.Validation)({
-                state: "rejected",
-                validator: Artifact.ValidatorName,
-                validatorVersion: Artifact.ValidatorVersion,
-                findings: [{ code: "invalid-name", message: "Artifact file name is not supported" }],
-              }),
-            }),
-        ),
-      )
-      const artifacts = path.join(stagingRoot, runID, "artifacts")
-      const candidate = resolveCandidate(artifacts, outputPath)
-      if (!candidate) return yield* new ArtifactStore.InvalidOutputPathError({ path: outputPath })
 
       return yield* promotionLock.withPermit(
-        Effect.gen(function* () {
-          const committed = yield* db
+        flock.withLock(
+          Effect.gen(function* () {
+          const existing = yield* db
             .select({
               count: count(),
               bytes: sql<number>`coalesce(sum(${ArtifactBlobTable.size}), 0)`.mapWith(Number),
             })
             .from(ArtifactTable)
             .innerJoin(ArtifactBlobTable, eq(ArtifactTable.digest, ArtifactBlobTable.digest))
-            .where(eq(ArtifactTable.sandbox_run_id, runID))
+            .where(eq(ArtifactTable.sandbox_run_id, first.runID))
             .get()
-            .pipe(Effect.mapError(() => new ArtifactStore.PromotionError({ runID, outputPath })))
-          if ((committed?.count ?? 0) >= Artifact.MaxOutputsPerRun) {
+            .pipe(
+              Effect.mapError(
+                () => new ArtifactStore.PromotionError({ runID: first.runID, outputPath: first.outputPath }),
+              ),
+            )
+          if ((existing?.count ?? 0) + candidates.length > Artifact.MaxOutputsPerRun) {
             return yield* new ArtifactStore.LimitError({
               kind: "output-count",
               maximum: Artifact.MaxOutputsPerRun,
-              actual: (committed?.count ?? 0) + 1,
+              actual: (existing?.count ?? 0) + candidates.length,
             })
           }
+          const temporaryPaths = candidates.map(() => path.join(temporaryRoot, `.${process.pid}.${randomUUID()}.tmp`))
 
           return yield* Effect.acquireUseRelease(
-            Effect.sync(() => path.join(temporaryRoot, `.${process.pid}.${randomUUID()}.tmp`)),
-            (temporaryPath) =>
+            Effect.succeed(temporaryPaths),
+            (paths) =>
               Effect.gen(function* () {
-                const copied = yield* Effect.tryPromise({
-                  try: () => copyCandidate(candidate, artifacts, temporaryPath, committed?.bytes ?? 0),
-                  catch: (error) => {
-                    if (error instanceof MissingCandidate) {
-                      return new ArtifactStore.CandidateNotFoundError({ runID, outputPath })
-                    }
-                    if (error instanceof SizeLimit) {
-                      return new ArtifactStore.LimitError({
-                        kind: error.kind,
-                        maximum: error.maximum,
-                        actual: error.actual,
-                      })
-                    }
-                    if (error instanceof UnsafeCandidate) return validationError(outputPath, "unsafe-file")
-                    return new ArtifactStore.PromotionError({ runID, outputPath })
-                  },
-                })
-                const metadata = yield* decodeMetadata({
-                  id: decodeID(`art_${randomUUID()}`),
-                  name,
-                  mime: copied.mime,
-                  size: copied.size,
-                  digest: copied.digest,
-                  validation: acceptedValidation,
-                  provenance: { ...input.provenance, sandboxRunID: runID },
-                  lineage: input.lineage ?? [],
-                  timeCreated: Date.now(),
-                }).pipe(Effect.mapError(() => new ArtifactStore.PromotionError({ runID, outputPath })))
-
-                yield* publishBlob(copied, blobRoot).pipe(
-                  Effect.mapError((error) =>
-                    error instanceof CorruptBlob
-                      ? new ArtifactStore.CorruptionError({ digest: copied.digest })
-                      : new ArtifactStore.PromotionError({ runID, outputPath }),
+                const copied = yield* Effect.forEach(candidates, (item, index) =>
+                  Effect.tryPromise({
+                    try: () => copyCandidate(item.candidate, item.artifacts, paths[index] ?? "", existing?.bytes ?? 0),
+                    catch: (error) => copyError(error, item.runID, item.outputPath),
+                  }),
+                )
+                const totalBytes = copied.reduce((total, item) => total + item.size, existing?.bytes ?? 0)
+                if (totalBytes > Artifact.MaxRunBytes) {
+                  return yield* new ArtifactStore.LimitError({
+                    kind: "run-size",
+                    maximum: Artifact.MaxRunBytes,
+                    actual: totalBytes,
+                  })
+                }
+                const metadata = yield* Effect.forEach(candidates, (item, index) =>
+                  decodeMetadata({
+                    id: decodeID(`art_${randomUUID()}`),
+                    name: item.name,
+                    mime: copied[index]?.mime,
+                    size: copied[index]?.size,
+                    digest: copied[index]?.digest,
+                    validation: acceptedValidation,
+                    provenance: item.input.provenance,
+                    lineage: item.input.lineage ?? [],
+                    timeCreated: Date.now(),
+                  }).pipe(
+                    Effect.mapError(
+                      () => new ArtifactStore.PromotionError({ runID: item.runID, outputPath: item.outputPath }),
+                    ),
                   ),
-                  Effect.andThen(
-                    db.transaction((tx) =>
-                      Effect.gen(function* () {
+                )
+                const published = new Set<Artifact.Digest>()
+                let commitBegan = false
+                const transactionExit = yield* Effect.uninterruptible(
+                  Effect.gen(function* () {
+                  if (options?.signal?.aborted) {
+                    return yield* new ArtifactStore.PromotionAbortedError({ runID: first.runID })
+                  }
+                  if (options?.commit) {
+                    if (!options.commit.boundary.begin(options.commit.result(metadata))) {
+                      return yield* new ArtifactStore.PromotionAbortedError({ runID: first.runID })
+                    }
+                    commitBegan = true
+                  }
+                  yield* Effect.yieldNow
+                  const outcome = yield* Effect.gen(function* () {
+                    yield* Effect.forEach(copied, (item, index) =>
+                      publishBlob(item, blobRoot).pipe(
+                        Effect.tap((created) => Effect.sync(() => created && published.add(item.digest))),
+                        Effect.mapError((error) =>
+                          error instanceof CorruptBlob
+                            ? new ArtifactStore.CorruptionError({ digest: item.digest })
+                            : new ArtifactStore.PromotionError({
+                                runID: first.runID,
+                                outputPath: candidates[index]?.outputPath ?? first.outputPath,
+                              }),
+                        ),
+                      ),
+                    )
+
+                    return yield* db
+                      .transaction((tx) =>
+                        Effect.gen(function* () {
                         yield* tx
                           .insert(ArtifactBlobTable)
-                          .values({ digest: metadata.digest, size: metadata.size, time_created: metadata.timeCreated })
+                          .values(
+                            metadata.map((item) => ({
+                              digest: item.digest,
+                              size: item.size,
+                              time_created: item.timeCreated,
+                            })),
+                          )
                           .onConflictDoNothing({ target: ArtifactBlobTable.digest })
                           .run()
-                        const blob = yield* tx
-                          .select({ size: ArtifactBlobTable.size })
-                          .from(ArtifactBlobTable)
-                          .where(eq(ArtifactBlobTable.digest, metadata.digest))
-                          .get()
-                        if (blob?.size !== metadata.size) {
-                          return yield* Effect.fail(new Error("Artifact blob metadata mismatch"))
-                        }
+                        yield* Effect.forEach(metadata, (item) =>
+                          Effect.gen(function* () {
+                            const blob = yield* tx
+                              .select({ size: ArtifactBlobTable.size })
+                              .from(ArtifactBlobTable)
+                              .where(eq(ArtifactBlobTable.digest, item.digest))
+                              .get()
+                            if (blob?.size !== item.size) {
+                              return yield* Effect.fail(new Error("Artifact blob metadata mismatch"))
+                            }
+                          }),
+                        )
                         const current = yield* tx
                           .select({
                             count: count(),
@@ -204,67 +272,86 @@ const layer = Layer.effect(
                           })
                           .from(ArtifactTable)
                           .innerJoin(ArtifactBlobTable, eq(ArtifactTable.digest, ArtifactBlobTable.digest))
-                          .where(eq(ArtifactTable.sandbox_run_id, runID))
+                          .where(eq(ArtifactTable.sandbox_run_id, first.runID))
                           .get()
-                        if ((current?.count ?? 0) >= Artifact.MaxOutputsPerRun) {
+                        if ((current?.count ?? 0) + metadata.length > Artifact.MaxOutputsPerRun) {
                           return yield* new ArtifactStore.LimitError({
                             kind: "output-count",
                             maximum: Artifact.MaxOutputsPerRun,
-                            actual: (current?.count ?? 0) + 1,
+                            actual: (current?.count ?? 0) + metadata.length,
                           })
                         }
-                        if ((current?.bytes ?? 0) + metadata.size > Artifact.MaxRunBytes) {
+                        const currentTotal = (current?.bytes ?? 0) + metadata.reduce((sum, item) => sum + item.size, 0)
+                        if (currentTotal > Artifact.MaxRunBytes) {
                           return yield* new ArtifactStore.LimitError({
                             kind: "run-size",
                             maximum: Artifact.MaxRunBytes,
-                            actual: (current?.bytes ?? 0) + metadata.size,
+                            actual: currentTotal,
                           })
                         }
-                        yield* tx
-                          .insert(ArtifactTable)
-                          .values({
-                            id: metadata.id,
-                            digest: metadata.digest,
-                            name: metadata.name,
-                            mime: metadata.mime,
-                            validation_state: metadata.validation.state,
-                            validator: metadata.validation.validator,
-                            validator_version: metadata.validation.validatorVersion,
-                            validation: metadata.validation,
-                            owner_session_id: metadata.provenance.sessionID,
-                            owner_message_id: metadata.provenance.messageID,
-                            tool_name: metadata.provenance.toolName,
-                            tool_call_id: metadata.provenance.toolCallID,
-                            sandbox_run_id: metadata.provenance.sandboxRunID,
-                            time_created: metadata.timeCreated,
-                          })
-                          .run()
-                        if (metadata.lineage.length === 0) return
-                        yield* tx
-                          .insert(ArtifactLineageTable)
-                          .values(
-                            metadata.lineage.map((item) => ({
-                              artifact_id: metadata.id,
-                              source_artifact_id: item.sourceArtifactID,
-                              relation: item.relation,
-                            })),
-                          )
-                          .run()
-                      }),
-                    ),
-                  ),
-                  Effect.mapError((error) =>
-                    error instanceof ArtifactStore.CorruptionError || error instanceof ArtifactStore.LimitError
-                      ? error
-                      : new ArtifactStore.PromotionError({ runID, outputPath }),
-                  ),
+                        yield* tx.insert(ArtifactTable).values(metadata.map(artifactRow)).run()
+                        const lineage = metadata.flatMap((item) =>
+                          item.lineage.map((entry) => ({
+                            artifact_id: item.id,
+                            source_artifact_id: entry.sourceArtifactID,
+                            relation: entry.relation,
+                          })),
+                        )
+                        if (lineage.length > 0) yield* tx.insert(ArtifactLineageTable).values(lineage).run()
+                        }),
+                      )
+                      .pipe(
+                        Effect.as(metadata),
+                        Effect.mapError((error) =>
+                          error instanceof ArtifactStore.LimitError
+                            ? error
+                            : new ArtifactStore.PromotionError({ runID: first.runID, outputPath: first.outputPath }),
+                        ),
+                      )
+                  }).pipe(Effect.exit)
+                  if (Exit.isSuccess(outcome)) {
+                    options?.commit?.boundary.complete()
+                    return outcome
+                  }
+                  if (commitBegan) options?.commit?.boundary.rollback()
+                  const cleanupExit = yield* removeUnreferencedBlobs(db, blobRoot, published).pipe(Effect.exit)
+                  if (Exit.isFailure(cleanupExit)) {
+                    yield* Effect.logWarning("artifact rollback cleanup failed; startup reconciliation will retry", {
+                      digests: [...published],
+                      cause: Cause.pretty(cleanupExit.cause),
+                    })
+                  }
+                  return outcome
+                  }),
                 )
-                return metadata
+                if (Exit.isSuccess(transactionExit)) return transactionExit.value
+                return yield* Effect.failCause(transactionExit.cause)
               }),
-            (temporaryPath) => Effect.promise(() => rm(temporaryPath, { force: true })).pipe(Effect.ignore),
+            (paths) =>
+              Effect.forEach(paths, (temporaryPath) => Effect.promise(() => rm(temporaryPath, { force: true }))).pipe(
+                Effect.ignore,
+              ),
           )
-        }),
+          }),
+          `artifact-promotion:${root}`,
+        ).pipe(
+          Effect.mapError((error) =>
+            error instanceof EffectFlock.LockTimeoutError || error instanceof EffectFlock.LockCompromisedError
+              ? new ArtifactStore.PromotionError({ runID: first.runID, outputPath: first.outputPath })
+              : error,
+          ),
+        ),
       )
+    })
+
+    const promote = Effect.fn("ArtifactStore.promote")(function* (
+      input: ArtifactStore.PromoteInput,
+      options?: ArtifactStore.PromoteOptions,
+    ) {
+      const result = yield* promoteBatch([input], options)
+      const metadata = result[0]
+      if (metadata) return metadata
+      return yield* new ArtifactStore.PromotionError({ runID: input.runID, outputPath: input.outputPath })
     })
 
     const metadata = Effect.fn("ArtifactStore.metadata")(function* (artifactID: Artifact.ID) {
@@ -281,6 +368,7 @@ const layer = Layer.effect(
           toolName: ArtifactTable.tool_name,
           toolCallID: ArtifactTable.tool_call_id,
           sandboxRunID: ArtifactTable.sandbox_run_id,
+          sourceProjectPath: ArtifactTable.source_project_path,
           timeCreated: ArtifactTable.time_created,
         })
         .from(ArtifactTable)
@@ -309,6 +397,7 @@ const layer = Layer.effect(
           toolName: row.toolName,
           ...(row.toolCallID === null ? {} : { toolCallID: row.toolCallID }),
           ...(row.sandboxRunID === null ? {} : { sandboxRunID: row.sandboxRunID }),
+          ...(row.sourceProjectPath === null ? {} : { sourceProjectPath: row.sourceProjectPath }),
         },
         lineage,
         timeCreated: row.timeCreated,
@@ -401,13 +490,18 @@ const layer = Layer.effect(
         try: () => rm(path.join(stagingRoot, runID), { recursive: true, force: true }),
         catch: () => new ArtifactStore.AbandonmentError({ runID }),
       })
+      activeRuns.delete(runID)
     })
 
-    return ArtifactStore.Service.of({ stage, promote, metadata, content, abandon })
+    return ArtifactStore.Service.of({ stage, promote, promoteBatch, metadata, content, abandon, reconcile })
   }),
 )
 
-export const node = makeGlobalNode({ service: ArtifactStore.Service, layer, deps: [Database.node, Global.node] })
+export const node = makeGlobalNode({
+  service: ArtifactStore.Service,
+  layer,
+  deps: [Database.node, Global.node, EffectFlock.node],
+})
 
 async function ensurePrivateDirectory(parent: string, name: string) {
   const directory = path.join(parent, name)
@@ -597,15 +691,126 @@ function publishBlob(copied: CopiedCandidate, root: string) {
       try {
         await link(copied.temporaryPath, path.join(directory, copied.digest))
         await unlink(copied.temporaryPath)
-        return
+        return true
       } catch (error) {
         if (!hasCode(error, "EEXIST")) throw error
       }
       await verifyBlob(path.join(directory, copied.digest), copied.digest, copied.size)
       await unlink(copied.temporaryPath)
+      return false
     },
     catch: (error) => (error instanceof CorruptBlob ? error : new UnsafeCandidate()),
   })
+}
+
+function removeUnreferencedBlobs(
+  db: Context.Service.Shape<typeof Database.Service>["db"],
+  root: string,
+  digests: ReadonlySet<Artifact.Digest>,
+) {
+  return Effect.forEach(digests, (digest) =>
+    Effect.gen(function* () {
+      const referenced = yield* db
+        .select({ value: count() })
+        .from(ArtifactTable)
+        .where(eq(ArtifactTable.digest, digest))
+        .get()
+      if ((referenced?.value ?? 0) === 0) yield* Effect.promise(() => rm(blobPath(root, digest), { force: true }))
+    }),
+  ).pipe(Effect.asVoid)
+}
+
+function reconcileBlobs(
+  db: Context.Service.Shape<typeof Database.Service>["db"],
+  root: string,
+  stagingRoot: string,
+  temporaryRoot: string,
+  activeRuns: ReadonlySet<SandboxProtocol.RunID>,
+) {
+  return Effect.gen(function* () {
+    const cutoff = Date.now() - ArtifactStore.ReconciliationAgeMs
+    const discovered = yield* Effect.tryPromise(() =>
+      Promise.all([
+        listBlobDigests(root),
+        listAgedEntries(temporaryRoot, cutoff),
+        listAgedEntries(stagingRoot, cutoff, activeRuns),
+      ]),
+    )
+    const physical = discovered[0]
+    const stored = yield* db
+      .select({ digest: ArtifactBlobTable.digest })
+      .from(ArtifactBlobTable)
+      .leftJoin(ArtifactTable, eq(ArtifactTable.digest, ArtifactBlobTable.digest))
+      .where(isNull(ArtifactTable.id))
+      .all()
+    const candidates = new Set<Artifact.Digest>([
+      ...physical,
+      ...stored.flatMap((row) => (Schema.is(Artifact.Digest)(row.digest) ? [row.digest] : [])),
+    ])
+    const removed = yield* Effect.forEach(candidates, (digest) =>
+      Effect.gen(function* () {
+        const referenced = yield* db
+          .select({ value: count() })
+          .from(ArtifactTable)
+          .where(eq(ArtifactTable.digest, digest))
+          .get()
+        if ((referenced?.value ?? 0) > 0) return false
+        yield* Effect.promise(() => rm(blobPath(root, digest), { force: true }))
+        yield* db.delete(ArtifactBlobTable).where(eq(ArtifactBlobTable.digest, digest)).run()
+        return true
+      }),
+    )
+    const stale = [...discovered[1], ...discovered[2]]
+    yield* Effect.forEach(stale, (entry) => Effect.promise(() => rm(entry, { recursive: true, force: true })))
+    return {
+      examined: candidates.size + stale.length,
+      removed: removed.filter(Boolean).length + stale.length,
+    }
+  })
+}
+
+async function listBlobDigests(root: string) {
+  const directories = await readdir(root, { withFileTypes: true }).catch((error) => {
+    if (hasCode(error, "ENOENT")) return []
+    throw error
+  })
+  const values = await Promise.all(
+    directories
+      .filter((entry) => entry.isDirectory() && /^[0-9a-f]{2}$/.test(entry.name))
+      .map(async (entry) => {
+        const files = await readdir(path.join(root, entry.name), { withFileTypes: true })
+        return files.flatMap((file) =>
+          file.isFile() && file.name.startsWith(entry.name) && Schema.is(Artifact.Digest)(file.name)
+            ? [file.name]
+            : [],
+        )
+      }),
+  )
+  return values.flat()
+}
+
+async function listAgedEntries(root: string, cutoff: number, excluded: ReadonlySet<string> = new Set()) {
+  const entries = await readdir(root, { withFileTypes: true }).catch((error) => {
+    if (hasCode(error, "ENOENT")) return []
+    throw error
+  })
+  const ages = await Promise.all(
+    entries
+      .filter((entry) => !excluded.has(entry.name))
+      .map(async (entry) => ({
+        path: path.join(root, entry.name),
+        modified: await newestMtime(path.join(root, entry.name)),
+      })),
+  )
+  return ages.filter((entry) => entry.modified <= cutoff).map((entry) => entry.path)
+}
+
+async function newestMtime(target: string): Promise<number> {
+  const info = await lstat(target)
+  if (!info.isDirectory() || info.isSymbolicLink()) return info.mtimeMs
+  const children = await readdir(target)
+  const modified = await Promise.all(children.map((child) => newestMtime(path.join(target, child))))
+  return Math.max(info.mtimeMs, ...modified)
 }
 
 async function verifyBlob(filepath: string, digest: Artifact.Digest, size: number) {
@@ -669,6 +874,47 @@ function validationError(outputPath: Artifact.OutputPath, code: string) {
       findings: [{ code, message: "Artifact candidate is not a stable standalone regular file" }],
     }),
   })
+}
+
+function invalidName(outputPath: Artifact.OutputPath) {
+  return new ArtifactStore.ValidationError({
+    outputPath,
+    validation: Schema.decodeUnknownSync(Artifact.Validation)({
+      state: "rejected",
+      validator: Artifact.ValidatorName,
+      validatorVersion: Artifact.ValidatorVersion,
+      findings: [{ code: "invalid-name", message: "Artifact file name is not supported" }],
+    }),
+  })
+}
+
+function copyError(error: unknown, runID: SandboxProtocol.RunID, outputPath: Artifact.OutputPath) {
+  if (error instanceof MissingCandidate) return new ArtifactStore.CandidateNotFoundError({ runID, outputPath })
+  if (error instanceof SizeLimit) {
+    return new ArtifactStore.LimitError({ kind: error.kind, maximum: error.maximum, actual: error.actual })
+  }
+  if (error instanceof UnsafeCandidate) return validationError(outputPath, "unsafe-file")
+  return new ArtifactStore.PromotionError({ runID, outputPath })
+}
+
+function artifactRow(metadata: Artifact.Metadata) {
+  return {
+    id: metadata.id,
+    digest: metadata.digest,
+    name: metadata.name,
+    mime: metadata.mime,
+    validation_state: metadata.validation.state,
+    validator: metadata.validation.validator,
+    validator_version: metadata.validation.validatorVersion,
+    validation: metadata.validation,
+    owner_session_id: metadata.provenance.sessionID,
+    owner_message_id: metadata.provenance.messageID,
+    tool_name: metadata.provenance.toolName,
+    tool_call_id: metadata.provenance.toolCallID,
+    sandbox_run_id: metadata.provenance.sandboxRunID,
+    source_project_path: metadata.provenance.sourceProjectPath,
+    time_created: metadata.timeCreated,
+  }
 }
 
 export * as ArtifactStoreLive from "./artifact-store"

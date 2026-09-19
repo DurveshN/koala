@@ -93,6 +93,7 @@ describe("Artifact metadata", () => {
       toolName: "sandbox_execute",
       toolCallID: "call-123",
       sandboxRunID: "run-123",
+      sourceProjectPath: "reports/report.pdf",
     },
     lineage: [{ sourceArtifactID: "art_123e4567-e89b-42d3-a456-426614174001", relation: "derived-from" }],
     timeCreated: 1_758_236_400_000,
@@ -146,6 +147,14 @@ describe("Artifact metadata", () => {
     const decode = Schema.decodeUnknownSync(Artifact.Provenance)
     expect(String(decode(metadata.provenance).sandboxRunID)).toBe("run-123")
     expect(() => decode({ ...metadata.provenance, sandboxRunID: "bad/run" })).toThrow()
+  })
+
+  test("accepts opaque control-safe tool call provenance", () => {
+    const decode = Schema.decodeUnknownSync(Artifact.Provenance)
+    expect(decode({ ...metadata.provenance, toolCallID: "provider call/id:{opaque}=v1" }).toolCallID).toBe(
+      "provider call/id:{opaque}=v1",
+    )
+    expect(() => decode({ ...metadata.provenance, toolCallID: "provider\ncall" })).toThrow()
   })
 })
 

@@ -6,6 +6,7 @@ import { Session } from "@/session/session"
 import { QuestionTool } from "./question"
 import { ShellTool } from "./shell"
 import { SandboxExecuteTool } from "./sandbox-execute"
+import { CalculateTool } from "./calculate"
 import { EditTool } from "./edit"
 import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
@@ -56,6 +57,8 @@ import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
 import { ArtifactStoreLive } from "@/koala/artifact-store"
+import { IndustrialAuditLive } from "@/koala/industrial-audit"
+import { IndustrialExecution } from "@/koala/industrial-execution"
 import { SandboxRuntime } from "@/sandbox/runtime"
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
@@ -112,6 +115,7 @@ const layer = Layer.effect(
     const websearch = yield* WebSearchTool
     const shell = yield* ShellTool
     const sandbox = yield* SandboxExecuteTool
+    const calculate = yield* CalculateTool
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
     const edit = yield* EditTool
@@ -214,6 +218,7 @@ const layer = Layer.effect(
           invalid: Tool.init(invalid),
           shell: Tool.init(shell),
           sandbox: Tool.init(sandbox),
+          calculate: Tool.init(calculate),
           read: Tool.init(read),
           glob: Tool.init(globtool),
           grep: Tool.init(greptool),
@@ -238,6 +243,7 @@ const layer = Layer.effect(
             ...(questionEnabled ? [tool.question] : []),
             ...(flags.agentExecution === "host" || flags.agentExecution === "both" ? [tool.shell] : []),
             ...(flags.agentExecution === "sandbox" || flags.agentExecution === "both" ? [tool.sandbox] : []),
+            tool.calculate,
             tool.read,
             tool.glob,
             tool.grep,
@@ -459,6 +465,8 @@ export const node = LayerNode.make({
     Database.node,
     Ripgrep.node,
     ArtifactStoreLive.node,
+    IndustrialAuditLive.node,
+    IndustrialExecution.node,
     SandboxRuntime.node,
   ],
 })

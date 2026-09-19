@@ -16,6 +16,7 @@ import eventSourcedSessionInputMigration from "@opencode-ai/core/database/migrat
 import contextEpochAgentMigration from "@opencode-ai/core/database/migration/20260605042240_add_context_epoch_agent"
 import simplifyIntegrationCredentialsMigration from "@opencode-ai/core/database/migration/20260611192811_lush_chimera"
 import simplifySessionInputMigration from "@opencode-ai/core/database/migration/20260622202450_simplify_session_input"
+import koalaIndustrialAuditMigration from "@opencode-ai/core/database/migration/20260919162426_koala_industrial_audit"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -158,6 +159,68 @@ describe("DatabaseMigration", () => {
           { name: "session_message_session_time_created_id_idx" },
           { name: "session_message_session_type_seq_idx" },
         ])
+      }),
+    )
+  })
+
+  test("preserves artifact lineage while adding industrial audit columns", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`PRAGMA foreign_keys = ON`)
+        yield* db.run(sql`CREATE TABLE session (id text PRIMARY KEY)`)
+        yield* db.run(sql`CREATE TABLE message (id text PRIMARY KEY)`)
+        yield* db.run(
+          sql`CREATE TABLE koala_artifact_blob (digest text PRIMARY KEY, size integer NOT NULL, time_created integer NOT NULL)`,
+        )
+        yield* db.run(sql`
+          CREATE TABLE koala_artifact (
+            id text PRIMARY KEY, digest text NOT NULL REFERENCES koala_artifact_blob(digest),
+            name text NOT NULL, mime text NOT NULL, validation_state text NOT NULL,
+            validator text NOT NULL, validator_version text NOT NULL, validation text NOT NULL,
+            owner_session_id text NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+            owner_message_id text NOT NULL REFERENCES message(id) ON DELETE CASCADE,
+            tool_name text NOT NULL, tool_call_id text, sandbox_run_id text, time_created integer NOT NULL
+          )
+        `)
+        yield* db.run(sql`
+          CREATE TABLE koala_artifact_lineage (
+            artifact_id text NOT NULL REFERENCES koala_artifact(id) ON DELETE CASCADE,
+            source_artifact_id text NOT NULL REFERENCES koala_artifact(id) ON DELETE CASCADE,
+            relation text NOT NULL,
+            PRIMARY KEY (artifact_id, source_artifact_id, relation)
+          )
+        `)
+        yield* db.run(sql`INSERT INTO session (id) VALUES ('session')`)
+        yield* db.run(sql`INSERT INTO message (id) VALUES ('message')`)
+        yield* db.run(
+          sql`INSERT INTO koala_artifact_blob (digest, size, time_created) VALUES (${"a".repeat(64)}, 1, 1), (${"b".repeat(64)}, 1, 1)`,
+        )
+        const source = "art_00000000-0000-4000-8000-000000000001"
+        const derived = "art_00000000-0000-4000-8000-000000000002"
+        yield* db.run(sql`
+          INSERT INTO koala_artifact (
+            id, digest, name, mime, validation_state, validator, validator_version, validation,
+            owner_session_id, owner_message_id, tool_name, time_created
+          ) VALUES
+            (${source}, ${"a".repeat(64)}, 'source.txt', 'text/plain', 'accepted', 'basic', '1',
+             '{"state":"accepted","validator":"basic","validatorVersion":"1"}', 'session', 'message', 'document_extract', 1),
+            (${derived}, ${"b".repeat(64)}, 'derived.txt', 'text/plain', 'accepted', 'basic', '1',
+             '{"state":"accepted","validator":"basic","validatorVersion":"1"}', 'session', 'message', 'document_extract', 1)
+        `)
+        yield* db.run(sql`INSERT INTO koala_artifact_lineage VALUES (${derived}, ${source}, 'derived-from')`)
+
+        yield* DatabaseMigration.applyOnly(db, [koalaIndustrialAuditMigration])
+
+        expect(yield* db.all(sql`SELECT * FROM koala_artifact_lineage`)).toEqual([
+          { artifact_id: derived, source_artifact_id: source, relation: "derived-from" },
+        ])
+        expect(
+          yield* db.get(
+            sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'koala_artifact_lineage_source_idx'`,
+          ),
+        ).toEqual({ name: "koala_artifact_lineage_source_idx" })
+        expect(yield* db.all(sql`PRAGMA foreign_key_check`)).toEqual([])
       }),
     )
   })

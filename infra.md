@@ -165,6 +165,70 @@ Koala tool registry
 
 Binary outputs are artifact references, not data embedded in chat history.
 
+## Implemented Industrial Tool Foundation
+
+```text
+V1 tool adapter
+    -> Industrial Execution
+        -> typed Koala input/result contract
+        -> permission classification
+        -> cancellation/deadline
+        -> bounded model projection
+        -> durable redacted audit
+        -> artifact input/output references
+```
+
+The closed registry contract contains all 22 approved industrial tool names,
+but only tools with real engines are model-visible. Artifact or authorized path
+inputs resolve into immutable private snapshots. The audit table stores tool and
+engine identity, timings, terminal flags, input digest, safe counts, and artifact
+IDs without raw commands, expressions, document text, credentials, URLs, native
+stderr, or host paths.
+
+`calculate` is the first additional model-visible tool on this boundary. A
+bounded tokenizer and Pratt parser feed a generator-based `decimal.js`
+evaluator. Its synchronous and cooperative Effect entry points share that one
+evaluation path; the Effect driver yields between bounded operations so caller
+cancellation and engine deadlines can be observed without executing model input
+as JavaScript or delegating it to a shell or sandbox.
+
+## Document Runtime Foundation
+
+```text
+Desktop trusted resolver
+    -> detached release attestation + strict target profile
+    -> OpenCode process-global coordinator (fixed max 2 jobs)
+        -> required native-confinement launcher
+            -> short-lived document worker
+            +-- PDF.js + target canvas: sequential 300-DPI pages
+            +-- bundled Tesseract: bounded English TSV OCR
+```
+
+The worker protocol supports probe, direct image OCR, sequential PDF rendering,
+OCR for every rendered page, page release, cancellation, and curated failures.
+Manifests bind target, architecture, components, every file hash/mode, dependency
+inventory, and licenses. A detached attestation outside the runtime tree pins
+the manifest digest and exact source/dependency inventory. Packaged startup and
+release staging both consume that independently supplied trust input. Workers
+receive a reduced environment and verify the parent-supplied digest before
+dynamically loading native code.
+
+Development artifacts are not release artifacts. Beta/prod packaging accepts
+only a separately prepared, target-matched `releaseReady` runtime. Release
+verification requires an explicit `RUST_TARGET`, a detached attestation, the
+strict production component/path/executable profile, and an offline probe on a
+host-compatible target. Tesseract and canvas native headers must also match the
+attested PE, ELF, or Mach-O architecture. The native Tesseract/Leptonica/tessdata
+six-target build, complete licenses, signing matrix, and native-confinement
+launcher remain release gates; no system executable or runtime download fallback
+exists.
+
+Cross-target staging accepts no local-probe exemption by itself. The detached
+attestation must instead carry target-native render/OCR evidence bound to the
+same target and manifest digest. Process-tree and confinement-launcher shutdown
+have finite reap deadlines; failure to observe termination is a runtime cleanup
+failure.
+
 ## Implemented Sandbox Infrastructure
 
 ```text

@@ -1,0 +1,36 @@
+{
+  "packages": {
+    "pdfjs-dist": {
+      "version": "6.3.289",
+      "integrity": "sha512-ZHjSVpDa3D6izMq8/04lvkhkATUmL9px6ChPaXc1k6nU2Mrhlg1/7F0bdUqCwUjw3NsPTfPZsMDUU6ZIcRaeQw=="
+    },
+    "@napi-rs/canvas": {
+      "version": "1.0.9",
+      "integrity": "sha512-QviPdJImDi/jMAvBfqaw+19BndMd/sizXVW3NnpMd3VJGz++QXkOHcP9kWR/smHG0hNjHeyuHFyrx/5lD0oNcQ=="
+    },
+    "@napi-rs/canvas-darwin-arm64": {
+      "version": "1.0.9",
+      "integrity": "sha512-YNdfLBzY0W/Pep9fo2L6RmoNlNksnn05LRnX66W63R3ij58S25QOTcjdtEt2v8+PnCESzqZsYzUo+QPeIR44NA=="
+    },
+    "@napi-rs/canvas-darwin-x64": {
+      "version": "1.0.9",
+      "integrity": "sha512-ceZQSknTEcy3dOXoekv59LTCkXjvnLsq+VW5PeNNDHEPQbRS5Ervkm1EaDa7WLAjiYWMLuSQTRTHao1dEX4prg=="
+    },
+    "@napi-rs/canvas-linux-arm64-gnu": {
+      "version": "1.0.9",
+      "integrity": "sha512-012oiYtKaE7i9oxc8q7nraT7kDOpLcaCmFLzVe9Ty34RHDdoDzbWLrVh827CNxYh/EADX1eSikA3ymLjo/nNuw=="
+    },
+    "@napi-rs/canvas-linux-x64-gnu": {
+      "version": "1.0.9",
+      "integrity": "sha512-6kaz3w0QMy77PDWk6rJ1ksIihdad3qzEyX2o2oGT8GwCaypfT5mhjr8buOO5hstyLxcWXDScuz56RsINLtBPIQ=="
+    },
+    "@napi-rs/canvas-win32-arm64-msvc": {
+      "version": "1.0.9",
+      "integrity": "sha512-yjmVS3ArZeRVCP7jqbPq4rpZa/BhTeI7ELE2XqJg3snICQBDevLZyArxswHkiTnT34KRic33/4fLirrHI+SY8A=="
+    },
+    "@napi-rs/canvas-win32-x64-msvc": {
+      "version": "1.0.9",
+      "integrity": "sha512-QlSYQdMQslB81nlABo9wNfQ6npFhE7/O+saCZdqVGueGanyRk4jCogD5EwQenfP3kIq9e+mm6GreQBjX5MrA8g=="
+    }
+  }
+}

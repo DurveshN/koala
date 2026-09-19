@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "9674e315-324c-4221-b617-2d20e37a142c",
+  "id": "8f097411-35f1-4af2-b6bb-f7f011d739b0",
   "prevIds": [
-    "b6b034e2-91b3-4c24-b1f4-d906e99ae6ec"
+    "fbce9f46-2ced-472a-8fc5-3350ca22103b"
   ],
   "ddl": [
     {
@@ -92,6 +92,10 @@
     },
     {
       "name": "session_share",
+      "entityType": "tables"
+    },
+    {
+      "name": "koala_tool_audit",
       "entityType": "tables"
     },
     {
@@ -571,6 +575,16 @@
       "default": null,
       "generated": null,
       "name": "sandbox_run_id",
+      "entityType": "columns",
+      "table": "koala_artifact"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "source_project_path",
       "entityType": "columns",
       "table": "koala_artifact"
     },
@@ -1695,6 +1709,266 @@
       "table": "session_share"
     },
     {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "state",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "tool_name",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "permission_class",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "message_id",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "tool_call_id",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_started",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_finished",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "duration_ms",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "outcome_code",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "cancelled",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "timed_out",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "producer_truncated",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "projection_truncated",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "truncated",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "engine_name",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "engine_version",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "contract_version",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "input_sha256",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "input_summary",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "source_artifact_ids",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "output_artifact_ids",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "sandbox_run_id",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "route_decision_id",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "error_code",
+      "entityType": "columns",
+      "table": "koala_tool_audit"
+    },
+    {
       "columns": [
         "project_id"
       ],
@@ -2169,6 +2443,15 @@
     },
     {
       "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "koala_tool_audit_pk",
+      "table": "koala_tool_audit",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
         {
           "value": "source_artifact_id",
           "isExpression": false
@@ -2548,6 +2831,98 @@
       "table": "todo"
     },
     {
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        },
+        {
+          "value": "time_started",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "koala_tool_audit_session_started_idx",
+      "entityType": "indexes",
+      "table": "koala_tool_audit"
+    },
+    {
+      "columns": [
+        {
+          "value": "message_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "koala_tool_audit_message_idx",
+      "entityType": "indexes",
+      "table": "koala_tool_audit"
+    },
+    {
+      "columns": [
+        {
+          "value": "tool_call_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "koala_tool_audit_tool_call_idx",
+      "entityType": "indexes",
+      "table": "koala_tool_audit"
+    },
+    {
+      "columns": [
+        {
+          "value": "state",
+          "isExpression": false
+        },
+        {
+          "value": "time_started",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "koala_tool_audit_state_started_idx",
+      "entityType": "indexes",
+      "table": "koala_tool_audit"
+    },
+    {
+      "columns": [
+        {
+          "value": "sandbox_run_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "koala_tool_audit_sandbox_run_idx",
+      "entityType": "indexes",
+      "table": "koala_tool_audit"
+    },
+    {
+      "columns": [
+        {
+          "value": "route_decision_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "koala_tool_audit_route_decision_idx",
+      "entityType": "indexes",
+      "table": "koala_tool_audit"
+    },
+    {
       "value": "length(\"digest\") = 64 AND \"digest\" NOT GLOB '*[^0-9a-f]*'",
       "name": "koala_artifact_blob_digest_check",
       "entityType": "checks",
@@ -2590,6 +2965,12 @@
       "table": "koala_artifact"
     },
     {
+      "value": "\"source_project_path\" IS NULL OR (length(\"source_project_path\") BETWEEN 1 AND 1024 AND substr(\"source_project_path\", 1, 1) <> '/' AND substr(\"source_project_path\", -1, 1) NOT IN ('/', '.', ' ') AND instr(\"source_project_path\", '\\') = 0 AND instr(\"source_project_path\", ':') = 0 AND instr(\"source_project_path\", '//') = 0 AND instr(\"source_project_path\", char(0)) = 0 AND \"source_project_path\" NOT GLOB ('*[' || char(1) || '-' || char(31) || char(127) || ']*') AND \"source_project_path\" <> '.' AND \"source_project_path\" <> '..' AND \"source_project_path\" NOT LIKE './%' AND \"source_project_path\" NOT LIKE '../%' AND \"source_project_path\" NOT LIKE '%/./%' AND \"source_project_path\" NOT LIKE '%/../%' AND \"source_project_path\" NOT LIKE '%/.' AND \"source_project_path\" NOT LIKE '%/..' AND \"source_project_path\" NOT LIKE '%./%' AND \"source_project_path\" NOT LIKE '% /%' AND lower('/' || \"source_project_path\" || '/') NOT GLOB '*/con/*' AND lower('/' || \"source_project_path\" || '/') NOT GLOB '*/con.*/*' AND lower('/' || \"source_project_path\" || '/') NOT GLOB '*/prn/*' AND lower('/' || \"source_project_path\" || '/') NOT GLOB '*/prn.*/*' AND lower('/' || \"source_project_path\" || '/') NOT GLOB '*/aux/*' AND lower('/' || \"source_project_path\" || '/') NOT GLOB '*/aux.*/*' AND lower('/' || \"source_project_path\" || '/') NOT GLOB '*/nul/*' AND lower('/' || \"source_project_path\" || '/') NOT GLOB '*/nul.*/*' AND lower('/' || \"source_project_path\" || '/') NOT GLOB '*/com[1-9¹²³]/*' AND lower('/' || \"source_project_path\" || '/') NOT GLOB '*/com[1-9¹²³].*/*' AND lower('/' || \"source_project_path\" || '/') NOT GLOB '*/lpt[1-9¹²³]/*' AND lower('/' || \"source_project_path\" || '/') NOT GLOB '*/lpt[1-9¹²³].*/*')",
+      "name": "koala_artifact_source_project_path_check",
+      "entityType": "checks",
+      "table": "koala_artifact"
+    },
+    {
       "value": "\"validation_state\" IN ('accepted', 'rejected')",
       "name": "koala_artifact_validation_state_check",
       "entityType": "checks",
@@ -2606,6 +2987,114 @@
       "name": "koala_artifact_validation_scalar_check",
       "entityType": "checks",
       "table": "koala_artifact"
+    },
+    {
+      "value": "length(\"id\") = 40 AND substr(\"id\", 1, 4) = 'aud_' AND substr(\"id\", 13, 1) = '-' AND substr(\"id\", 18, 1) = '-' AND substr(\"id\", 19, 1) = '4' AND substr(\"id\", 23, 1) = '-' AND substr(\"id\", 24, 1) GLOB '[89ab]' AND substr(\"id\", 28, 1) = '-' AND length(replace(substr(\"id\", 5), '-', '')) = 32 AND replace(substr(\"id\", 5), '-', '') NOT GLOB '*[^0-9a-f]*'",
+      "name": "koala_tool_audit_id_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "\"state\" IN ('running', 'completed')",
+      "name": "koala_tool_audit_state_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "\"tool_name\" IN ('document_extract', 'ocr_extract', 'vision_analyze', 'knowledge_ingest', 'knowledge_search', 'knowledge_open', 'docx_read', 'docx_create', 'docx_update', 'pptx_read', 'pptx_create', 'pptx_update', 'spreadsheet_read', 'spreadsheet_write', 'spreadsheet_update', 'pdf_read', 'pdf_create', 'pdf_update', 'calculate', 'sandbox_execute', 'sandbox_test', 'artifact_validate')",
+      "name": "koala_tool_audit_tool_name_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "\"permission_class\" IN ('document_read', 'document_write', 'vision_analyze', 'knowledge_read', 'knowledge_write', 'calculate', 'sandbox_execute')",
+      "name": "koala_tool_audit_permission_class_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "\"permission_class\" = CASE \"tool_name\" WHEN 'document_extract' THEN 'document_read' WHEN 'ocr_extract' THEN 'document_read' WHEN 'vision_analyze' THEN 'vision_analyze' WHEN 'knowledge_ingest' THEN 'knowledge_write' WHEN 'knowledge_search' THEN 'knowledge_read' WHEN 'knowledge_open' THEN 'knowledge_read' WHEN 'docx_read' THEN 'document_read' WHEN 'docx_create' THEN 'document_write' WHEN 'docx_update' THEN 'document_write' WHEN 'pptx_read' THEN 'document_read' WHEN 'pptx_create' THEN 'document_write' WHEN 'pptx_update' THEN 'document_write' WHEN 'spreadsheet_read' THEN 'document_read' WHEN 'spreadsheet_write' THEN 'document_write' WHEN 'spreadsheet_update' THEN 'document_write' WHEN 'pdf_read' THEN 'document_read' WHEN 'pdf_create' THEN 'document_write' WHEN 'pdf_update' THEN 'document_write' WHEN 'calculate' THEN 'calculate' WHEN 'sandbox_execute' THEN 'sandbox_execute' WHEN 'sandbox_test' THEN 'sandbox_execute' WHEN 'artifact_validate' THEN 'document_read' END",
+      "name": "koala_tool_audit_tool_permission_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "length(\"session_id\") BETWEEN 1 AND 128 AND \"session_id\" = trim(\"session_id\") AND length(\"message_id\") BETWEEN 1 AND 128 AND \"message_id\" = trim(\"message_id\") AND length(\"tool_call_id\") BETWEEN 1 AND 512 AND instr(\"tool_call_id\", char(0)) = 0 AND \"tool_call_id\" NOT GLOB ('*[' || char(1) || '-' || char(31) || char(127) || ']*')",
+      "name": "koala_tool_audit_context_id_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "(\"state\" = 'running' AND \"time_finished\" IS NULL AND \"duration_ms\" IS NULL AND \"outcome_code\" IS NULL AND \"cancelled\" = 0 AND \"timed_out\" = 0 AND \"producer_truncated\" = 0 AND \"projection_truncated\" = 0 AND \"truncated\" = 0 AND \"error_code\" IS NULL AND json_array_length(\"output_artifact_ids\") = 0) OR (\"state\" = 'completed' AND \"time_finished\" IS NOT NULL AND \"duration_ms\" IS NOT NULL AND \"outcome_code\" IS NOT NULL)",
+      "name": "koala_tool_audit_lifecycle_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "\"time_started\" >= 0 AND (\"time_finished\" IS NULL OR (\"time_finished\" >= \"time_started\" AND \"duration_ms\" = \"time_finished\" - \"time_started\"))",
+      "name": "koala_tool_audit_time_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "\"cancelled\" IN (0, 1) AND \"timed_out\" IN (0, 1) AND \"producer_truncated\" IN (0, 1) AND \"projection_truncated\" IN (0, 1) AND \"truncated\" IN (0, 1) AND \"truncated\" = (\"producer_truncated\" OR \"projection_truncated\")",
+      "name": "koala_tool_audit_flags_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "length(\"engine_name\") BETWEEN 1 AND 128 AND \"engine_name\" = trim(\"engine_name\") AND length(\"engine_version\") BETWEEN 1 AND 128 AND \"engine_version\" = trim(\"engine_version\") AND \"contract_version\" = 1",
+      "name": "koala_tool_audit_engine_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "length(\"input_sha256\") = 64 AND \"input_sha256\" NOT GLOB '*[^0-9a-f]*'",
+      "name": "koala_tool_audit_input_sha256_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "length(\"input_summary\") <= 4096 AND json_valid(\"input_summary\") AND json_type(\"input_summary\") = 'object'",
+      "name": "koala_tool_audit_input_summary_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "length(\"source_artifact_ids\") <= 16384 AND json_valid(\"source_artifact_ids\") AND json_type(\"source_artifact_ids\") = 'array' AND json_array_length(\"source_artifact_ids\") <= 100",
+      "name": "koala_tool_audit_source_artifact_ids_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "length(\"output_artifact_ids\") <= 4096 AND json_valid(\"output_artifact_ids\") AND json_type(\"output_artifact_ids\") = 'array' AND json_array_length(\"output_artifact_ids\") <= 10",
+      "name": "koala_tool_audit_output_artifact_ids_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "(\"sandbox_run_id\" IS NULL OR (length(\"sandbox_run_id\") BETWEEN 1 AND 128 AND \"sandbox_run_id\" = trim(\"sandbox_run_id\"))) AND (\"route_decision_id\" IS NULL OR (length(\"route_decision_id\") BETWEEN 1 AND 128 AND \"route_decision_id\" = trim(\"route_decision_id\")))",
+      "name": "koala_tool_audit_optional_reference_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "\"outcome_code\" IS NULL OR \"outcome_code\" IN ('success', 'error', 'cancelled', 'timeout')",
+      "name": "koala_tool_audit_outcome_code_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "\"state\" = 'running' OR (\"outcome_code\" = 'success' AND \"cancelled\" = 0 AND \"timed_out\" = 0 AND \"error_code\" IS NULL) OR (\"outcome_code\" = 'error' AND \"cancelled\" = 0 AND \"timed_out\" = 0 AND \"error_code\" IS NOT NULL) OR (\"outcome_code\" = 'cancelled' AND \"cancelled\" = 1 AND \"timed_out\" = 0 AND \"error_code\" = 'cancelled') OR (\"outcome_code\" = 'timeout' AND \"cancelled\" = 0 AND \"timed_out\" = 1 AND \"error_code\" = 'deadline-exceeded')",
+      "name": "koala_tool_audit_terminal_consistency_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
+    },
+    {
+      "value": "\"error_code\" IS NULL OR \"error_code\" IN ('invalid-input', 'permission-denied', 'source-not-found', 'source-access-denied', 'source-not-owned', 'source-changed', 'source-invalid', 'unsupported-format', 'input-too-large', 'limit-exceeded', 'engine-unavailable', 'engine-failed', 'protocol-error', 'sandbox-nonzero-exit', 'validation-failed', 'sandbox-violation', 'output-truncated', 'artifact-storage-failed', 'audit-unavailable', 'internal-error', 'cancelled', 'deadline-exceeded')",
+      "name": "koala_tool_audit_error_code_check",
+      "entityType": "checks",
+      "table": "koala_tool_audit"
     }
   ],
   "renames": []

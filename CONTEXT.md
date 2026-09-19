@@ -164,6 +164,114 @@ with English/OSD data and a permissively licensed PDF.js/canvas renderer; users
 will not install separate OCR/PDF software. PDF OCR runs on every page, and a
 verified vision model receives one page image per call when available.
 
+Phase 9A is implemented. Browser-safe Koala contracts define the closed 22-tool
+inventory, permission classes, artifact/path sources, citations, checked result
+envelopes, curated errors, bounded projections, audit records, and shared
+`sandbox_execute` input/results. Core migration
+`20260919162426_koala_industrial_audit` adds normalized artifact source
+provenance and the independent `koala_tool_audit` table; generated follow-up
+migrations strengthen audit identity, terminal consistency, permission mapping,
+and separate producer/projection truncation. The migration explicitly preserves
+pre-existing artifact lineage while rebuilding the artifact table.
+
+OpenCode now has process-global Industrial Audit and Industrial Execution
+services plus a scoped ownership-aware Artifact Input service. Audits begin
+before permission or engine side effects, persist only canonical digests and
+safe summaries, and complete through one guarded transition. Path inputs pass
+external-directory/read authorization before stable snapshot promotion.
+`sandbox_execute` uses the shared typed/audited boundary and atomic batch artifact
+metadata publication.
+
+The Phase 9A industrial foundation review is remediated. Industrial Execution
+records caller cancellation or its own deadline at the first abort event, keeps
+bounded cleanup grace, and authenticates every returned artifact reference
+against same-Session ArtifactStore metadata and output provenance. Sandbox
+execution delegates timeout authority to the worker boundary and gates artifact
+publication through an explicit commit boundary. Cancellation before that
+boundary rolls publication back; cancellation during the commit is held pending
+until the transaction either rolls back or commits, and committed publication
+wins thereafter. The tool constructs and records its final typed result inside
+that uninterruptible region, allowing Industrial Execution to recover the exact
+result when the operation fiber receives a deferred interruption after commit.
+Projection redaction covers arbitrary URI schemes and punctuation-delimited
+POSIX, drive, root-relative Windows, UNC, device, and mixed-separator host paths.
+
+Audit tool-call IDs now follow the upstream opaque-string contract while
+remaining length-bounded and control-safe. Durable audit constraints enforce
+curated error codes, truncation consistency, and valid unique artifact IDs;
+legacy combined truncation is conservatively migrated as producer truncation.
+Artifact source-project paths now have database constraints equivalent to the
+runtime path contract. Artifact promotion uses process-local serialization plus
+the existing heartbeat-backed cross-process lock, and removes only blobs created
+by a failed metadata batch that remain unreferenced while the lock is held. A
+startup and explicitly callable reconciliation pass removes residual orphan files
+and unreferenced blob rows. It also removes safely aged blob temporary files and
+abandoned run-staging entries while retaining active and recent staging;
+reconciliation failures are typed and startup or rollback failures are logged
+for a later retry.
+
+Phase 9B foundation is implemented but not release-complete. Koala owns exact
+six-target document runtime, manifest, detached-attestation, limits, and IPC contracts. The new
+`@koala-ai/document-runtime` package performs local PDF.js 300-DPI rendering,
+bounded Tesseract TSV execution, manifest verification, one-page-at-a-time IPC,
+cancellation, deadlines, and cleanup. OpenCode provides a process-global
+render-and-OCR coordinator, but worker execution now requires an injected native
+OS confinement launcher and fails closed without one. Desktop release staging
+and packaged startup consume a detached attestation outside the runtime tree.
+Release verification requires explicit `RUST_TARGET`, validates a strict
+component/source/path/dependency/license/executable profile, and runs offline
+probe/render/OCR checks when the artifact target matches the build host. PE,
+ELF, and Mach-O headers bind Tesseract and native canvas to the attested target.
+Cross-target staging requires externally attested target-native smoke evidence
+bound to that target and manifest digest. The production layout gate includes
+the PDF.js CMap/ICC/font/WASM trees, canvas support modules, and exact native
+package files used by the coordinator. Native and launcher reaping is bounded;
+missing exit confirmation is reported as cleanup/runtime failure.
+
+The development runtime contains PDF.js, one target-specific native canvas
+package, worker code, manifests, and licenses, but intentionally remains
+`releaseReady: false`. It does not yet contain pinned Tesseract 5.5.3,
+Leptonica 1.87.0, English/OSD trained data, or their complete native notice and
+signature inventory. Koala's own license is unresolved and the runtime no longer
+attributes the OpenCode root license to Koala. OCR/document tools remain
+unregistered until those six native target artifacts pass packaged offline tests
+and the native-confinement launcher is implemented.
+
+The first Phase 9D tool, `calculate`, is implemented and model-visible. It uses
+a Koala-owned bounded tokenizer, Pratt parser, and shared generator-based
+decimal evaluator; no dynamic evaluation, shell, or sandbox is involved. The
+same evaluator supports synchronous contract tests and cooperative Effect
+execution so cancellation and the Industrial Execution deadline remain active
+during large calculations. It supports decimal arithmetic, right-associative
+powers, percentages, bounded functions, dimensional units, and conversions.
+Registry lookups require own properties, source-unit suffix powers apply to the
+unit rather than the coefficient (`2 m^2` is distinct from `(2 m)^2`), and all
+errors carry bounded source spans and curated audit-safe summaries.
+
+Combined verification completed on 2026-09-20:
+
+- Koala complete suite: 429 passed.
+- Core industrial audit, artifact, and migration suites: 25 passed.
+- Document runtime engine/worker suite: 66 passed and 2 capability-gated
+  symlink tests skipped.
+- OpenCode document runtime, industrial execution, audit, artifact input/store,
+  sandbox, calculator, and registry suites: 121 passed.
+- Desktop document-runtime, sidecar-environment, and packaging suites: 25 passed.
+- Koala, Core, document-runtime, OpenCode, and Desktop typechecks passed.
+- Core migration consistency check passed.
+
+Phase 9B runtime-review remediation details:
+
+- Document runtime build and suite: 66 passed, 2 capability-gated symlink tests
+  skipped because this Windows host does not permit file symlink creation.
+- Koala document-runtime contracts: 79 passed.
+- OpenCode document-runtime coordinator: 14 passed.
+- Desktop staging, resolution, sidecar environment, and packaging: 25 passed.
+- Document runtime, Koala, OpenCode, and Desktop typechecks passed.
+- The release remains blocked on authentic six-target native artifacts, complete
+  native notices/signatures, a selected Koala license, and a real native-
+  confinement launcher.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.

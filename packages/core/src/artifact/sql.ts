@@ -42,6 +42,7 @@ export const ArtifactTable = sqliteTable(
     tool_name: text().notNull(),
     tool_call_id: text(),
     sandbox_run_id: text(),
+    source_project_path: text(),
     time_created: integer()
       .notNull()
       .$default(() => Date.now()),
@@ -53,6 +54,10 @@ export const ArtifactTable = sqliteTable(
     ),
     check("koala_artifact_name_check", sql`length(${table.name}) BETWEEN 1 AND 255`),
     check("koala_artifact_mime_check", sql`length(${table.mime}) BETWEEN 1 AND 127`),
+    check(
+      "koala_artifact_source_project_path_check",
+      sql`${table.source_project_path} IS NULL OR (length(${table.source_project_path}) BETWEEN 1 AND 1024 AND substr(${table.source_project_path}, 1, 1) <> '/' AND substr(${table.source_project_path}, -1, 1) NOT IN ('/', '.', ' ') AND instr(${table.source_project_path}, '\\') = 0 AND instr(${table.source_project_path}, ':') = 0 AND instr(${table.source_project_path}, '//') = 0 AND instr(${table.source_project_path}, char(0)) = 0 AND ${table.source_project_path} NOT GLOB ('*[' || char(1) || '-' || char(31) || char(127) || ']*') AND ${table.source_project_path} <> '.' AND ${table.source_project_path} <> '..' AND ${table.source_project_path} NOT LIKE './%' AND ${table.source_project_path} NOT LIKE '../%' AND ${table.source_project_path} NOT LIKE '%/./%' AND ${table.source_project_path} NOT LIKE '%/../%' AND ${table.source_project_path} NOT LIKE '%/.' AND ${table.source_project_path} NOT LIKE '%/..' AND ${table.source_project_path} NOT LIKE '%./%' AND ${table.source_project_path} NOT LIKE '% /%' AND lower('/' || ${table.source_project_path} || '/') NOT GLOB '*/con/*' AND lower('/' || ${table.source_project_path} || '/') NOT GLOB '*/con.*/*' AND lower('/' || ${table.source_project_path} || '/') NOT GLOB '*/prn/*' AND lower('/' || ${table.source_project_path} || '/') NOT GLOB '*/prn.*/*' AND lower('/' || ${table.source_project_path} || '/') NOT GLOB '*/aux/*' AND lower('/' || ${table.source_project_path} || '/') NOT GLOB '*/aux.*/*' AND lower('/' || ${table.source_project_path} || '/') NOT GLOB '*/nul/*' AND lower('/' || ${table.source_project_path} || '/') NOT GLOB '*/nul.*/*' AND lower('/' || ${table.source_project_path} || '/') NOT GLOB '*/com[1-9¹²³]/*' AND lower('/' || ${table.source_project_path} || '/') NOT GLOB '*/com[1-9¹²³].*/*' AND lower('/' || ${table.source_project_path} || '/') NOT GLOB '*/lpt[1-9¹²³]/*' AND lower('/' || ${table.source_project_path} || '/') NOT GLOB '*/lpt[1-9¹²³].*/*')`,
+    ),
     check("koala_artifact_validation_state_check", sql`${table.validation_state} IN ('accepted', 'rejected')`),
     check(
       "koala_artifact_validation_json_check",

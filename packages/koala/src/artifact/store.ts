@@ -4,6 +4,8 @@ import { Context, Effect, Schema, Stream } from "effect"
 import { Artifact } from "./artifact"
 import { SandboxProtocol } from "../sandbox/protocol"
 
+export const ReconciliationAgeMs = 24 * 60 * 60 * 1_000
+
 export interface Staging {
   readonly runID: SandboxProtocol.RunID
   readonly root: string
@@ -16,6 +18,20 @@ export interface PromoteInput {
   readonly outputPath: Artifact.OutputPath
   readonly provenance: Artifact.Provenance
   readonly lineage?: ReadonlyArray<Artifact.Lineage>
+}
+
+export interface PromotionCommit {
+  readonly begin: (result: unknown) => boolean
+  readonly complete: () => void
+  readonly rollback: () => void
+}
+
+export interface PromoteOptions {
+  readonly signal?: AbortSignal
+  readonly commit?: {
+    readonly boundary: PromotionCommit
+    readonly result: (metadata: ReadonlyArray<Artifact.Metadata>) => unknown
+  }
 }
 
 export class StagingError extends Schema.TaggedErrorClass<StagingError>()("ArtifactStoreStagingError", {
@@ -86,6 +102,15 @@ export class PromotionError extends Schema.TaggedErrorClass<PromotionError>()("A
   }
 }
 
+export class PromotionAbortedError extends Schema.TaggedErrorClass<PromotionAbortedError>()(
+  "ArtifactStorePromotionAbortedError",
+  { runID: SandboxProtocol.RunID },
+) {
+  override get message() {
+    return `Artifact promotion was aborted for run: ${this.runID}`
+  }
+}
+
 export class ArtifactNotFoundError extends Schema.TaggedErrorClass<ArtifactNotFoundError>()(
   "ArtifactStoreArtifactNotFoundError",
   { artifactID: Artifact.ID },
@@ -120,12 +145,27 @@ export class AbandonmentError extends Schema.TaggedErrorClass<AbandonmentError>(
   }
 }
 
+export class ReconciliationError extends Schema.TaggedErrorClass<ReconciliationError>()(
+  "ArtifactStoreReconciliationError",
+  {},
+) {
+  override get message() {
+    return "Failed to reconcile artifact blobs"
+  }
+}
+
+export interface Reconciliation {
+  readonly examined: number
+  readonly removed: number
+}
+
 export type PromoteError =
   | InvalidOutputPathError
   | CandidateNotFoundError
   | LimitError
   | ValidationError
   | CorruptionError
+  | PromotionAbortedError
   | PromotionError
 
 export type ReadError = ArtifactNotFoundError | MetadataReadError
@@ -133,10 +173,15 @@ export type ContentError = ArtifactNotFoundError | ContentAccessError | Corrupti
 
 export interface Interface {
   readonly stage: (runID: SandboxProtocol.RunID) => Effect.Effect<Staging, StagingError>
-  readonly promote: (input: PromoteInput) => Effect.Effect<Artifact.Metadata, PromoteError>
+  readonly promote: (input: PromoteInput, options?: PromoteOptions) => Effect.Effect<Artifact.Metadata, PromoteError>
+  readonly promoteBatch: (
+    inputs: ReadonlyArray<PromoteInput>,
+    options?: PromoteOptions,
+  ) => Effect.Effect<ReadonlyArray<Artifact.Metadata>, PromoteError>
   readonly metadata: (artifactID: Artifact.ID) => Effect.Effect<Artifact.Metadata, ReadError>
   readonly content: (artifactID: Artifact.ID) => Stream.Stream<Uint8Array, ContentError>
   readonly abandon: (runID: SandboxProtocol.RunID) => Effect.Effect<void, AbandonmentError>
+  readonly reconcile: () => Effect.Effect<Reconciliation, ReconciliationError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@koala-ai/core/ArtifactStore") {}

@@ -71,3 +71,34 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
+
+## PDF.js
+
+Koala's document-runtime foundation uses `pdfjs-dist` version `6.3.289` under
+the Apache License 2.0.
+
+- Source: https://github.com/mozilla/pdf.js
+- License: https://www.apache.org/licenses/LICENSE-2.0
+- The pinned package license and required PDF.js runtime assets are included in
+  each staged document-runtime artifact.
+
+## @napi-rs/canvas
+
+Koala's document-runtime foundation uses `@napi-rs/canvas` version `1.0.9` under
+the MIT License, with one target-specific native package per runtime artifact.
+
+- Source: https://github.com/Brooooooklyn/canvas
+- License: https://github.com/Brooooooklyn/canvas/blob/main/LICENSE
+- The staged development manifest remains `releaseReady: false` until the exact
+  Skia/native dependency inventory and all required notices are included.
+
+## Document Runtime Licensing Status
+
+The Koala document-runtime code does not claim the OpenCode root `LICENSE` as
+its own license. Koala's license remains pending the owner's decision. The
+development runtime carries this third-party notice file for provenance, but
+its Koala component has no declared license and remains `releaseReady: false`.
+
+Release staging also requires complete, target-specific notices for Tesseract,
+Leptonica, tessdata, native canvas, and every linked native dependency. Those
+notices are not present in the current development artifact.

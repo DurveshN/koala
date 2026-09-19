@@ -1,5 +1,6 @@
 import { describe, expect } from "bun:test"
-import { chmod, link, mkdir, readFile, readdir, rm, stat, symlink, truncate, writeFile } from "node:fs/promises"
+import { createHash } from "node:crypto"
+import { chmod, link, mkdir, readFile, readdir, rm, stat, symlink, truncate, utimes, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { Artifact } from "@koala-ai/core/artifact/artifact"
 import { ArtifactStore } from "@koala-ai/core/artifact/store"
@@ -99,13 +100,17 @@ function promote(
   id: SandboxProtocol.RunID,
   candidate: Artifact.OutputPath,
   lineage: ReadonlyArray<Artifact.Lineage> = [],
+  options?: ArtifactStore.PromoteOptions,
 ) {
-  return store.promote({
-    runID: id,
-    outputPath: candidate,
-    provenance: provenance(fixture, id),
-    lineage,
-  })
+  return store.promote(
+    {
+      runID: id,
+      outputPath: candidate,
+      provenance: provenance(fixture, id),
+      lineage,
+    },
+    options,
+  )
 }
 
 function content(store: ArtifactStore.Interface, artifactID: Artifact.ID) {
@@ -155,8 +160,21 @@ describe("ArtifactStore", () => {
         const id = runID("text-run")
         const staging = yield* store.stage(id)
         yield* Effect.promise(() => writeFile(path.join(staging.artifacts, "report.txt"), "hello artifact\n"))
+        const commitEvents: string[] = []
 
-        const promoted = yield* promote(store, fixture, id, outputPath("report.txt"))
+        const promoted = yield* promote(store, fixture, id, outputPath("report.txt"), [], {
+          commit: {
+            boundary: {
+              begin: () => {
+                commitEvents.push("begin")
+                return true
+              },
+              complete: () => commitEvents.push("complete"),
+              rollback: () => commitEvents.push("rollback"),
+            },
+            result: (metadata) => metadata,
+          },
+        })
 
         expect(promoted.id).toMatch(/^art_[0-9a-f-]{36}$/)
         expect(promoted).toMatchObject({ name: "report.txt", mime: "text/plain", size: 15 })
@@ -167,6 +185,7 @@ describe("ArtifactStore", () => {
           findings: [],
         })
         expect(promoted.provenance).toEqual(provenance(fixture, id))
+        expect(commitEvents).toEqual(["begin", "complete"])
         expect(yield* store.metadata(promoted.id)).toEqual(promoted)
         expect((yield* content(store, promoted.id)).toString()).toBe("hello artifact\n")
         expect(yield* Effect.promise(() => readFile(blobPath(fixture.data, promoted.digest), "utf8"))).toBe(
@@ -175,6 +194,165 @@ describe("ArtifactStore", () => {
         if (process.platform !== "win32") {
           expect((yield* Effect.promise(() => stat(blobPath(fixture.data, promoted.digest)))).mode & 0o777).toBe(0o400)
         }
+      }),
+    ),
+  )
+
+  it.live("rejects an aborted promotion before publishing its blob", () =>
+    withStore((fixture) =>
+      Effect.gen(function* () {
+        const store = yield* ArtifactStore.Service
+        const id = runID("aborted-promotion")
+        const staging = yield* store.stage(id)
+        yield* Effect.promise(() => writeFile(path.join(staging.artifacts, "aborted.txt"), "aborted bytes"))
+        const controller = new AbortController()
+        const commitEvents: string[] = []
+        controller.abort()
+
+        expect(
+          yield* store
+            .promote(
+              {
+                runID: id,
+                outputPath: outputPath("aborted.txt"),
+                provenance: provenance(fixture, id),
+              },
+              {
+                signal: controller.signal,
+                commit: {
+                  boundary: {
+                    begin: () => {
+                      commitEvents.push("begin")
+                      return true
+                    },
+                    complete: () => commitEvents.push("complete"),
+                    rollback: () => commitEvents.push("rollback"),
+                  },
+                  result: (metadata) => metadata,
+                },
+              },
+            )
+            .pipe(Effect.flip),
+        ).toBeInstanceOf(ArtifactStore.PromotionAbortedError)
+        expect(commitEvents).toEqual([])
+        const digest = Schema.decodeUnknownSync(Artifact.Digest)(
+          createHash("sha256").update("aborted bytes").digest("hex"),
+        )
+        expect(yield* Effect.promise(() => Bun.file(blobPath(fixture.data, digest)).exists())).toBe(false)
+        const { db } = yield* Database.Service
+        expect((yield* db.select({ value: count() }).from(ArtifactTable).get())?.value).toBe(0)
+      }),
+    ),
+  )
+
+  it.live("completes publication when cancellation arrives after commit begins", () =>
+    withStore((fixture) =>
+      Effect.gen(function* () {
+        const store = yield* ArtifactStore.Service
+        const id = runID("mid-commit-success")
+        const staging = yield* store.stage(id)
+        yield* Effect.promise(() => writeFile(path.join(staging.artifacts, "committed.txt"), "committed"))
+        const controller = new AbortController()
+        const commitEvents: string[] = []
+
+        const promoted = yield* promote(store, fixture, id, outputPath("committed.txt"), [], {
+          signal: controller.signal,
+          commit: {
+            boundary: {
+              begin: () => {
+                commitEvents.push("begin")
+                controller.abort()
+                return true
+              },
+              complete: () => commitEvents.push("complete"),
+              rollback: () => commitEvents.push("rollback"),
+            },
+            result: (metadata) => metadata,
+          },
+        })
+
+        expect(controller.signal.aborted).toBe(true)
+        expect(commitEvents).toEqual(["begin", "complete"])
+        expect(yield* store.metadata(promoted.id)).toEqual(promoted)
+      }),
+    ),
+  )
+
+  it.live("reconciles orphan files and unreferenced blob rows under the promotion lock", () =>
+    withStore((fixture) =>
+      Effect.gen(function* () {
+        const store = yield* ArtifactStore.Service
+        const physical = Schema.decodeUnknownSync(Artifact.Digest)(createHash("sha256").update("orphan").digest("hex"))
+        const metadataOnly = Schema.decodeUnknownSync(Artifact.Digest)(
+          createHash("sha256").update("metadata only").digest("hex"),
+        )
+        yield* Effect.promise(async () => {
+          await mkdir(path.dirname(blobPath(fixture.data, physical)), { recursive: true })
+          await writeFile(blobPath(fixture.data, physical), "orphan")
+        })
+        const { db } = yield* Database.Service
+        yield* db.insert(ArtifactBlobTable).values({ digest: metadataOnly, size: 13, time_created: 1 }).run()
+
+        expect(yield* store.reconcile()).toEqual({ examined: 2, removed: 2 })
+        expect(yield* Effect.promise(() => Bun.file(blobPath(fixture.data, physical)).exists())).toBe(false)
+        expect((yield* db.select({ value: count() }).from(ArtifactBlobTable).get())?.value).toBe(0)
+      }),
+    ),
+  )
+
+  it.live("surfaces reconciliation failures as typed errors", () =>
+    withStore((fixture) =>
+      Effect.gen(function* () {
+        const store = yield* ArtifactStore.Service
+        const blobRoot = path.join(fixture.data, "koala", "artifacts", "blobs", "sha256")
+        yield* Effect.promise(async () => {
+          await rm(blobRoot, { recursive: true, force: true })
+          await mkdir(path.dirname(blobRoot), { recursive: true })
+          await writeFile(blobRoot, "not a directory")
+        })
+
+        expect(yield* store.reconcile().pipe(Effect.flip)).toBeInstanceOf(ArtifactStore.ReconciliationError)
+      }),
+    ),
+  )
+
+  it.live("removes aged temporary and abandoned staging while preserving active and recent entries", () =>
+    withStore((fixture) =>
+      Effect.gen(function* () {
+        const store = yield* ArtifactStore.Service
+        const active = yield* store.stage(runID("active-old-staging"))
+        const stagingRoot = path.dirname(active.root)
+        const abandoned = path.join(stagingRoot, "abandoned-old-staging")
+        const recent = path.join(stagingRoot, "abandoned-recent-staging")
+        const blobTemporaryRoot = temporaryRoot(fixture.data)
+        const oldTemporary = path.join(blobTemporaryRoot, "old.tmp")
+        const recentTemporary = path.join(blobTemporaryRoot, "recent.tmp")
+        const old = new Date(Date.now() - ArtifactStore.ReconciliationAgeMs - 1_000)
+        yield* Effect.promise(async () => {
+          await mkdir(path.join(abandoned, "work"), { recursive: true })
+          await mkdir(path.join(abandoned, "artifacts"), { recursive: true })
+          await mkdir(recent, { recursive: true })
+          await writeFile(oldTemporary, "old")
+          await writeFile(recentTemporary, "recent")
+          for (const target of [
+            path.join(abandoned, "work"),
+            path.join(abandoned, "artifacts"),
+            abandoned,
+            active.work,
+            active.artifacts,
+            active.root,
+            oldTemporary,
+          ]) {
+            await utimes(target, old, old)
+          }
+        })
+
+        expect(yield* store.reconcile()).toEqual({ examined: 2, removed: 2 })
+        expect(yield* Effect.promise(() => Bun.file(abandoned).exists())).toBe(false)
+        expect(yield* Effect.promise(() => Bun.file(oldTemporary).exists())).toBe(false)
+        expect((yield* Effect.promise(() => stat(active.root))).isDirectory()).toBe(true)
+        expect((yield* Effect.promise(() => stat(recent))).isDirectory()).toBe(true)
+        expect(yield* Effect.promise(() => Bun.file(recentTemporary).exists())).toBe(true)
       }),
     ),
   )
@@ -401,14 +579,41 @@ describe("ArtifactStore", () => {
         const rollbackStaging = yield* store.stage(rollbackRun)
         yield* Effect.promise(() => writeFile(path.join(rollbackStaging.artifacts, "orphan.txt"), "orphan bytes"))
         const missing = Schema.decodeUnknownSync(Artifact.ID)("art_123e4567-e89b-42d3-a456-426614174000")
+        const controller = new AbortController()
+        const commitEvents: string[] = []
         expect(
           yield* promote(store, fixture, rollbackRun, outputPath("orphan.txt"), [
             Schema.decodeUnknownSync(Artifact.Lineage)({ sourceArtifactID: missing, relation: "derived-from" }),
-          ]).pipe(Effect.flip),
+          ], {
+            signal: controller.signal,
+            commit: {
+              boundary: {
+                begin: () => {
+                  commitEvents.push("begin")
+                  controller.abort()
+                  return true
+                },
+                complete: () => commitEvents.push("complete"),
+                rollback: () => commitEvents.push("rollback"),
+              },
+              result: (metadata) => metadata,
+            },
+          }).pipe(Effect.flip),
         ).toBeInstanceOf(ArtifactStore.PromotionError)
+        expect(commitEvents).toEqual(["begin", "rollback"])
         expect((yield* db.select({ value: count() }).from(ArtifactBlobTable).get())?.value).toBe(1)
         expect((yield* db.select({ value: count() }).from(ArtifactTable).get())?.value).toBe(2)
         expect((yield* db.select({ value: count() }).from(ArtifactLineageTable).get())?.value).toBe(1)
+        expect(
+          yield* Effect.promise(() =>
+            Bun.file(
+              blobPath(
+                fixture.data,
+                Schema.decodeUnknownSync(Artifact.Digest)(createHash("sha256").update("orphan bytes").digest("hex")),
+              ),
+            ).exists(),
+          ),
+        ).toBe(false)
         expect(yield* Effect.promise(() => readdir(temporaryRoot(fixture.data)))).toEqual([])
       }),
     ),
@@ -436,6 +641,42 @@ describe("ArtifactStore", () => {
         expect(promoted[0].id).not.toBe(promoted[1].id)
         const { db } = yield* Database.Service
         expect((yield* db.select({ value: count() }).from(ArtifactBlobTable).get())?.value).toBe(1)
+      }),
+    ),
+  )
+
+  it.live("keeps a concurrently deduplicated blob when another metadata transaction fails", () =>
+    withStore((fixture) =>
+      Effect.gen(function* () {
+        const store = yield* ArtifactStore.Service
+        const successfulRun = runID("concurrent-rollback-success")
+        const failedRun = runID("concurrent-rollback-failure")
+        const successfulStaging = yield* store.stage(successfulRun)
+        const failedStaging = yield* store.stage(failedRun)
+        yield* Effect.promise(() =>
+          Promise.all([
+            writeFile(path.join(successfulStaging.artifacts, "success.txt"), "shared rollback bytes"),
+            writeFile(path.join(failedStaging.artifacts, "failure.txt"), "shared rollback bytes"),
+          ]),
+        )
+        const missing = Schema.decodeUnknownSync(Artifact.ID)("art_123e4567-e89b-42d3-a456-426614174000")
+
+        const exits = yield* Effect.all(
+          [
+            promote(store, fixture, successfulRun, outputPath("success.txt")),
+            promote(store, fixture, failedRun, outputPath("failure.txt"), [
+              Schema.decodeUnknownSync(Artifact.Lineage)({ sourceArtifactID: missing, relation: "derived-from" }),
+            ]),
+          ].map((effect) => Effect.exit(effect)),
+          { concurrency: "unbounded" },
+        )
+
+        const successful = exits.find(Exit.isSuccess)
+        expect(exits.filter(Exit.isSuccess)).toHaveLength(1)
+        expect(exits.filter(Exit.isFailure)).toHaveLength(1)
+        if (!successful) return yield* Effect.die(new Error("expected one successful promotion"))
+        expect(yield* Effect.promise(() => Bun.file(blobPath(fixture.data, successful.value.digest)).exists())).toBe(true)
+        expect((yield* content(store, successful.value.id)).toString()).toBe("shared rollback bytes")
       }),
     ),
   )

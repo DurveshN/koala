@@ -1,9 +1,10 @@
-import { execFile } from "node:child_process"
+import { execFile, execFileSync } from "node:child_process"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import type { Configuration } from "electron-builder"
+import { documentRuntimeAttestation } from "./scripts/document-runtime"
 
 const execFileAsync = promisify(execFile)
 const packageDir = path.dirname(fileURLToPath(import.meta.url))
@@ -41,6 +42,21 @@ const APP_IDS = {
   prod: "ai.opencode.desktop",
 } as const
 
+const documentRuntimeResources: Array<{ from: string; to: string; filter: string[] }> =
+  channel === "dev"
+    ? []
+    : [
+        {
+          from: execFileSync("bun", ["./scripts/document-runtime.ts", "verify"], {
+            cwd: packageDir,
+            encoding: "utf8",
+            env: process.env,
+          }).trim(),
+          to: "document-runtime/",
+          filter: ["**/*"],
+        },
+      ]
+
 const getBase = (appId: string): Configuration => ({
   artifactName: "opencode-desktop-${os}-${arch}.${ext}",
   directories: {
@@ -55,7 +71,13 @@ const getBase = (appId: string): Configuration => ({
   extraMetadata: {
     desktopName: `${appId}.desktop`,
   },
-  files: ["out/**/*", "resources/**/*", "!resources/opencode-cli*"],
+  files: [
+    "out/**/*",
+    "resources/**/*",
+    "!resources/opencode-cli*",
+    "!resources/document-runtime{,/**/*}",
+    "!resources/document-runtime.attestation.json",
+  ],
   extraResources: [
     ...(channel === "dev"
       ? [
@@ -76,6 +98,15 @@ const getBase = (appId: string): Configuration => ({
       to: "sandbox-runtime/",
       filter: ["**/*"],
     },
+    ...documentRuntimeResources,
+    ...(channel === "dev"
+      ? []
+      : [
+          {
+            from: documentRuntimeAttestation,
+            to: "document-runtime.attestation.json",
+          },
+        ]),
   ],
   mac: {
     category: "public.app-category.developer-tools",
