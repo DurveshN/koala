@@ -156,6 +156,14 @@ Verification completed on 2026-09-19:
 - Desktop production build passed with the artifact store and generated
   migrations in the sidecar bundle.
 
+The full Industrial Tools program design is recorded in
+`docs/superpowers/specs/2026-09-19-industrial-tools-design.md`. It covers every
+planned tool plus `docx_read`, `pptx_read`, `pdf_read`, and immutable update tools
+for DOCX, PPTX, spreadsheets, and PDF. Installers will bundle pinned Tesseract
+with English/OSD data and a permissively licensed PDF.js/canvas renderer; users
+will not install separate OCR/PDF software. PDF OCR runs on every page, and a
+verified vision model receives one page image per call when available.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.
