@@ -21,6 +21,11 @@ industrial work. It is based on an independent import of OpenCode Desktop
   other nonessential external communication paths.
 - Use `@anthropic-ai/sandbox-runtime` behind a Koala-owned interface with an
   empty sandbox network allowlist and no unsandboxed fallback.
+- Confine each document job behind one short-lived trusted sandbox proxy with
+  one SRT singleton, bounded inner NDJSON, an attested read-only runtime, and a
+  private sole-writable job root; production has no direct worker fallback, and
+  native enforcement remains unverified pending the release matrix in
+  `docs/superpowers/specs/2026-09-20-document-runtime-confinement-design.md`.
 - Add local document, OCR, vision, Office generation, calculation, knowledge,
   artifact, audit, and network-activity capabilities.
 - Brand the product Koala with a professional geometric and friendly mascot
