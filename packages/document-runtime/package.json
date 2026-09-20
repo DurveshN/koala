@@ -15,7 +15,8 @@
     ".": "./src/index.ts",
     "./manifest": "./src/manifest.ts",
     "./render": "./src/render.ts",
-    "./tesseract": "./src/tesseract.ts"
+    "./tesseract": "./src/tesseract.ts",
+    "./transport": "./src/transport.ts"
   },
   "dependencies": {
     "@koala-ai/core": "workspace:*",

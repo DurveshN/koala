@@ -7,6 +7,7 @@ import { verifyProductionProfile } from "../src/production-profile"
 
 const target = "x86_64-pc-windows-msvc" as const
 const digest = "0123456789abcdef".repeat(4)
+const runtimePackageDigest = "1239d4d885dcad42201a27ed9324f8f0f760b78700d8db9ced39a511cffe7eae"
 const tessdata = "87416418657359cb625c412a48b6e1d6d41c29bd"
 
 describe("production document runtime profile", () => {
@@ -27,6 +28,9 @@ describe("production document runtime profile", () => {
     ).toBe(false)
 
     for (const required of [
+      "package.json",
+      "worker/bootstrap.js",
+      "worker/worker.js",
       "node_modules/pdfjs-dist/cmaps/fixture.bcmap",
       "node_modules/pdfjs-dist/iccs/fixture.icc",
       "node_modules/pdfjs-dist/standard_fonts/fixture.pfb",
@@ -76,6 +80,8 @@ function productionManifest() {
     licenseFiles: [`licenses/${name.replaceAll("/", "-")}.txt`],
   }))
   const required = [
+    ["package.json", "document-runtime", 0o644],
+    ["worker/bootstrap.js", "document-runtime", 0o644],
     ["worker/worker.js", "document-runtime", 0o644],
     ["node_modules/pdfjs-dist/legacy/build/pdf.mjs", "pdfjs-dist", 0o644],
     ["node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs", "pdfjs-dist", 0o644],
@@ -100,7 +106,13 @@ function productionManifest() {
     ["tessdata/osd.traineddata", "tessdata-fast-osd", 0o644],
   ] as const
   const files = [
-    ...required.map(([file, component, mode]) => ({ path: file, component, sha256: digest, bytes: 1, mode })),
+    ...required.map(([file, component, mode]) => ({
+      path: file,
+      component,
+      sha256: file === "package.json" ? runtimePackageDigest : digest,
+      bytes: file === "package.json" ? 18 : 1,
+      mode,
+    })),
     ...components.map((component) => ({
         path: component.licenseFiles[0],
         component: component.name,

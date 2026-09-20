@@ -28,6 +28,7 @@ export {
 } from "./runtime"
 export { verifyProductionProfile, verifyProductionTargetBinaries } from "./production-profile"
 export { probeProductionRuntime, type ProductionProbeResult } from "./probe"
+export { createNodeStreamTransport, TransportError, type NodeStreamTransport } from "./transport"
 export {
   runTesseract,
   probeTesseract,

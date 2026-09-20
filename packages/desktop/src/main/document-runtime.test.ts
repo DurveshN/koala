@@ -150,11 +150,17 @@ async function temporaryDirectory() {
 }
 
 async function fixture(root: string, releaseReady: boolean) {
-  const contents = Buffer.from("worker")
-  const digest = createHash("sha256").update(contents).digest("hex")
+  const contents = new Map([
+    ["package.json", Buffer.from('{"type":"module"}\n')],
+    ["worker/bootstrap.js", Buffer.from("bootstrap")],
+    ["worker/worker.js", Buffer.from("worker")],
+  ])
+  const digest = createHash("sha256").update(Buffer.concat(Array.from(contents.values()))).digest("hex")
   await mkdir(path.join(root, "worker"), { recursive: true })
-  await writeFile(path.join(root, "worker", "worker.js"), contents, { mode: 0o644 })
-  await chmod(path.join(root, "worker", "worker.js"), 0o644)
+  for (const [file, body] of contents) {
+    await writeFile(path.join(root, ...file.split("/")), body, { mode: 0o644 })
+    await chmod(path.join(root, ...file.split("/")), 0o644)
+  }
   await writeFile(
     path.join(root, "manifest.json"),
     JSON.stringify({
@@ -170,18 +176,16 @@ async function fixture(root: string, releaseReady: boolean) {
           version: "0.1.0",
           sourceRevision: "fixture",
           sourceSha256: digest,
-          licenseFiles: ["worker/worker.js"],
+          licenseFiles: ["worker/bootstrap.js", "worker/worker.js"],
         },
       ],
-      files: [
-        {
-          path: "worker/worker.js",
-          component: "fixture",
-          sha256: digest,
-          bytes: contents.byteLength,
-          mode: 0o644,
-        },
-      ],
+      files: Array.from(contents, ([file, body]) => ({
+        path: file,
+        component: "fixture",
+        sha256: createHash("sha256").update(body).digest("hex"),
+        bytes: body.byteLength,
+        mode: 0o644,
+      })),
       dependencies: [],
     }),
   )

@@ -36,23 +36,19 @@ const bunLock = await Bun.file(path.join(workspaceRoot, "bun.lock")).text()
 const target = requestedTarget(process.argv.slice(2))
 const output = path.join(root, "dist", target)
 const buildOutput = path.join(root, "dist", ".build")
-await rm(buildOutput, { recursive: true, force: true })
 await rm(output, { recursive: true, force: true })
-await mkdir(path.join(output, "worker"), { recursive: true })
-
-const build = await Bun.build({
-  entrypoints: [path.join(root, "src", "worker.ts")],
-  outdir: buildOutput,
-  target: "node",
-  format: "esm",
-  external: ["@napi-rs/canvas", "pdfjs-dist"],
-  naming: "worker.js",
-  minify: false,
-  sourcemap: "none",
-})
-if (!build.success) throw new AggregateError(build.logs, "Failed to build the document worker")
-await cp(path.join(buildOutput, "worker.js"), path.join(output, "worker", "worker.js"))
 await rm(buildOutput, { recursive: true, force: true })
+
+await buildEntry("bootstrap")
+await buildEntry("worker", ["@napi-rs/canvas", "pdfjs-dist"])
+await mkdir(path.join(output, "worker"), { recursive: true })
+await Promise.all(
+  ["bootstrap", "worker"].map((entry) =>
+    cp(path.join(buildOutput, entry, `${entry}.js`), path.join(output, "worker", `${entry}.js`)),
+  ),
+)
+await rm(buildOutput, { recursive: true, force: true })
+await writeFile(path.join(output, "package.json"), '{"type":"module"}\n', { mode: 0o644, flag: "wx" })
 
 const pdfRoot = packageRoot("pdfjs-dist")
 const canvasRoot = packageRoot("@napi-rs/canvas")
@@ -189,6 +185,20 @@ if (process.env.OPENCODE_CHANNEL || process.env.OPENCODE_VERSION) {
   throw new Error("The development document runtime builder cannot produce release-ready artifacts")
 }
 console.log(output)
+
+async function buildEntry(entry: "bootstrap" | "worker", external: ReadonlyArray<string> = []) {
+  const build = await Bun.build({
+    entrypoints: [path.join(root, "src", `${entry}.ts`)],
+    outdir: path.join(buildOutput, entry),
+    target: "node",
+    format: "esm",
+    external: [...external],
+    naming: `${entry}.js`,
+    minify: false,
+    sourcemap: "none",
+  })
+  if (!build.success) throw new AggregateError(build.logs, `Failed to build the document ${entry}`)
+}
 
 function packageRoot(name: string) {
   return path.dirname(require.resolve(`${name}/package.json`))

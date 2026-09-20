@@ -1,3 +1,4 @@
+import { DocumentRuntimeLimits } from "@koala-ai/core/document-runtime/limits"
 import { DocumentRuntimeManifest } from "@koala-ai/core/document-runtime/manifest"
 import { DocumentRuntimeProtocol } from "@koala-ai/core/document-runtime/protocol"
 import { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
@@ -8,15 +9,18 @@ import { access, lstat, rm } from "node:fs/promises"
 import path from "node:path"
 import { RuntimeFailure, runtimeFailure } from "./error"
 import { validateOcrImage } from "./image"
+import { createLegacyIpcTransport } from "./legacy-ipc"
 import { loadAndVerifyManifest } from "./manifest"
 import { makePrivateDirectory, resolveInRoot, validateInputFile, validatePrivateJobRoot } from "./path"
 import { openPdf, probeRenderer, readPdfBytes, renderPdfPage } from "./render"
 import { runtimePaths, sanitizeNativeLoaderEnvironment } from "./runtime"
 import { probeTesseract, runTesseract } from "./tesseract"
+import { createNodeStreamTransport } from "./transport"
 
-const decodeRequest = Schema.decodeUnknownSync(DocumentRuntimeProtocol.WorkerRequest)
+const decodeInitialRequest = DocumentRuntimeProtocol.decodeInitialRequest
+const decodeRequest = DocumentRuntimeProtocol.decodeWorkerRequest
 const encodeEvent = Schema.encodeSync(DocumentRuntimeProtocol.WorkerEvent)
-const decodeEvent = Schema.decodeUnknownSync(DocumentRuntimeProtocol.WorkerEvent)
+const decodeEvent = DocumentRuntimeProtocol.decodeWorkerEvent
 const decodeTarget = Schema.decodeUnknownSync(DocumentRuntimeTarget.Target)
 const decodeDigest = Schema.decodeUnknownSync(DocumentRuntimeManifest.Digest)
 
@@ -34,7 +38,11 @@ export type WorkerTransport = {
   readonly close: () => void
 }
 
-export function startWorker(config: WorkerConfig, transport: WorkerTransport = processTransport()) {
+export type WorkerDependencies = {
+  readonly removeGenerated?: (files: ReadonlyArray<string>) => Promise<void>
+}
+
+export function startWorker(config: WorkerConfig, transport: WorkerTransport, dependencies: WorkerDependencies = {}) {
   let request: DocumentRuntimeProtocol.StartRequest | undefined
   let order: DocumentRuntimeProtocol.OrderState | undefined
   let running = false
@@ -45,6 +53,7 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport = p
   let forcedFailure: RuntimeFailure | undefined
   let disconnected = false
   const generated = new Set<string>()
+  const cleanup = () => cleanGenerated(generated, dependencies.removeGenerated)
 
   const interrupt = (failure: RuntimeFailure) => {
     forcedFailure = failure
@@ -59,6 +68,11 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport = p
       const resolve = commandWaiter
       commandWaiter = undefined
       resolve(message)
+      return
+    }
+    if (commands.length === DocumentRuntimeLimits.MaxNdjsonPendingWrites) {
+      forcedFailure = new RuntimeFailure("invalid-order", "worker")
+      abort.abort()
       return
     }
     commands.push(message)
@@ -80,21 +94,38 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport = p
 
   const fail = async (failure: RuntimeFailure) => {
     if (!request || terminal) return transport.close()
-    await cleanGenerated(generated)
-    await send({
-      protocolVersion: 1,
-      type: "failure",
-      jobID: request.jobID,
-      code: failure.code,
-      stage: failure.stage,
-      retryable: failure.retryable,
-    })
+    const result = await cleanup().then(
+      () => failure,
+      () => new RuntimeFailure("worker-failed", "cleanup"),
+    )
+    try {
+      await send({
+        protocolVersion: 1,
+        type: "failure",
+        jobID: request.jobID,
+        code: result.code,
+        stage: result.stage,
+        retryable: result.retryable,
+      })
+    } catch {
+      terminal = true
+      transport.close()
+    }
   }
 
   const cancel = async () => {
     if (!request || terminal) return transport.close()
-    await cleanGenerated(generated)
-    await send({ protocolVersion: 1, type: "cancelled", jobID: request.jobID })
+    try {
+      await cleanup()
+    } catch {
+      return fail(new RuntimeFailure("worker-failed", "cleanup"))
+    }
+    try {
+      await send({ protocolVersion: 1, type: "cancelled", jobID: request.jobID })
+    } catch {
+      terminal = true
+      transport.close()
+    }
   }
 
   const nextCommand = () => {
@@ -113,9 +144,10 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport = p
     transport.close()
   })
   transport.onMessage((input) => {
+    if (forcedFailure || terminal) return
     let message: DocumentRuntimeProtocol.WorkerRequest
     try {
-      message = decodeRequest(input)
+      message = running ? decodeRequest(input) : decodeInitialRequest(input)
     } catch {
       if (!request) return transport.close()
       interrupt(new RuntimeFailure(protocolMismatch(input) ? "protocol-mismatch" : "invalid-request", "worker"))
@@ -131,20 +163,20 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport = p
         () => interrupt(new RuntimeFailure("job-deadline-exceeded", "worker", true)),
         message.type === "probe" ? 10 * 60_000 : message.limits.jobDeadlineMs,
       )
-      void execute(message, config, abort.signal, generated, send, nextCommand).then(
+      void execute(message, config, abort.signal, generated, cleanup, send, nextCommand).then(
         () => clearTimeout(jobDeadline),
         async (error: unknown) => {
           clearTimeout(jobDeadline)
           if (disconnected) {
             terminal = true
-            await cleanGenerated(generated)
+            await cleanup().catch(() => undefined)
             transport.close()
             return
           }
           if (abort.signal.aborted && !forcedFailure) return cancel()
           return fail(runtimeFailure(forcedFailure ?? error, new RuntimeFailure("worker-failed", "worker")))
         },
-      )
+      ).catch(() => transport.close())
       return
     }
 
@@ -170,7 +202,11 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport = p
         commandWaiter = undefined
         resolve(message)
       } else {
-        commands.push(message)
+        if (commands.length === DocumentRuntimeLimits.MaxNdjsonPendingWrites) {
+          interrupt(new RuntimeFailure("invalid-order", "worker"))
+        } else {
+          commands.push(message)
+        }
       }
       return
     }
@@ -187,6 +223,10 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport = p
       resolve(message)
       return
     }
+    if (commands.length === DocumentRuntimeLimits.MaxNdjsonPendingWrites) {
+      interrupt(new RuntimeFailure("invalid-order", "worker"))
+      return
+    }
     commands.push(message)
   })
 
@@ -198,6 +238,7 @@ async function execute(
   config: WorkerConfig,
   signal: AbortSignal,
   generated: Set<string>,
+  cleanup: () => Promise<void>,
   send: (event: DocumentRuntimeProtocol.WorkerEvent) => Promise<void>,
   nextCommand: () => Promise<DocumentRuntimeProtocol.WorkerRequest>,
 ) {
@@ -244,7 +285,7 @@ async function execute(
     await executeOcr(request, paths, root, signal, generated, send)
     return
   }
-  await executeRender(request, paths, root, signal, generated, send, nextCommand)
+  await executeRender(request, paths, root, signal, generated, cleanup, send, nextCommand)
 }
 
 async function executeRender(
@@ -253,6 +294,7 @@ async function executeRender(
   jobRoot: string,
   signal: AbortSignal,
   generated: Set<string>,
+  cleanup: () => Promise<void>,
   send: (event: DocumentRuntimeProtocol.WorkerEvent) => Promise<void>,
   nextCommand: () => Promise<DocumentRuntimeProtocol.WorkerRequest>,
 ) {
@@ -349,8 +391,7 @@ async function executeRender(
       if (release.type !== "release-page" || release.page !== page || release.pageID !== pageID) {
         throw new RuntimeFailure("invalid-order", "worker")
       }
-      await Promise.all(Array.from(generated, (file) => rm(file, { force: true })))
-      generated.clear()
+      await cleanup()
       temporaryBytes = 0
     }
     await send({
@@ -432,22 +473,18 @@ async function validateRuntimeTool(tesseractExecutable: string, tessdataPath: st
   }
 }
 
-async function cleanGenerated(files: Set<string>) {
-  await Promise.all(Array.from(files, (file) => rm(file, { force: true }).catch(() => undefined)))
+async function cleanGenerated(files: Set<string>, remove?: (files: ReadonlyArray<string>) => Promise<void>) {
+  const generated = Array.from(files)
+  await (remove ? remove(generated) : Promise.all(generated.map((file) => rm(file, { force: true }))))
   files.clear()
 }
 
-function processTransport(): WorkerTransport {
-  return {
-    onMessage: (listener) => process.on("message", listener),
-    onDisconnect: (listener) => process.on("disconnect", listener),
-    send: (event) =>
-      new Promise<void>((resolve) => {
-        if (!process.send) return resolve()
-        process.send(event, () => resolve())
-      }),
-    close: () => process.disconnect?.(),
-  }
+export function startWorkerProcess(environment: NodeJS.ProcessEnv = process.env) {
+  return startWorker(workerConfigFromEnvironment(environment), createNodeStreamTransport(process.stdin, process.stdout))
+}
+
+export function startLegacyIpcWorker(environment: NodeJS.ProcessEnv = process.env) {
+  return startWorker(workerConfigFromEnvironment(environment), createLegacyIpcTransport())
 }
 
 function protocolMismatch(input: unknown) {
@@ -476,8 +513,8 @@ export function workerConfigFromEnvironment(environment: NodeJS.ProcessEnv): Wor
 
 if (process.send) {
   try {
-    startWorker(workerConfigFromEnvironment(process.env))
+    startLegacyIpcWorker()
   } catch {
-    process.disconnect?.()
+    if (process.connected) process.disconnect()
   }
 }

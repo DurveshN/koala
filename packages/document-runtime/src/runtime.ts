@@ -30,6 +30,7 @@ export function runtimeNativeBinary(target: DocumentRuntimeTarget.Target) {
 export function runtimePaths(root: string, target: DocumentRuntimeTarget.Target) {
   const nativePackage = runtimeNativePackage(target)
   return {
+    bootstrap: path.join(root, "worker", "bootstrap.js"),
     worker: path.join(root, "worker", "worker.js"),
     tesseract: path.join(root, "bin", target.includes("windows") ? "tesseract.exe" : "tesseract"),
     tessdata: path.join(root, "tessdata"),

@@ -364,6 +364,37 @@ Document confinement Phase 1 verification completed on 2026-09-20:
 - `packages/document-runtime`: `bun typecheck` passed.
 - `packages/opencode`: `bun typecheck` passed.
 
+Document-runtime confinement Phase 2 is implemented. Koala now owns a browser-
+safe NDJSON codec with fatal UTF-8 decoding and exact line, unterminated-buffer,
+frame, aggregate-byte, and pending-write ceilings. Document Runtime adds bounded
+Node stream adapters with serialized backpressure-aware writes and permanent
+failure behavior. Its minimal bootstrap validates the fixed handoff, clears the
+inherited environment, reconstructs only the approved deterministic values, and
+then dynamically imports the worker. The confined bootstrap path uses strict
+stdin/stdout NDJSON; the current direct coordinator retains an isolated Node IPC
+compatibility entrypoint that Phase 5 must delete during its atomic proxy
+cutover. Generated-file cleanup failures produce terminal curated failures.
+Transport failure clears queued input, blocks later delivery, settles every
+pending write, destroys both streams, retains error handlers through asynchronous
+shutdown, and detaches all transport listeners when each stream closes. Builds
+delete the selected target first and emit separately hashed
+`worker/bootstrap.js` and `worker/worker.js` under a hashed root ESM
+`package.json`; all three are required by production profiles and Desktop
+fixtures. The bootstrap integration test runs from a copied runtime outside the
+repository package scope and checks complete stdout framing, bounded empty
+stderr, and clean process exit.
+
+Document confinement Phase 2 verification completed on 2026-09-20:
+
+- Koala document-runtime suite: 188 passed with 386 assertions across 7 files.
+- Document Runtime suite: 81 passed with 190 assertions; 2 existing symlink
+  capability tests skipped on this Windows host.
+- OpenCode document coordinator suite: 14 passed with 49 assertions.
+- Desktop document-runtime fixture, resolution, staging, and packaging suites:
+  22 passed with 54 assertions across 3 files.
+- Koala, Document Runtime, downstream OpenCode, and Desktop typechecks passed.
+- Both emitted worker JavaScript files passed `node --check`.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.

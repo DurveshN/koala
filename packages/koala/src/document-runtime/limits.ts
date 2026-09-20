@@ -23,6 +23,7 @@ export const MaxNdjsonLineBytes = 16_384
 export const MaxNdjsonUnterminatedBytes = 16_384
 export const MaxNdjsonFramesPerDirection = 512
 export const MaxNdjsonBytesPerDirection = 1_048_576
+export const MaxNdjsonPendingWrites = 32
 export const MaxInnerStderrBytes = 65_536
 
 export const Hard = Schema.Struct({

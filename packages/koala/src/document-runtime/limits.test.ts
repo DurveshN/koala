@@ -31,6 +31,7 @@ describe("DocumentRuntimeLimits", () => {
       ndjsonUnterminatedBytes: DocumentRuntimeLimits.MaxNdjsonUnterminatedBytes,
       ndjsonFramesPerDirection: DocumentRuntimeLimits.MaxNdjsonFramesPerDirection,
       ndjsonBytesPerDirection: DocumentRuntimeLimits.MaxNdjsonBytesPerDirection,
+      ndjsonPendingWrites: DocumentRuntimeLimits.MaxNdjsonPendingWrites,
       innerStderrBytes: DocumentRuntimeLimits.MaxInnerStderrBytes,
     }).toEqual({
       outerIpcMessageBytes: 65_536,
@@ -39,6 +40,7 @@ describe("DocumentRuntimeLimits", () => {
       ndjsonUnterminatedBytes: 16_384,
       ndjsonFramesPerDirection: 512,
       ndjsonBytesPerDirection: 1_048_576,
+      ndjsonPendingWrites: 32,
       innerStderrBytes: 65_536,
     })
   })

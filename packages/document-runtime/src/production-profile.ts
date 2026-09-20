@@ -6,6 +6,7 @@ import path from "node:path"
 import { runtimeNativeBinary, runtimeNativePackage } from "./runtime"
 
 const TessdataRevision = "87416418657359cb625c412a48b6e1d6d41c29bd"
+const RuntimePackageSha256 = "1239d4d885dcad42201a27ed9324f8f0f760b78700d8db9ced39a511cffe7eae"
 
 export function verifyProductionProfile(
   manifest: DocumentRuntimeManifest.Manifest,
@@ -46,7 +47,10 @@ export function verifyProductionProfile(
   }
 
   const files = new Map<string, DocumentRuntimeManifest.File>(manifest.files.map((file) => [file.path, file]))
+  const runtimePackage = files.get("package.json")
   if (
+    runtimePackage?.sha256 !== RuntimePackageSha256 ||
+    runtimePackage.bytes !== 18 ||
     requiredFiles(manifest.target).some(
       (expected) => files.get(expected.path)?.component !== expected.component || files.get(expected.path)?.mode !== expected.mode,
     )
@@ -117,6 +121,8 @@ function requiredComponents(target: DocumentRuntimeTarget.Target) {
 function requiredFiles(target: DocumentRuntimeTarget.Target) {
   const nativePackage = runtimeNativePackage(target)
   return [
+    { path: "package.json", component: "document-runtime", mode: 0o644 },
+    { path: "worker/bootstrap.js", component: "document-runtime", mode: 0o644 },
     { path: "worker/worker.js", component: "document-runtime", mode: 0o644 },
     { path: "node_modules/pdfjs-dist/legacy/build/pdf.mjs", component: "pdfjs-dist", mode: 0o644 },
     { path: "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs", component: "pdfjs-dist", mode: 0o644 },

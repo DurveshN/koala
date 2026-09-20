@@ -93,11 +93,13 @@ overflow, stream error, or unterminated EOF.
 Build `worker/bootstrap.js` separately from `worker/worker.js`. The bootstrap
 captures only the fixed handoff values, validates them, clears `process.env`,
 installs the approved deterministic environment, then dynamically imports the
-worker. Remove the production Node IPC self-start path from the inner worker and
-use only strict NDJSON transport. Make generated-file cleanup failures terminal.
-Require and hash both worker files in development manifests and the production
-profile. Build scripts delete the target output first so stale worker code is
-not retained.
+worker. The bootstrap path uses only strict NDJSON transport. Until the Phase 5
+atomic coordinator cutover, keep the existing direct Node IPC self-start in one
+isolated compatibility adapter so the current coordinator remains operational.
+Make generated-file cleanup failures terminal. Require and hash both worker
+files plus the root ESM `package.json` in development manifests and the
+production profile. Build scripts delete the target output first so stale worker
+code is not retained.
 
 Verification from `packages/document-runtime`:
 
@@ -204,7 +206,8 @@ identity recording, precreated job-local `tmp`, bounded deletion retries, and
 post-delete absence checks. Refuse recursive deletion when the path identity was
 replaced or became a link. Surface cleanup failure instead of swallowing it.
 
-Atomically remove `NativeConfinementLauncher`, direct `worker.js` launch,
+Atomically delete `src/legacy-ipc.ts`, `startLegacyIpcWorker`, its `process.send`
+self-start guard, `NativeConfinementLauncher`, direct `worker.js` launch,
 parent-to-worker IPC, and parent-built inner environment. The coordinator must
 launch only the configured proxy, wrap document commands in the outer protocol,
 require `accepted -> terminal -> closed -> disconnect -> exit 0`, and retain the

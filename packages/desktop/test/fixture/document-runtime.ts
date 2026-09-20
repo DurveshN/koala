@@ -31,6 +31,8 @@ export async function productionRuntimeFixture(
     component("tessdata-fast-osd", TessdataRevision, TessdataRevision),
   ]
   const required = [
+    ["package.json", "document-runtime", 0o644],
+    ["worker/bootstrap.js", "document-runtime", 0o644],
     ["worker/worker.js", "document-runtime", 0o644],
     ["node_modules/pdfjs-dist/legacy/build/pdf.mjs", "pdfjs-dist", 0o644],
     ["node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs", "pdfjs-dist", 0o644],
@@ -63,9 +65,15 @@ export async function productionRuntimeFixture(
   for (const [file, , mode] of entries) {
     const absolute = path.join(root, ...file.split("/"))
     await mkdir(path.dirname(absolute), { recursive: true })
-    await writeFile(absolute, mode === 0o755 || file.endsWith(".node") ? binaryHeader(target) : `fixture:${file}`, {
-      mode,
-    })
+    await writeFile(
+      absolute,
+      mode === 0o755 || file.endsWith(".node")
+        ? binaryHeader(target)
+        : file === "package.json"
+          ? '{"type":"module"}\n'
+          : `fixture:${file}`,
+      { mode },
+    )
     await chmod(absolute, mode)
   }
   const files = await Promise.all(

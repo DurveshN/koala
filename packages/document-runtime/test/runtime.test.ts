@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { DocumentRuntimeManifest } from "@koala-ai/core/document-runtime/manifest"
 import { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
 import { Schema } from "effect"
+import { readdir } from "node:fs/promises"
 import path from "node:path"
 import { runtimePaths, sanitizeNativeLoaderEnvironment } from "../src/runtime"
 import { workerConfigFromEnvironment } from "../src/worker"
@@ -26,6 +27,7 @@ describe("verified runtime configuration", () => {
     expect(config).not.toHaveProperty("tessdataPath")
     expect(runtimePaths(config.runtimeRoot, config.target)).toEqual(
       expect.objectContaining({
+        bootstrap: path.join(root, "worker", "bootstrap.js"),
         worker: path.join(root, "worker", "worker.js"),
         tesseract: path.join(root, "bin", process.platform === "win32" ? "tesseract.exe" : "tesseract"),
         tessdata: path.join(root, "tessdata"),
@@ -71,6 +73,13 @@ describe("verified runtime configuration", () => {
       await Bun.file(path.join(root, "manifest.json")).json(),
     )
     expect(manifest.components.find((component) => component.name === "document-runtime")?.licenseFiles).toEqual([])
+    expect(await Bun.file(path.join(root, "package.json")).json()).toEqual({ type: "module" })
+    expect(manifest.files.map((file) => String(file.path))).toContain("package.json")
+    expect((await readdir(path.join(root, "worker"))).sort()).toEqual(["bootstrap.js", "worker.js"])
+    expect(manifest.files.filter((file) => file.path.startsWith("worker/")).map((file) => String(file.path))).toEqual([
+      "worker/bootstrap.js",
+      "worker/worker.js",
+    ])
     expect(await Bun.file(path.join(root, "licenses", "koala", "LICENSE")).exists()).toBe(false)
     expect(await Bun.file(path.join(root, "licenses", "THIRD_PARTY_NOTICES.md")).exists()).toBe(true)
     expect(manifest.releaseReady).toBe(false)
