@@ -6,21 +6,27 @@ Route every document-runtime job through one short-lived, native SRT-confined
 proxy before any PDF.js, canvas, Tesseract, or document bytes are loaded. Keep
 document execution unavailable unless the proxy, verified runtime, SRT assets,
 and target-native evidence all pass. Remove the direct worker launch path and
-clean every generated worker, job directory, listener, timer, and child process.
+clean every generated output, per-job directory, listener, timer, and child
+process.
 
 ## Invariants
 
 - One proxy process, one `SandboxManager` singleton, and one document job.
 - Parent/proxy communication uses bounded Node IPC; proxy/worker communication
-  uses bounded NDJSON over stdin/stdout.
+  uses bounded NDJSON over stdin/stdout. Strict base64 output frames have
+  separate frame and payload accounting from the existing control budget.
 - The verified runtime is read-only. The private job root is the only ordinary
-  writable location. Network access is empty and strict.
+  writable location visible to the sandbox. A parent-owned sibling pending root
+  is writable by the trusted proxy and parent but is never exposed to the inner
+  process. Network access is empty and strict.
 - The proxy imports no document parser or native document module.
 - The bootstrap clears and reconstructs the environment before dynamically
   importing the document worker.
 - A worker success remains provisional until inner exit, SRT command cleanup,
   SRT reset, proxy `closed`, clean proxy exit, output checks, and verified job
-  deletion.
+  and pending-root deletion.
+- The parent resolves outputs only beneath the pending root. Neither parent nor
+  proxy opens a worker-reported output path.
 - No direct worker, source TypeScript, system package, `PATH`, download, or host
   execution fallback exists.
 - A skipped native test is not release evidence.
@@ -40,20 +46,41 @@ Modify:
 - `packages/koala/src/index.ts`
 
 Implement strict version-1 schemas for `launch`, `command`, `cancel`,
-`accepted`, `event`, `failure`, and `closed`. Add runtime schemas that separate
-initial document requests from continuation requests. Every trust-boundary
-decode rejects excess properties. Add a pure outer state machine that validates
-job identity and lifecycle while delegating page ordering to
-`DocumentRuntimeProtocol.advanceOrder`.
+`accepted`, `event`, `failure`, and `closed`. `launch` carries canonical sibling
+`jobRoot` and `pendingRoot` values. Add runtime schemas that separate initial
+document requests from continuation requests and add a closed inner output union
+for `output-start`, `output-chunk`, and `output-end`. Give each transfer a
+branded unique `outputID`, kind, page identity, canonical worker source path,
+declared bytes, exact sequence, actual bytes, and lowercase SHA-256. Add
+`outputID` and `outputSha256` to normal `page-ready` and `ocr-result` events so
+the proxy can publish its verified transfer identity and digest with its
+rewritten pending-relative path. Every
+trust-boundary decode rejects excess properties. Add pure outer, document-order,
+and output-transfer state machines that validate job identity and lifecycle.
 
 Centralize these limits:
 
 - outer IPC message: 65,536 UTF-8 bytes;
 - outer pending queue: 32 messages;
 - NDJSON line and unterminated buffer: 16,384 bytes;
-- NDJSON frames: 512 per direction;
-- NDJSON aggregate: 1,048,576 bytes per direction;
+- NDJSON control frames: 512 per direction;
+- NDJSON control aggregate: 1,048,576 bytes per direction;
+- decoded output chunk: 10,240 bytes, with every non-final chunk exactly full;
+- PNG dimensions: 10,000 pixels per side and 25,000,000 pixels in area;
+- PNG output: requested limit, at most 67,108,864 bytes;
+- TSV output: requested limit, at most 33,554,432 bytes;
+- live incomplete plus completed-unreleased output: requested temporary limit,
+  at most 262,144,000 bytes;
+- cumulative standalone OCR payload: one requested TSV limit;
+- cumulative render payload: `pageCount * (requested PNG + requested TSV)`, at
+  most 10,066,329,600 bytes for 100 pages;
 - inner stderr: 65,536 bytes.
+
+Output framing messages and canonical base64 bytes do not consume the 512-frame
+or 1-MiB control totals. Their exact maximum count is derived from declared
+bytes and the full-chunk rule: 6,554 PNG chunks, 3,277 TSV chunks, and 983,100
+chunks for a hard-limit 100-page render/OCR job, plus one start and end per
+output. All frames still obey the 16,384-byte line and receive-buffer limits.
 
 Verification from `packages/koala`:
 
@@ -85,10 +112,14 @@ Modify:
 - `packages/document-runtime/package.json`
 - `packages/desktop/test/fixture/document-runtime.ts`
 
-Implement a browser-safe byte framer with fatal UTF-8 decoding and exact
-line/frame/aggregate accounting. Node stream adapters serialize writes, honor
-backpressure, cap pending writes, and fail permanently after malformed input,
-overflow, stream error, or unterminated EOF.
+Implement a browser-safe byte framer with fatal UTF-8 decoding and separate
+exact control and output accounting. Canonical base64 decoding is incremental
+and bounded; it rejects whitespace, malformed padding, noncanonical encoding,
+short non-final chunks, sequence gaps, duplicate/interleaved transfers, missing
+or trailing chunks, declared/actual byte disagreement, digest mismatch, and
+unterminated EOF. Node stream adapters serialize writes, honor backpressure,
+pause reads until each consumer write drains, cap pending writes, and fail
+permanently after malformed input, overflow, stream error, or unterminated EOF.
 
 Build `worker/bootstrap.js` separately from `worker/worker.js`. The bootstrap
 captures only the fixed handoff values, validates them, clears `process.env`,
@@ -96,10 +127,18 @@ installs the approved deterministic environment, then dynamically imports the
 worker. The bootstrap path uses only strict NDJSON transport. Until the Phase 5
 atomic coordinator cutover, keep the existing direct Node IPC self-start in one
 isolated compatibility adapter so the current coordinator remains operational.
-Make generated-file cleanup failures terminal. Require and hash both worker
-files plus the root ESM `package.json` in development manifests and the
-production profile. Build scripts delete the target output first so stale worker
-code is not retained.
+After a generated PNG or TSV closes, the worker opens it only within its own job
+root, emits one strict start/chunk/end sequence with serialized backpressure,
+then emits the matching normal event. The normal event repeats the transfer
+identity, worker source path, bytes, and digest for correlation. Make generated-
+file cleanup failures terminal. Require and hash both worker files plus the root
+ESM `package.json` in development manifests and the production profile. Build
+scripts delete the target output first so stale worker code is not retained.
+
+Transport tests cover exact 10-KiB and final-short chunks, zero-byte TSV, maximum
+PNG/TSV chunk counts without whole-output buffering, canonical base64, digest
+agreement, blocked drains, cancellation during each frame type, malformed and
+trailing frames, and absence of payload bytes from diagnostics.
 
 Verification from `packages/document-runtime`:
 
@@ -122,18 +161,21 @@ Create:
 - `packages/opencode/test/document/sandbox-policy.test.ts`
 - `packages/opencode/test/document/process.test.ts`
 
-Implement canonical/disjoint root validation, target-specific SRT asset
-resolution, loader-root policy, strict dependency checks, fixed bootstrap
-command construction, minimal broker and handoff environments, effective-policy
-inspection, bounded process-tree termination, and observed exit.
+Implement canonical/disjoint root validation for the runtime, job, and sibling
+pending roots, target-specific SRT asset resolution, loader-root policy, strict
+dependency checks, fixed bootstrap command construction, minimal broker and
+handoff environments, effective-policy inspection, bounded process-tree
+termination, and observed exit.
 
-The policy must use no caller-supplied roots or environment and must not reuse
+The policy must use only parent-created, proxy-verified roots and must not reuse
 the generic command policy. It grants runtime/job reads, job-only writes, empty
-strict networking, and explicitly denies runtime, SRT assets, ambient writable
-locations, and SRT compatibility write paths. Windows rejects UNC/device/ADS,
-reparse, mapped/network-volume, and unknown-volume inputs. Tests cover all six
-targets and command paths containing spaces, quotes, percent signs, ampersands,
-carets, parentheses, dollar signs, backticks, and trailing separators.
+strict networking, and explicitly omits and denies the pending sibling while
+denying runtime, SRT assets, ambient writable locations, and SRT compatibility
+write paths. `pendingRoot` never enters the bootstrap command or handoff
+environment. Windows rejects UNC/device/ADS, reparse, mapped/network-volume, and
+unknown-volume inputs. Tests cover all six targets and command paths containing
+spaces, quotes, percent signs, ampersands, carets, parentheses, dollar signs,
+backticks, and trailing separators.
 
 Do not modify generic `sandbox_execute` policy behavior. Re-run its worker and
 runtime suites as regressions.
@@ -159,25 +201,43 @@ The proxy must:
 
 1. Accept and strictly decode exactly one launch.
 2. Independently verify host target, runtime manifest/digest, runtime paths,
-   job-root identity/separation, bootstrap, and SRT assets.
+   job-root and pending-root identities, canonical sibling relationship and
+   separation, bootstrap, and SRT assets.
 3. Initialize its sole process-local SRT manager and reject dependency errors or
    Linux seccomp degradation.
 4. Wrap and spawn the bootstrap with `shell: false`, no IPC, and bounded pipes.
 5. Emit `accepted` only after all inner listeners are bound.
-6. Relay only decoded and re-encoded requests/events while independently
-   enforcing document order.
-7. Forward cancellation once, then hard-reap after the bounded grace period.
-8. Hold terminal worker output until child exit, `cleanupAfterCommand()`, and
-   `reset()` complete.
-9. Replace provisional success with the highest-priority curated teardown error
-   when cleanup is uncertain.
-10. Emit exactly one `closed`, disconnect, remove every listener/timer/queue, and
-    exit. Never accept a second launch.
+6. Relay only decoded and re-encoded requests/control events while independently
+   enforcing document and output-transfer order.
+7. For each output, ignore the worker path as an I/O location, create an
+   exclusive random mode-`0600` destination beneath the verified pending root,
+   decode and write chunks serially with backpressure, and stream SHA-256.
+8. Require unique IDs, one active transfer, exact chunk count and sequences,
+   declared/event/actual/file-size agreement, per-output and dynamic aggregate
+   limits, and matching worker/proxy/re-read SHA-256. Reopen without following
+   links and verify stable identity, size, and digest before publication.
+9. Rewrite the normal event to the proxy-generated pending-relative path and
+   proxy-verified digest. Never send transfer frames, base64, worker paths, or
+   document bytes over parent IPC or diagnostics.
+10. Before forwarding `release-page`, require the parent-published PNG and TSV
+    destinations to be absent; then let the worker delete its job-root copies.
+11. Forward cancellation once, then hard-reap after the bounded grace period.
+    Close and remove partial and completed-but-unpublished pending files on every
+    failure path.
+12. Hold terminal worker output until child exit, `cleanupAfterCommand()`, and
+    `reset()` complete.
+13. Replace provisional success with the highest-priority curated teardown error
+    when cleanup is uncertain.
+14. Emit exactly one `closed`, disconnect, remove every listener/timer/queue,
+    output handle, and digest state, and exit. Never accept a second launch.
 
-Inject SRT, spawn, time, and process-tree dependencies in unit tests. Cover each
-failure boundary, exact transport limits, backpressure, malformed output,
-stderr overflow, crash, disconnect, cooperative and forced cancellation,
-exactly-once cleanup/reset, and output redaction.
+Inject SRT, spawn, time, filesystem, and process-tree dependencies in unit tests.
+Cover each failure boundary; exact control, chunk, output, cumulative payload,
+and live temporary limits; duplicate/interleaved/missing/trailing frames;
+hostile path fields; byte and digest mismatch; backpressure; stderr overflow;
+crash and disconnect at every transfer phase; cooperative and forced
+cancellation; partial/unpublished cleanup; release absence checks; exactly-once
+cleanup/reset; and output/audit redaction.
 
 Verification from `packages/opencode`:
 
@@ -199,12 +259,34 @@ Create:
 Modify:
 
 - `packages/opencode/src/document/runtime.ts`
+- `packages/opencode/src/document/output.ts`
 - `packages/opencode/test/document/runtime.test.ts`
+- `packages/opencode/test/document/output.test.ts`
 
-Add a private parent plus random child job root, canonical path and filesystem
-identity recording, precreated job-local `tmp`, bounded deletion retries, and
-post-delete absence checks. Refuse recursive deletion when the path identity was
+Add a private parent plus random sibling job and pending roots, canonical paths
+and filesystem identity recording, precreated job-local `tmp`, bounded deletion
+retries, and post-delete absence checks for both children and their parent.
+Supply both child roots in `launch`, but include only the job root in SRT policy
+and bootstrap state. Refuse recursive deletion when either path identity was
 replaced or became a link. Surface cleanup failure instead of swallowing it.
+
+Delete the current parent copy approach completely: remove
+`DocumentOutput.copy`, `CopyOptions`, source snapshots, parent reads of
+`jobRoot/<worker outputPath>`, and all copy-race fixtures and call sites. There
+is no compatibility fallback. Replace it with pending-only resolution that
+accepts only the proxy-rewritten relative path and digest, revalidates the
+recorded pending-root identity, resolves strictly beneath that root, opens with
+no link following, and checks file identity, declared size, and SHA-256. Source
+scans must prove the parent never opens, stats, copies, renames, or deletes a
+worker-reported job-root output path.
+
+For each rendered page, keep pending files scoped to the callback. Close and
+delete the exact PNG and TSV, verify absence, and only then send `release-page`.
+For standalone OCR, delete and verify the pending TSV after the bounded read and
+before accepting completion. On cancellation, callback failure, protocol
+failure, timeout, proxy crash, or digest mismatch, close local handles and let
+the authoritative root finalizer delete every remaining pending and job-root
+entry. Treat either root's cleanup uncertainty as terminal and unhealthy.
 
 Atomically delete `src/legacy-ipc.ts`, `startLegacyIpcWorker`, its `process.send`
 self-start guard, `NativeConfinementLauncher`, direct `worker.js` launch,
@@ -216,7 +298,28 @@ closure, unconfirmed termination, command cleanup, reset, or policy revocation;
 later jobs fail closed until sidecar restart.
 
 Delete obsolete direct-worker fixtures after equivalent proxy fixtures pass.
-Add source scans proving no production direct-launch path remains.
+Add source scans proving no production direct-launch path or parent worker-output
+copy remains.
+
+Phase 5 tests must cover:
+
+- pending-root launch identity, sibling/disjoint checks, replacement and link
+  attacks, and confirmed deletion of job, pending, and private parent roots;
+- worker event paths using traversal, absolute, backslash, drive, UNC, device,
+  ADS, NUL, wrong-prefix, wrong-extension, and normalized-alias forms, with
+  instrumentation proving no trusted parent filesystem operation targets them;
+- exact-size and digest pending reads, file/root replacement after event,
+  duplicate pending names, changed files, and no-follow opens;
+- PNG/TSV deletion before release, standalone TSV deletion before completion,
+  callback cancellation/failure, missing deletion, held handles, and bounded
+  cleanup failure;
+- proxy cancellation or crash before output start, mid-chunk, after end, after
+  stable completion, after event publication, and during release;
+- no base64, raw binary, worker path, pending host path, document text, or raw
+  stderr in parent IPC failures, diagnostics, or audit fixtures;
+- retained 100/101-page, 64-MiB PNG, 32-MiB TSV, 250-MiB live temporary,
+  9,600-MiB dynamic cumulative formula, page ordering, deadline, and two-job
+  concurrency behavior without allocating hard-limit fixtures in memory.
 
 Verification from `packages/opencode`:
 
@@ -299,9 +402,11 @@ smoke result, and signature/dependency checks. Do not accept an environment
 Boolean as evidence.
 
 Native tests must prove allowed job operations and denied project/home/runtime/
-sibling/temp access; denied DNS/TCP/UDP/loopback/binding/socket access; child and
-grandchild reaping; exactly-once cleanup/reset; and absence of job directories.
-Release mode fails rather than skips when provisioning is unavailable.
+sibling/temp access, including denial of the pending sibling from the sandbox;
+proxy-only pending writes; denied DNS/TCP/UDP/loopback/binding/socket access;
+child and grandchild reaping; exactly-once cleanup/reset; and absence of job,
+pending, and private parent directories. Release mode fails rather than skips
+when provisioning is unavailable.
 
 Stock SRT `0.0.76` does not surface every Windows ACL/reset anomaly. Before
 enabling Windows, either pin a reviewed SRT revision with structured teardown

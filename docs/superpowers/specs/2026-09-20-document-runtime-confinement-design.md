@@ -36,11 +36,11 @@ Desktop main process
 ```
 
 The trusted parent remains responsible for runtime and input verification,
-deadlines, protocol order, output validation, concurrency, and final job-root
-deletion. The proxy is a narrow confinement broker. It does not parse document
-content, expose arbitrary command execution, or publish artifacts. The inner
-worker and every descendant are treated as compromised once document bytes are
-opened.
+deadlines, protocol order, output validation, concurrency, and final deletion
+of all per-job storage. The proxy is a narrow confinement and output-handoff
+broker. It does not parse document content, expose arbitrary command execution,
+or publish artifacts. The inner worker and every descendant are treated as
+compromised once document bytes are opened.
 
 ## Goals
 
@@ -49,8 +49,9 @@ opened.
 - Give the inner process read access only to audited system loader roots, the
   verified runtime, and its private job root.
 - Make the verified runtime read-only and the private job root the only ordinary
-  writable filesystem root. The job root remains readable because it contains
-  staged input and generated output.
+  writable filesystem root visible to the sandbox. A parent-owned sibling
+  pending root is writable only by the trusted proxy and parent and is never
+  granted to the inner process.
 - Give the inner process an empty network allowlist, no local binding, no
   arbitrary Unix socket access, no PTY, and no weaker nested mode.
 - Preserve the existing versioned, ordered document protocol and one-page-at-a-
@@ -89,12 +90,15 @@ proxy it must:
 3. Verify the complete runtime manifest, target, digest, paths, file hashes,
    executable modes, native architecture, release-ready policy, and absence of
    symbolic links at the existing verification boundary.
-4. Create a unique private job directory beneath a private parent-owned
-   temporary directory and record its canonical path and filesystem identity.
+4. Create a unique private job directory and a unique sibling pending directory
+   beneath one private parent-owned temporary directory. Record all three
+   canonical paths and filesystem identities before launch.
 5. Stage one stable regular-file input with no link following and verify its
    declared size.
 6. Create the job-local `tmp` directory before confinement starts.
-7. Launch only the packaged proxy through the resolved absolute proxy path.
+7. Launch only the packaged proxy through the resolved absolute proxy path. The
+   parent never opens a path reported by the worker and resolves accepted output
+   paths only beneath the recorded pending root.
 
 The parent treats all proxy messages as untrusted input despite the proxy being
 part of the trusted computing base. It validates schemas, job identity, message
@@ -102,11 +106,12 @@ order, counts, byte limits, paths, and exactly one terminal outcome.
 
 ### Trusted proxy
 
-The proxy contains only the Koala launch/control adapter, the pinned SRT library,
-and process lifecycle code. It does not import PDF.js, canvas, Tesseract, Office
-parsers, or document bytes. It independently verifies the runtime root, manifest
-digest, target, worker path, job-root identity, path separation, and SRT asset
-paths before initialization.
+The proxy contains only the Koala launch/control adapter, bounded output stream
+receiver, the pinned SRT library, and process lifecycle code. It does not import
+PDF.js, canvas, Tesseract, Office parsers, or interpret document bytes. It
+independently verifies the runtime root, manifest digest, target, worker path,
+job-root and pending-root identities, sibling relationship, path separation,
+and SRT asset paths before initialization.
 
 The upstream `SandboxManager` is process-global. A fresh proxy process therefore
 owns exactly one singleton and one job. No other sandbox command can overlap its
@@ -120,20 +125,22 @@ files, byte declarations, and protocol order are hostile inputs. They receive no
 Node IPC handle and cannot address the trusted parent directly.
 
 The runtime tree is executable/readable but not writable. The job tree is
-readable and writable; it is the only ordinary writable root. Audited character
-devices needed for null and inherited standard streams are not treated as
-persistent writable roots.
+readable and writable; it is the only ordinary writable root granted to the
+sandbox. The sibling pending root is not present in the SRT read or write
+allowlists, command arguments, bootstrap environment, or worker protocol.
+Audited character devices needed for null and inherited standard streams are
+not treated as persistent writable roots.
 
 ## Job Lifecycle
 
 1. The parent acquires one of the existing two global document-job permits.
-2. It verifies the target runtime and creates, identifies, and stages the private
-   job root.
+2. It verifies the target runtime, creates and identifies the private job and
+   sibling pending roots, and stages input only in the job root.
 3. It forks one trusted proxy with Node IPC, ignored stdin, bounded piped stdout
    and stderr, no extra IPC handles, `serialization: "json"`, and a minimal
    trusted-broker environment.
-4. The parent sends one `launch` message containing the start request and waits
-   for `accepted`.
+4. The parent sends one `launch` message containing the start request, job root,
+   and sibling pending root and waits for `accepted`.
 5. The proxy validates the launch, independently verifies the runtime, checks
    strict native dependencies, and initializes its sole SRT singleton.
 6. The proxy builds the fixed policy, obtains the SRT-wrapped spawn descriptor,
@@ -142,16 +149,23 @@ persistent writable roots.
    only then dynamically imports the document worker, so no document module
    loads before confinement and environment scrubbing.
 7. The proxy emits `accepted`, writes the validated start request as one NDJSON
-   frame, and bridges validated continuation commands and events.
-8. The existing `DocumentRuntimeProtocol` state machine remains authoritative
+   frame, and bridges validated continuation commands and control events. Output
+   bytes travel only through the strict inner output frames described below.
+8. For each PNG or TSV, the proxy receives one complete output transfer, writes
+   it to an exclusive proxy-generated file beneath the pending root, verifies
+   its stable size and SHA-256, and only then forwards the corresponding normal
+   `page-ready` or `ocr-result` event with a pending-root-relative path.
+9. The existing `DocumentRuntimeProtocol` state machine remains authoritative
    for page ordering, page identity, job identity, limits, release, cancellation,
-   and one terminal worker event.
-9. The proxy withholds the worker's terminal event until the inner process has
+   and one terminal worker event. Its public event names and page flow do not
+   expose output transfer frames.
+10. The proxy withholds the worker's terminal event until the inner process has
    exited and SRT command cleanup plus reset have completed. It then emits the
    terminal worker event followed by `closed`, disconnects Node IPC, and exits
    with code zero.
-10. The parent accepts success only after the expected terminal event, `closed`,
-    a clean proxy exit, output validation, and verified deletion of the job root.
+11. The parent accepts success only after the expected terminal event, `closed`,
+    a clean proxy exit, output validation, and verified deletion of the job and
+    pending roots.
 
 Any failed step enters the same termination and cleanup path. A proxy-level
 failure uses a closed safe code; raw SRT, parser, native stderr, environment
@@ -175,6 +189,7 @@ launch {
   runtimeRoot,
   manifestSha256,
   jobRoot,
+  pendingRoot,
   start
 }
 
@@ -193,10 +208,13 @@ cancel {
 ```
 
 `start` is exactly one existing `ProbeRequest`, `RenderRequest`, or standalone
-image `OcrRequest`. Its job ID must equal the outer job ID. `command` contains
-only a continuation valid for that start: rendered-page `OcrRequest` or
+image `OcrRequest`. Its job ID must equal the outer job ID. `jobRoot` and
+`pendingRoot` must be canonical, non-link, disjoint direct children of the same
+recorded private parent; neither may contain the other. `command` contains only
+a continuation valid for that start: rendered-page `OcrRequest` or
 `ReleasePageRequest`. Cancellation has a separate outer message so the proxy can
-begin hard termination even if the inner input stream is blocked.
+begin hard termination even if the inner input stream is blocked. The proxy
+does not pass `pendingRoot` or a derivative of it to the sandbox.
 
 Proxy events are:
 
@@ -207,11 +225,17 @@ failure  { protocolVersion: 1, type: "failure", jobID | null, code, stage, retry
 closed   { protocolVersion: 1, type: "closed", jobID | null }
 ```
 
-`event` contains exactly one existing `DocumentRuntimeProtocol.WorkerEvent` with
-the same job ID. `failure` uses a closed proxy-specific vocabulary covering
+`event` contains exactly one `DocumentRuntimeProtocol.WorkerEvent` with the same
+job ID. The `page-ready` and `ocr-result` schemas retain their names and ordering
+and add `outputID` plus lowercase `outputSha256`. For those events, the proxy
+requires the worker values to match the completed transfer, replaces the
+worker's path with its own canonical relative path beneath `pendingRoot`, and
+publishes the proxy-verified ID and digest; no worker-supplied path crosses the
+parent boundary. `failure` uses a closed proxy-specific vocabulary covering
 invalid launch, protocol mismatch, sandbox unavailable, dependency failure,
-spawn failure, transport overflow, worker crash, termination failure, command
-cleanup failure, and reset failure. It contains no arbitrary message or cause.
+spawn failure, transport overflow, output handoff failure, worker crash,
+termination failure, command cleanup failure, and reset failure. It contains no
+arbitrary message or cause.
 Only an undecodable first message may produce `failure` and `closed` with a null
 job ID. Once a launch is decoded, every outer and inner message must carry that
 launch's job ID.
@@ -222,8 +246,9 @@ An accepted launch is one `launch`, one `accepted`, zero or more nonterminal
 `event` messages, exactly one terminal `event` or `failure`, one `closed`, IPC
 disconnect, and clean proxy exit. The parent advances the document order state
 to cancellation when it sends outer `cancel`. It holds a terminal success as
-provisional until the complete sequence and job deletion finish. Extra messages,
-an early disconnect, a nonzero exit, or a second terminal value fail the job.
+provisional until the complete sequence and per-job storage deletion finish.
+Extra messages, an early disconnect, a nonzero exit, or a second terminal value
+fail the job.
 
 Each Node IPC message must encode to at most 64 KiB of UTF-8 JSON. Each side has
 a queue capacity of 32 messages. Exceeding either bound begins hard termination;
@@ -231,31 +256,135 @@ messages are not dropped and processing does not continue.
 
 ## Inner NDJSON Transport
 
-The SRT-wrapped worker uses stdin for requests and stdout for events. Each frame
-is one UTF-8 JSON value followed by one LF byte. There are no blank lines,
-multiline JSON values, byte payloads, path payloads outside the schemas, or
-logging on stdout.
+The SRT-wrapped worker uses stdin for requests and stdout for control events and
+output transfers. Each frame is one UTF-8 JSON value followed by one LF byte.
+There are no blank lines, multiline JSON values, raw binary bytes, path payloads
+outside the schemas, or logging on stdout. Binary output is represented only by
+canonical base64 in `output-chunk.data`.
 
 The proxy and worker both apply these hard transport limits before schema
 decoding:
 
 - 16 KiB maximum per complete line, including the LF;
 - 16 KiB maximum unterminated receive buffer;
-- 512 frames and 1 MiB total encoded bytes in each direction per job;
+- 512 control frames and 1 MiB total encoded control bytes in each direction per
+  job;
+- output transfer frames and their encoded bytes are accounted separately from
+  the control frame and byte totals;
 - one write at a time with stream backpressure;
 - 64 KiB aggregate inner stderr;
 - no recovery after malformed UTF-8, invalid JSON, schema failure, overflow,
   unexpected EOF, or invalid order.
 
-The current ordered document messages fit these bounds because file contents
-remain in the job directory; IPC carries only metadata. A future protocol that
-needs larger messages must revise and version these limits rather than silently
-raising them.
+The worker-to-proxy output union adds these exact strict frames:
 
-The proxy decodes and re-encodes every message instead of forwarding arbitrary
-JSON. It runs the document order state machine independently of the parent. The
-inner worker does the same. This gives three checks at distinct trust boundaries
-without introducing a second document state model.
+```text
+output-start {
+  protocolVersion: 1,
+  type: "output-start",
+  jobID,
+  outputID,
+  kind: "page-png" | "ocr-tsv",
+  page,
+  pageID,
+  resultID?,
+  sourcePath,
+  declaredBytes
+}
+
+output-chunk {
+  protocolVersion: 1,
+  type: "output-chunk",
+  jobID,
+  outputID,
+  sequence,
+  data
+}
+
+output-end {
+  protocolVersion: 1,
+  type: "output-end",
+  jobID,
+  outputID,
+  chunks,
+  actualBytes,
+  sha256
+}
+```
+
+`outputID` is a branded random ID that is unique for the entire job and is never
+reused, including after release or failed transfer. `resultID` is required only
+for `ocr-tsv` and forbidden for `page-png`; kind, page, page ID, and result ID
+must match the following normal event. `sequence` starts at zero and increments
+by one. `data` is canonical RFC 4648 base64 with no whitespace;
+decode followed by re-encode must produce the identical string. A non-final
+chunk decodes to exactly 10 KiB and the final chunk decodes to the exact
+remaining 1 through 10 KiB. A declared zero-byte TSV has no chunk frames. These
+rules make the expected chunk count exact from `declaredBytes`; tiny-chunk frame
+flooding is not permitted. Ten KiB encodes to at most 13,656 base64 characters,
+leaving more than 2 KiB of the 16-KiB line for the closed metadata schema and LF.
+
+Payload limits are operation-derived rather than charged to the 1-MiB control
+budget:
+
+- one `page-png` is bounded by the request's PNG limit and the hard 64-MiB
+  `MaxPngBytesPerPage`; its page dimensions must already satisfy the 10,000-pixel
+  side and 25,000,000-pixel raster limits;
+- one `ocr-tsv` is bounded by the request's TSV limit and the hard 32-MiB
+  `MaxTsvBytesPerPage`;
+- a standalone OCR job has a cumulative decoded payload bound of one requested
+  TSV limit;
+- a render job has a cumulative decoded payload bound of
+  `pageCount * (requested PNG limit + requested TSV limit)`, at most 9,600 MiB
+  (10,066,329,600 bytes) for 100 pages at hard limits;
+- incomplete output plus completed pending files awaiting release must remain
+  within the request's temporary-byte limit and the hard 250-MiB
+  `MaxTemporaryBytes` at every point.
+
+Each transfer has exactly one start, its exact calculated number of chunks, and
+one end. Only one transfer may be active, and at most one completed transfer may
+await its matching normal event. Duplicate IDs, duplicate starts or ends,
+interleaved transfers, missing or repeated sequence numbers, chunks after end,
+an event before end, an unrelated event after end, trailing chunks, EOF during a
+transfer, and payload after a terminal event are fatal protocol failures. Start
+declarations, decoded chunk bytes, end `actualBytes`, event `pngBytes` or
+`tsvBytes`, cumulative payload accounting, and the proxy's actual file size must
+all agree. The event's `outputID` must equal the transfer ID. The proxy-computed
+streaming SHA-256 must equal the lowercase digest in `output-end`, the worker
+event's `outputSha256`, and a second digest computed from the closed pending
+file. The proxy places that verified digest in the outer normal event.
+
+The `sourcePath` and the path in the following worker event must be the same
+canonical relative POSIX path, within the existing 1,024-character relative-
+path limit, with the required `pages/` plus `.png` or `ocr/` plus `.tsv` shape.
+Absolute, empty, dot, traversal, backslash, NUL, drive, UNC, device, alternate-
+data-stream, non-normalized, and wrong-prefix or extension forms are rejected.
+The path is correlation metadata only: the proxy never opens it. The proxy
+instead creates a random, exclusive, non-link mode-`0600` destination beneath
+the verified pending root, writes and hashes decoded bytes serially, flushes and
+closes the file, reopens it without following links, and verifies identity,
+size, and digest before publishing its own pending-relative path in the normal
+event.
+
+Output frame counts are bounded by declared bytes and the exact chunk rule, not
+by the 512-control-frame ceiling. At hard limits a PNG needs at most 6,554 chunk
+frames, a TSV at most 3,277, and a 100-page render/OCR job at most 983,100 chunk
+frames plus exactly two framing messages per output. A future protocol that
+needs larger control messages, chunks, output types, or payload totals must
+revise and version these limits rather than silently raising them.
+
+The proxy decodes and re-encodes every control message instead of forwarding
+arbitrary JSON. It runs the document order state machine independently of the
+parent and advances it for an output event only after the matching transfer is
+stable. The inner worker does the same. This gives three checks at distinct
+trust boundaries without introducing a second document state model.
+
+The worker serializes and awaits every chunk write. The proxy pauses or stops
+reading stdout until the current decoded chunk has been fully written, bounds
+its parser and pending write queue, and resumes only after drain. It never
+buffers a whole output, forwards chunks over Node IPC, or drops frames. A stalled
+write remains subject to the page/job deadline and cancellation path; queue or
+stream overflow terminates the job.
 
 NDJSON is selected for the inner boundary because stdin/stdout survive the SRT
 wrappers on all target platforms. Node IPC remains limited to the trusted
@@ -288,8 +417,11 @@ allowAppleEvents             = false
 allowPty                     = false
 ```
 
-The runtime root and job root must be absolute, canonical, disjoint, non-link
-directories. Neither may contain the other. The inner bootstrap, worker,
+The runtime root, job root, and pending root must be absolute, canonical,
+pairwise disjoint, non-link directories. The job and pending roots must be
+siblings beneath the recorded private parent, and neither may contain another.
+The pending root is deliberately absent from the SRT policy. The inner
+bootstrap, worker,
 bundled Tesseract, trained data, PDF.js assets, canvas JavaScript, and target-
 native canvas binary must resolve beneath the verified runtime root. The proxy
 and SRT assets must resolve beneath the trusted packaged sandbox-runtime root,
@@ -321,9 +453,9 @@ its persistent defaults, including `/tmp/claude`, `/private/tmp/claude`,
 `~/.npm/_logs`, and `~/.claude/debug`, where applicable. The effective wrapped
 policy must be inspected in tests. On Windows the deny-write inventory also
 covers the sandbox account profile and temp tree, public/shared writable roots,
-the runtime, application resources, and the SRT assets. A version or host whose
-effective rights cannot be reduced to the job root plus required non-persistent
-devices is not release-compatible.
+the pending root, runtime, application resources, and the SRT assets. A version
+or host whose effective rights cannot be reduced to the job root plus required
+non-persistent devices is not release-compatible.
 
 The proxy passes no ask callback, does not enable the log monitor as an
 enforcement dependency, and requires `isSupportedPlatform()`, asset checks, and
@@ -416,14 +548,35 @@ must also install it without user write permission where the target platform
 supports that mode. The manifest and detached attestation remain outside
 document-controlled storage.
 
-The parent accepts an output only when it is a non-link regular file beneath the
-recorded job root, its real path remains beneath that root, and its actual size
-equals the bounded declared size. Page and TSV paths retain their required
-prefixes. Before page release, the trusted caller parses the output or copies it
-to caller-owned pending staging outside the job root. It does not durably publish
-an artifact or user-visible success until proxy shutdown and verified job-root
-deletion pass. Release removes that page's temporary files before the next page
-allocation.
+The parent never resolves, opens, stats, copies, or deletes a worker-reported
+path. It accepts only the proxy-generated pending-relative path in a normal
+`page-ready` or `ocr-result`, resolves it beneath the recorded pending root, and
+opens it without following links after rechecking the pending-root and file
+identity, bounded size, and expected digest metadata. The pending root is a
+sibling of, not a child of, the sandbox-writable job root.
+
+The current parent-side copy from `jobRoot/<worker outputPath>` into pending
+staging is removed. There is no fallback that opens a worker path after the
+sandbox exits or after an event. The proxy's streamed destination is the first
+and only trusted-side copy.
+
+For a rendered page, the caller may use the pending PNG and TSV only within the
+scoped page callback. Before sending `release-page`, the parent closes all
+handles, deletes both exact pending files, verifies their absence, and sends the
+release. The proxy verifies those published destinations are absent before it
+forwards release to the worker; the worker then removes its own page/TSV files
+inside the job root. For standalone OCR, the parent reads and validates the TSV,
+deletes it, and verifies absence before accepting completion. Failure to delete
+or verify an expected pending output fails the job. No artifact or user-visible
+success is durably published until proxy shutdown and verified deletion of both
+per-job roots pass.
+
+Audit and failure records may include curated codes, job/page/output IDs, output
+kind, bounded byte counts, and SHA-256 where the audit policy permits it. They
+must never contain `output-chunk.data`, decoded bytes, base64 payload fragments,
+document text, worker source paths, pending host paths, or raw stderr. Output
+payload frames stay entirely on the inner stdout/proxy boundary and never enter
+Node IPC or general diagnostic logging.
 
 ## Cancellation And Hard Termination
 
@@ -437,9 +590,10 @@ The shutdown order is:
 2. The proxy aborts SRT wrapping or writes one document `CancelRequest` if the
    inner worker is running, closes further command admission, and starts the
    existing two-second cancellation grace.
-3. The inner worker aborts render work, terminates the active Tesseract tree,
-   removes generated page/TSV files, and emits `cancelled` when cooperative
-   cleanup completes.
+3. The inner worker aborts render and output streaming, terminates the active
+   Tesseract tree, removes generated page/TSV files, and emits `cancelled` when
+   cooperative cleanup completes. The proxy closes and removes every partial or
+   completed-but-unpublished pending file it created.
 4. At grace expiry, transport overflow, or inner failure, the proxy hard-kills
    the complete inner process tree. POSIX uses a dedicated process group;
    Windows uses the SRT-owned Job Object and target-specific tree termination.
@@ -449,19 +603,21 @@ The shutdown order is:
    every tracked descendant/helper, then waits for confirmed exits within a
    bounded deadline.
 7. Only after process exit and SRT teardown does the parent delete and verify the
-   job root.
+   job and pending roots. Published pending files remain parent-owned and are
+   removed by its finalizer if scoped release did not already remove them.
 
 The budgets are fixed: two seconds for cooperative cancellation, two seconds for
 proxy-owned hard tree reaping, two seconds for command cleanup/reset, two seconds
-for parent-owned proxy/tree reaping, and two seconds for job-directory deletion.
+for parent-owned proxy/tree reaping, and two seconds for per-job root deletion.
 Normal completion uses the same two-second reset and deletion budgets. The
 parent's overall cleanup watchdog is ten seconds from the start of shutdown and
 kills the proxy when a synchronous SRT cleanup call blocks its event loop.
 
 No successful result is returned when descendant exit, proxy exit, command
-cleanup, reset, or deletion cannot be confirmed. A best-effort kill call without
-observed exit is a cleanup failure. The proxy and parent must remove listeners,
-timers, stream references, and abort handlers on every terminal path.
+cleanup, reset, partial-output cleanup, or root deletion cannot be confirmed. A
+best-effort kill call without observed exit is a cleanup failure. The proxy and
+parent must close output handles and remove listeners, timers, stream references,
+queues, digest state, and abort handlers on every terminal path.
 
 The parent remains the final reaper because a proxy can crash before running its
 finalizer. The proxy remains the primary SRT owner because only it owns the
@@ -473,24 +629,27 @@ document runtime unhealthy. The parent rejects later jobs until a separately
 implemented native reconciliation/probe passes or the sidecar restarts. A fresh
 proxy is not treated as proof that stale ACL, proxy, or helper state was removed.
 
-## Verified Job-Directory Deletion
+## Verified Per-Job Directory Deletion
 
 The parent creates each job under a process-private parent directory that the
-inner worker cannot modify. It records the canonical parent, random child name,
-and child filesystem identity before launch. The child receives access to the
-job directory, not to its parent.
+inner worker cannot modify. It records the canonical parent, random job and
+pending child names, and all three filesystem identities before launch. The
+sandbox receives access only to the job child, not to its parent or pending
+sibling. The proxy receives both child paths but creates output files only under
+the pending child.
 
 Final deletion follows these rules:
 
 1. Confirm that the proxy and tracked descendants have exited.
-2. Re-check the parent identity and that the child entry is the original
-   non-link directory. If identity changed, do not recurse into the replacement;
-   return a safe cleanup failure.
-3. Remove the exact child recursively without following a replacement link.
+2. Re-check the parent identity and that both child entries are the original
+   non-link directories. If either identity changed, do not recurse into the
+   replacement; return a safe cleanup failure.
+3. Remove the exact job and pending children recursively without following a
+   replacement link.
 4. Retry transient sharing violations only within a fixed two-second cleanup
    budget after SRT reset.
-5. Verify `lstat(jobRoot)` reports absence and the private parent's directory
-   listing no longer contains the random child name.
+5. Verify `lstat(jobRoot)` and `lstat(pendingRoot)` report absence and the private
+   parent's directory listing contains neither random child name.
 6. Remove the private parent when it is empty and verify its absence.
 
 Deletion errors are not swallowed. A completed render/OCR result remains
@@ -563,12 +722,14 @@ that runs the engine through the proxy and native policy.
 - Forked or detached descendants surviving cancellation, timeout, worker exit,
   proxy failure, or parent interruption.
 - Protocol confusion, version mismatch, job-ID substitution, out-of-order page
-  reuse, malformed JSON, transport flooding, diagnostics flooding, and output
-  path escape.
+  reuse, malformed JSON/base64, control or payload flooding, duplicate or
+  interleaved output transfers, digest substitution, diagnostics flooding, and
+  output path escape.
 - Environment-based native loader injection, proxy inheritance, credential
   inheritance, system-font discovery, system binary substitution, and shell
   metacharacter injection.
-- Sensitive input, raster, or TSV residue after a job.
+- Sensitive input, raster, TSV, partial transfer, or pending-output residue after
+  a job.
 
 ### Out of scope
 
@@ -617,9 +778,9 @@ target is enabled only when its packaged native test passes on that target.
 - SRT uses the target-native packaged `srt-win` executable, a dedicated
   `srt-sandbox` local account, per-session filesystem ACLs, and machine-wide WFP
   filters provisioned by an elevated one-time installer action.
-- Runtime, job, proxy, and system roots must be absolute local fixed-volume paths.
-  UNC paths, device paths, alternate data streams, reparse points, and unsupported
-  filesystems are rejected.
+- Runtime, job, pending, proxy, and system roots must be absolute local fixed-
+  volume paths. UNC paths, device paths, alternate data streams, reparse points,
+  and unsupported filesystems are rejected.
 - The job-root grant is scoped to that directory. The sandbox account receives
   read/execute access to the verified runtime and audited system loader roots and
   modify access only to the job root.
@@ -638,13 +799,22 @@ satisfy a release gate.
 - Reject unknown versions, fields, types, job IDs, paths, target substitutions,
   starts, continuations, duplicate launches, duplicate terminal messages, and
   every invalid state transition.
-- Exercise 16-KiB line, unterminated-buffer, 512-frame, 1-MiB aggregate, 64-KiB
-  diagnostic, Node IPC message, and queue boundaries at exact limit and limit
-  plus one.
+- Exercise 16-KiB line and unterminated-buffer, 512 control-frame, 1-MiB control
+  aggregate, 10-KiB decoded chunk, per-output, dynamic cumulative payload,
+  250-MiB live temporary, 64-KiB diagnostic, Node IPC message, and queue
+  boundaries at exact limit and limit plus one.
 - Exercise partial UTF-8, split lines, combined lines, malformed UTF-8, malformed
-  JSON, blank lines, EOF without LF, backpressure, disconnect, and stream error.
-- Confirm raw stderr, exceptions, paths, environment values, and document bytes
-  cannot enter proxy failure messages.
+  JSON, noncanonical base64, blank lines, EOF without LF, backpressure,
+  disconnect, and stream error.
+- Reject duplicate IDs, starts, ends, chunks, missing chunks, short non-final
+  chunks, sequence gaps, interleaving, trailing chunks, mismatched source paths,
+  wrong output kind/page IDs, declared/event/actual byte disagreement, cumulative
+  overflow, digest mismatch, and an output event before stable completion.
+- Fuzz absolute, traversal, backslash, drive, UNC, device, ADS, NUL,
+  non-normalized, wrong-prefix, and wrong-extension worker path fields; confirm
+  neither proxy nor parent opens them.
+- Confirm raw stderr, exceptions, host paths, environment values, base64 chunks,
+  and document bytes cannot enter proxy messages, diagnostics, or audit records.
 
 ### Policy and environment tests
 
@@ -678,15 +848,21 @@ Run from each packaged target with no system Tesseract available:
 - crash and disconnect the worker and proxy at each lifecycle phase;
 - hold files open during cleanup and verify bounded failure rather than false
   success;
+- cancel or crash before start, during every chunk position, after end, after
+  stable close, and after event publication; confirm partial and pending output
+  cleanup and no event publication for incomplete transfers;
+- confirm the sandbox cannot discover or access the pending sibling and the
+  parent never opens a worker-root output path;
 - confirm SRT command cleanup and reset execute once and that no proxy is reused;
-- confirm the job and private parent directories are absent after every clean,
-  failed, cancelled, timed-out, overflowed, and crashed run.
+- confirm the job, pending, and private parent directories are absent after every
+  clean, failed, cancelled, timed-out, overflowed, and crashed run.
 
 ### Existing document behavior
 
 - Preserve real PDF.js/native-canvas rendering, real Tesseract TSV, image OCR,
-  100/101-page boundaries, per-page release, output byte checks, page order,
-  per-page deadlines, whole-job deadlines, and two-job global concurrency.
+  100/101-page boundaries, per-page pending-output deletion and release, output
+  byte/digest checks, page order, per-page deadlines, whole-job deadlines, and
+  two-job global concurrency.
 - Run offline packaged probe/render/OCR fixtures after installation on all six
   targets.
 - Confirm no document tool is registered when confinement availability fails.
@@ -704,8 +880,8 @@ Run from each packaged target with no system Tesseract available:
 
 ## Rollout
 
-1. Add the browser-safe launch/control contracts and bounded NDJSON transport
-   with pure state-machine and hostile-stream tests.
+1. Add the browser-safe launch/control and strict output-transfer contracts plus
+   bounded NDJSON transport with pure state-machine and hostile-stream tests.
 2. Add the standalone one-job proxy and adapt the inner worker transport. Keep
    the default OpenCode service unavailable until a production launcher is
    supplied.
