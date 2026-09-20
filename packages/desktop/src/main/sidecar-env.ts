@@ -1,9 +1,8 @@
 import {
   DOCUMENT_RUNTIME_MANIFEST_SHA256,
-  DOCUMENT_RUNTIME_ATTESTATION,
-  DOCUMENT_RUNTIME_OVERRIDE,
   DOCUMENT_RUNTIME_PATH,
-  DOCUMENT_RUNTIME_RELEASE_ROOT,
+  DOCUMENT_RUNTIME_PROXY_ASSETS_ROOT,
+  DOCUMENT_RUNTIME_PROXY_PATH,
   DOCUMENT_RUNTIME_REQUIRE_RELEASE_READY,
   type ResolvedDocumentRuntime,
 } from "./document-runtime"
@@ -27,12 +26,10 @@ export function createSidecarEnv(
   delete env.AWS_EC2_METADATA_SERVICE_ENDPOINT
   delete env.GCE_METADATA_HOST
   delete env.GCE_METADATA_IP
-  delete env[DOCUMENT_RUNTIME_PATH]
-  delete env[DOCUMENT_RUNTIME_MANIFEST_SHA256]
-  delete env[DOCUMENT_RUNTIME_REQUIRE_RELEASE_READY]
-  delete env[DOCUMENT_RUNTIME_OVERRIDE]
-  delete env[DOCUMENT_RUNTIME_RELEASE_ROOT]
-  delete env[DOCUMENT_RUNTIME_ATTESTATION]
+  for (const key of Object.keys(env)) {
+    const normalized = key.toUpperCase()
+    if (normalized.startsWith("KOALA_DOCUMENT_RUNTIME_") || normalized === "KOALA_SANDBOX_WORKER_PATH") delete env[key]
+  }
   if (platform === "linux") delete env.LD_PRELOAD
 
   env.AWS_EC2_METADATA_DISABLED = "true"
@@ -45,6 +42,8 @@ export function createSidecarEnv(
     env[DOCUMENT_RUNTIME_PATH] = documentRuntime.root
     env[DOCUMENT_RUNTIME_MANIFEST_SHA256] = documentRuntime.manifestSha256
     env[DOCUMENT_RUNTIME_REQUIRE_RELEASE_READY] = String(documentRuntime.releaseReady)
+    env[DOCUMENT_RUNTIME_PROXY_PATH] = documentRuntime.proxyPath
+    env[DOCUMENT_RUNTIME_PROXY_ASSETS_ROOT] = documentRuntime.proxyAssetsRoot
   }
   return env
 }

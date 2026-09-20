@@ -396,6 +396,13 @@ The proxy uses the repository-pinned `@anthropic-ai/sandbox-runtime@0.0.76` via
 its library API. An SRT upgrade is a security-sensitive change requiring policy,
 packaging, protocol, and native tests before release.
 
+The pinned package is patched so Java-agent, Linux seccomp, and Windows helper
+paths are explicit-only. A configured path is snapshotted by regular-file
+identity and SHA-256 and checked again before command wrapping; a missing,
+linked, replaced, or changed asset is terminal. The document proxy contains no
+package-relative, global npm, system-prefix, Homebrew, or home-directory asset
+lookup fallback.
+
 The policy is constructed by Koala, not read from a user settings file:
 
 ```text
@@ -673,7 +680,10 @@ Desktop development behavior is:
 
 - `predev` and development `prebuild` build the OpenCode Node sidecar/proxies and
   the target-specific development document runtime.
-- The development resolver selects the built proxy and explicit target runtime.
+- The development resolver selects only the built proxy/assets tree and the
+  explicitly built host-target development runtime. Resolution may succeed;
+  native SRT policy and platform evidence checks remain authoritative and no
+  weaker execution fallback is introduced.
 - An absolute document-runtime override remains development-only and still
   requires manifest verification.
 - A missing proxy, SRT dependency, runtime, or strict native capability reports
@@ -690,6 +700,13 @@ Desktop beta/production behavior is:
 - The packaged resolver accepts only absolute paths beneath
   `process.resourcesPath`, checks target architecture, and returns the verified
   runtime root, digest, release-ready state, proxy path, and SRT asset root.
+- The packaged resolver returns document configuration only when the detached
+  attestation contains versioned confinement evidence bound to the target,
+  runtime-manifest digest, proxy digest, sandbox-runtime-manifest digest, SRT and
+  policy versions, native test report, packaged smoke report, signing report,
+  exact signed-file inventory, and dependency report by SHA-256. Boolean pass
+  claims are not evidence. Absence or mismatch stops beta/prod staging and keeps
+  packaged document execution unavailable.
 - The Desktop main process strips inherited document-runtime/proxy variables and
   supplies only resolver-produced values to the sidecar, including
   `KOALA_DOCUMENT_RUNTIME_PROXY_PATH` and

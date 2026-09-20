@@ -7,6 +7,7 @@ import {
   documentRuntimeAttestation,
   prepareReleaseDocumentRuntime,
   stagedDocumentRuntime,
+  verifyPreparedSandboxRuntime,
 } from "./scripts/document-runtime"
 import { productionRuntimeFixture } from "./test/fixture/document-runtime"
 
@@ -20,9 +21,13 @@ const previousTrustedAttestation = process.env.KOALA_DOCUMENT_RUNTIME_ATTESTATIO
 beforeAll(async () => {
   releaseSource = await mkdtemp(path.join(os.tmpdir(), "desktop-config-runtime-"))
   trustedAttestation = `${releaseSource}.attestation.json`
-  await productionRuntimeFixture(releaseSource, releaseTarget, trustedAttestation)
   process.env.RUST_TARGET = releaseTarget
   process.env.KOALA_DOCUMENT_RUNTIME_ATTESTATION = trustedAttestation
+  const sandboxRuntime = await verifyPreparedSandboxRuntime({ RUST_TARGET: releaseTarget })
+  await productionRuntimeFixture(releaseSource, releaseTarget, trustedAttestation, true, false, {
+    proxySha256: sandboxRuntime.documentProxySha256,
+    sandboxRuntimeManifestSha256: sandboxRuntime.manifestSha256,
+  })
   await prepareReleaseDocumentRuntime({
     source: releaseSource,
     trustedAttestation,
@@ -121,8 +126,34 @@ test("bundles the sandbox worker and native assets outside the app archive", asy
   expect(config.extraResources).toContainEqual({
     from: "../opencode/dist/node/sandbox-runtime/",
     to: "sandbox-runtime/",
-    filter: ["**/*"],
+    filter: [
+      "sandbox-worker.mjs",
+      "document-runtime-proxy.mjs",
+      "sandbox-runtime.manifest.json",
+      "LICENSE",
+      "vendor/**/*",
+    ],
   })
+  expect(config.files).not.toContain("../opencode/dist/node/sandbox-runtime/**/*")
+  const manifest = await Bun.file("../opencode/dist/node/sandbox-runtime/sandbox-runtime.manifest.json").json()
+  expect(manifest.target).toBe(releaseTarget)
+  expect(manifest.files.map((file: { readonly path: string }) => file.path)).toEqual(
+    expect.arrayContaining([
+      "sandbox-worker.mjs",
+      "document-runtime-proxy.mjs",
+      "LICENSE",
+      "vendor/java-proxy-agent/srt-proxy-agent.jar",
+      "vendor/srt-win/x64/srt-win.exe",
+    ]),
+  )
+})
+
+test("verifies confinement evidence before evaluating package resources", async () => {
+  const config = await Bun.file("electron-builder.config.ts").text()
+  const staging = await Bun.file("scripts/document-runtime.ts").text()
+  expect(config).toContain('["./scripts/document-runtime.ts", "verify"]')
+  expect(staging).toContain("matchesConfinementEvidence")
+  expect(staging).toContain("Document confinement evidence is missing or does not match packaged resources")
 })
 
 for (const channel of ["beta", "prod"] as const) {
@@ -158,6 +189,12 @@ for (const channel of ["beta", "prod"] as const) {
       from: documentRuntimeAttestation,
       to: "document-runtime.attestation.json",
     })
+    expect(config.files).toContain("!resources/document-runtime{,/**/*}")
+    expect(config.files).toContain("!resources/document-runtime.attestation.json")
+    const manifest = await Bun.file(path.join(stagedDocumentRuntime, "manifest.json")).json()
+    expect(manifest.files.map((file: { readonly path: string }) => file.path)).toEqual(
+      expect.arrayContaining(["worker/bootstrap.js", "worker/worker.js"]),
+    )
   })
 }
 

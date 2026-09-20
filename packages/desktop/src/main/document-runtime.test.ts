@@ -5,6 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { resolveDocumentRuntime } from "./document-runtime"
+import { resolveSandboxRuntime } from "./sandbox-runtime"
 import { productionRuntimeFixture } from "../../test/fixture/document-runtime"
 
 const target = "x86_64-pc-windows-msvc" as const
@@ -18,7 +19,18 @@ describe("document runtime resolution", () => {
   test("resolves a release-ready packaged runtime from Electron resources", async () => {
     const resourcesPath = await temporaryDirectory()
     const runtime = path.join(resourcesPath, "document-runtime")
-    await productionRuntimeFixture(runtime, target, path.join(resourcesPath, "document-runtime.attestation.json"))
+    const sandboxRuntime = await packagedSandboxFixture(resourcesPath)
+    await productionRuntimeFixture(
+      runtime,
+      target,
+      path.join(resourcesPath, "document-runtime.attestation.json"),
+      true,
+      false,
+      {
+        proxySha256: sandboxRuntime.documentProxySha256,
+        sandboxRuntimeManifestSha256: sandboxRuntime.manifestSha256,
+      },
+    )
 
     const resolved = await resolveDocumentRuntime({
       packaged: true,
@@ -27,13 +39,31 @@ describe("document runtime resolution", () => {
       environment: { KOALA_DOCUMENT_RUNTIME_OVERRIDE: "C:\\untrusted\\runtime" },
       platform: "win32",
       architecture: "x64",
+      sandboxRuntime,
     })
 
     expect(resolved).toEqual({
       root: await realpath(runtime),
       manifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       releaseReady: true,
+      proxyPath: sandboxRuntime.documentProxyPath,
+      proxyAssetsRoot: sandboxRuntime.root,
     })
+
+    const attestationPath = path.join(resourcesPath, "document-runtime.attestation.json")
+    const attestation = await Bun.file(attestationPath).json()
+    attestation.confinementEvidence.proxySha256 = "0".repeat(64)
+    await writeFile(attestationPath, JSON.stringify(attestation))
+    expect(
+      await resolveDocumentRuntime({
+        packaged: true,
+        resourcesPath,
+        moduleURL: pathToFileURL(path.resolve("out/main/index.js")).href,
+        platform: "win32",
+        architecture: "x64",
+        sandboxRuntime,
+      }),
+    ).toBeUndefined()
   })
 
   test("resolves the host-target build in development", async () => {
@@ -41,6 +71,7 @@ describe("document runtime resolution", () => {
     const desktop = path.join(workspace, "packages", "desktop")
     const runtime = path.join(workspace, "packages", "document-runtime", "dist", target)
     await fixture(runtime, false)
+    const sandboxRuntime = await developmentSandboxFixture(workspace)
 
     expect(
       await resolveDocumentRuntime({
@@ -50,23 +81,29 @@ describe("document runtime resolution", () => {
         environment: {},
         platform: "win32",
         architecture: "x64",
+        sandboxRuntime,
       }),
     ).toEqual({
       root: await realpath(runtime),
       manifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       releaseReady: false,
+      proxyPath: sandboxRuntime.documentProxyPath,
+      proxyAssetsRoot: sandboxRuntime.root,
     })
   })
 
   test("uses only an absolute explicit override in development", async () => {
     const runtime = await temporaryDirectory()
     await fixture(runtime, false)
+    const workspace = await temporaryDirectory()
+    const sandboxRuntime = await developmentSandboxFixture(workspace)
     const input = {
       packaged: false,
       resourcesPath: path.resolve("unused"),
-      moduleURL: pathToFileURL(path.resolve("workspace/packages/desktop/out/main/index.js")).href,
+      moduleURL: pathToFileURL(path.join(workspace, "packages/desktop/out/main/index.js")).href,
       platform: "win32" as const,
       architecture: "x64",
+      sandboxRuntime,
     }
 
     expect(
@@ -78,6 +115,8 @@ describe("document runtime resolution", () => {
       root: await realpath(runtime),
       manifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       releaseReady: false,
+      proxyPath: sandboxRuntime.documentProxyPath,
+      proxyAssetsRoot: sandboxRuntime.root,
     })
     expect(
       await resolveDocumentRuntime({
@@ -90,16 +129,19 @@ describe("document runtime resolution", () => {
   test("rejects changed runtime files", async () => {
     const runtime = await temporaryDirectory()
     await fixture(runtime, false)
+    const workspace = await temporaryDirectory()
+    const sandboxRuntime = await developmentSandboxFixture(workspace)
     await writeFile(path.join(runtime, "worker", "worker.js"), "changed")
 
     expect(
       await resolveDocumentRuntime({
         packaged: false,
         resourcesPath: path.resolve("unused"),
-        moduleURL: pathToFileURL(path.resolve("workspace/packages/desktop/out/main/index.js")).href,
+        moduleURL: pathToFileURL(path.join(workspace, "packages/desktop/out/main/index.js")).href,
         environment: { KOALA_DOCUMENT_RUNTIME_OVERRIDE: runtime },
         platform: "win32",
         architecture: "x64",
+        sandboxRuntime,
       }),
     ).toBeUndefined()
   })
@@ -112,6 +154,7 @@ describe("document runtime resolution", () => {
       path.join(resourcesPath, "document-runtime.attestation.json"),
       false,
     )
+    const sandboxRuntime = await packagedSandboxFixture(resourcesPath)
 
     expect(
       await resolveDocumentRuntime({
@@ -120,6 +163,7 @@ describe("document runtime resolution", () => {
         moduleURL: pathToFileURL(path.resolve("out/main/index.js")).href,
         platform: "win32",
         architecture: "x64",
+        sandboxRuntime,
       }),
     ).toBeUndefined()
   })
@@ -129,6 +173,7 @@ describe("document runtime resolution", () => {
     const runtime = path.join(resourcesPath, "document-runtime")
     const attestation = path.join(resourcesPath, "document-runtime.attestation.json")
     await productionRuntimeFixture(runtime, target, attestation)
+    const sandboxRuntime = await packagedSandboxFixture(resourcesPath)
     await rm(attestation)
 
     expect(
@@ -138,8 +183,51 @@ describe("document runtime resolution", () => {
         moduleURL: pathToFileURL(path.resolve("out/main/index.js")).href,
         platform: "win32",
         architecture: "x64",
+        sandboxRuntime,
       }),
     ).toBeUndefined()
+  })
+
+  test("rejects a missing or mismatched sandbox runtime configuration", async () => {
+    const workspace = await temporaryDirectory()
+    const desktop = path.join(workspace, "packages", "desktop")
+    const runtime = path.join(workspace, "packages", "document-runtime", "dist", target)
+    await fixture(runtime, false)
+    const input = {
+      packaged: false,
+      resourcesPath: path.resolve("unused"),
+      moduleURL: pathToFileURL(path.join(desktop, "out/main/index.js")).href,
+      environment: {},
+      platform: "win32" as const,
+      architecture: "x64",
+    }
+    expect(await resolveDocumentRuntime(input)).toBeUndefined()
+    const sandboxRuntime = await developmentSandboxFixture(workspace)
+    expect(
+      await resolveDocumentRuntime({
+        ...input,
+        sandboxRuntime: { ...sandboxRuntime, documentProxyPath: path.join(sandboxRuntime.root, "missing-proxy.mjs") },
+      }),
+    ).toBeUndefined()
+  })
+
+  test("keeps packaged runtimes unavailable without confinement evidence", async () => {
+    const resourcesPath = await temporaryDirectory()
+    const runtime = path.join(resourcesPath, "document-runtime")
+    const attestation = path.join(resourcesPath, "document-runtime.attestation.json")
+    const sandboxRuntime = await packagedSandboxFixture(resourcesPath)
+    await productionRuntimeFixture(runtime, target, attestation)
+    expect(
+      await resolveDocumentRuntime({
+        packaged: true,
+        resourcesPath,
+        moduleURL: pathToFileURL(path.resolve("out/main/index.js")).href,
+        platform: "win32",
+        architecture: "x64",
+        sandboxRuntime,
+      }),
+    ).toBeUndefined()
+
   })
 })
 
@@ -187,6 +275,71 @@ async function fixture(root: string, releaseReady: boolean) {
         mode: 0o644,
       })),
       dependencies: [],
+    }),
+  )
+}
+
+async function packagedSandboxFixture(resourcesPath: string) {
+  const root = path.join(resourcesPath, "sandbox-runtime")
+  await sandboxFixture(root)
+  const resolved = await resolveSandboxRuntime({
+    packaged: true,
+    resourcesPath,
+    moduleURL: pathToFileURL(path.resolve("out/main/index.js")).href,
+    platform: "win32",
+    architecture: "x64",
+  })
+  if (!resolved) throw new Error("Sandbox runtime fixture did not resolve")
+  return resolved
+}
+
+async function developmentSandboxFixture(workspace: string) {
+  const root = path.join(workspace, "packages", "opencode", "dist", "node", "sandbox-runtime")
+  await sandboxFixture(root)
+  const resolved = await resolveSandboxRuntime({
+    packaged: false,
+    resourcesPath: path.resolve("unused"),
+    moduleURL: pathToFileURL(path.join(workspace, "packages/desktop/out/main/index.js")).href,
+    platform: "win32",
+    architecture: "x64",
+  })
+  if (!resolved) throw new Error("Sandbox runtime fixture did not resolve")
+  return resolved
+}
+
+async function sandboxFixture(root: string) {
+  const helper = Buffer.alloc(512)
+  helper.write("MZ", 0, "ascii")
+  helper.writeUInt32LE(128, 0x3c)
+  helper.write("PE\0\0", 128, "binary")
+  helper.writeUInt16LE(0x8664, 132)
+  helper.writeUInt16LE(0xf0, 148)
+  helper.writeUInt16LE(0x0002, 150)
+  helper.writeUInt16LE(0x20b, 152)
+  const contents = new Map<string, Buffer>([
+    ["LICENSE", Buffer.from("license")],
+    ["document-runtime-proxy.mjs", Buffer.from("proxy")],
+    ["sandbox-worker.mjs", Buffer.from("worker")],
+    ["vendor/java-proxy-agent/srt-proxy-agent.jar", Buffer.from("jar")],
+    ["vendor/srt-win/x64/srt-win.exe", helper],
+  ])
+  for (const [file, body] of contents) {
+    const absolute = path.join(root, ...file.split("/"))
+    await mkdir(path.dirname(absolute), { recursive: true })
+    await writeFile(absolute, body, { mode: file.endsWith(".exe") ? 0o755 : 0o644 })
+    await chmod(absolute, file.endsWith(".exe") ? 0o755 : 0o644)
+  }
+  await writeFile(
+    path.join(root, "sandbox-runtime.manifest.json"),
+    JSON.stringify({
+      manifestVersion: 1,
+      target,
+      files: Array.from(contents, ([file, body]) => ({
+        path: file,
+        sha256: createHash("sha256").update(body).digest("hex"),
+        bytes: body.byteLength,
+        mode: file.endsWith(".exe") ? 0o755 : 0o644,
+      })),
     }),
   )
 }

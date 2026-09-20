@@ -363,6 +363,20 @@ assets/license, document bootstrap/runtime, and detached attestation outside
 `app.asar`. Clean generated/staged directories before every build and assert no
 obsolete proxy/bootstrap remains.
 
+Phase 6 review amendment: development resolves only the built host-target
+runtime and built proxy/assets tree. Beta/prod staging and package configuration
+must reject absent or mismatched versioned confinement evidence before
+packaging. That evidence binds the runtime and sandbox manifests, proxy, native
+test report, packaged smoke report, signing report, exact signed-file inventory,
+and dependency report by SHA-256; Boolean pass claims are insufficient. The
+sandbox manifest has a code-owned exact mode profile (`0644` for JavaScript,
+JAR, license, and manifest inputs; `0755` for native helpers), and helper parsing
+requires complete target-correct PE or ELF64 little-endian headers. Inherited
+runtime/proxy keys and `KOALA_SANDBOX_WORKER_PATH` are removed before trusted
+resolver values are added. The pinned SRT patch accepts only explicit assets,
+rechecks their identity and digest before wrapping, and provides no ambient
+asset lookup fallback.
+
 Verification:
 
 ```text

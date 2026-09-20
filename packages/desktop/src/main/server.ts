@@ -6,7 +6,7 @@ import { resolveDocumentRuntime } from "./document-runtime"
 import { getLogger } from "./logging"
 import { getUserShell, loadShellEnv } from "./shell-env"
 import { createSidecarEnv } from "./sidecar-env"
-import { resolveSandboxWorkerPath } from "./sandbox-runtime"
+import { resolveSandboxRuntime } from "./sandbox-runtime"
 import { getStore } from "./store"
 import { DEFAULT_SERVER_URL_KEY } from "./store-keys"
 
@@ -64,7 +64,7 @@ export async function spawnLocalServer(
   options: SpawnLocalServerOptions,
 ) {
   const sidecar = join(dirname(fileURLToPath(import.meta.url)), "sidecar.js")
-  const sandboxWorker = resolveSandboxWorkerPath({
+  const sandboxRuntime = await resolveSandboxRuntime({
     packaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
     moduleURL: import.meta.url,
@@ -73,10 +73,11 @@ export async function spawnLocalServer(
     packaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
     moduleURL: import.meta.url,
+    sandboxRuntime,
   })
   const child = utilityProcess.fork(sidecar, [], {
     cwd: process.cwd(),
-    env: createSidecarEnv(process.env, process.platform, sandboxWorker, documentRuntime),
+    env: createSidecarEnv(process.env, process.platform, sandboxRuntime?.workerPath, documentRuntime),
     serviceName: SIDECAR_SERVICE_NAME,
     stdio: "pipe",
   })

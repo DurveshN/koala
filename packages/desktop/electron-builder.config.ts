@@ -57,6 +57,12 @@ const documentRuntimeResources: Array<{ from: string; to: string; filter: string
         },
       ]
 
+execFileSync("bun", ["./scripts/document-runtime.ts", "verify-sandbox"], {
+  cwd: packageDir,
+  encoding: "utf8",
+  env: process.env,
+})
+
 const getBase = (appId: string): Configuration => ({
   artifactName: "opencode-desktop-${os}-${arch}.${ext}",
   directories: {
@@ -96,7 +102,13 @@ const getBase = (appId: string): Configuration => ({
     {
       from: "../opencode/dist/node/sandbox-runtime/",
       to: "sandbox-runtime/",
-      filter: ["**/*"],
+      filter: [
+        "sandbox-worker.mjs",
+        "document-runtime-proxy.mjs",
+        "sandbox-runtime.manifest.json",
+        "LICENSE",
+        "vendor/**/*",
+      ],
     },
     ...documentRuntimeResources,
     ...(channel === "dev"

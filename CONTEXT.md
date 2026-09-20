@@ -585,6 +585,79 @@ Document confinement streaming-handoff remediation verification completed on
   lacks the Phase 7 native loader, Job Object, ACL reset, and WFP evidence, and
   stock SRT `0.0.76` remains unable to provide the required ACL-reset evidence.
 
+Document-runtime confinement Phase 6 is implemented. The OpenCode Node build
+cleans its sandbox-runtime output before emitting the generic sandbox worker and
+the standalone minified document proxy. It writes one strict target manifest
+covering hashes, sizes, modes, the SRT license and Java agent, and only the
+selected target's Linux seccomp or Windows SRT helper. Build tests inspect the
+exact output inventory, reject document parser/native-module and source fallback
+imports, run the proxy through Node syntax checking, and exercise malformed IPC
+rejection through a real Node child process.
+
+Desktop now resolves the sandbox worker, document proxy, and SRT assets as one
+verified target-specific tree. Resolution checks the closed manifest and exact
+file inventory, hashes, modes where supported, non-link paths, PE/ELF helper
+architecture, fixed development build location, and packaged resource
+containment. The document resolver re-verifies that tree, requires a complete
+runtime/proxy/assets tuple, and requires the packaged runtime, proxy, SRT assets,
+and detached attestation beneath the canonical Electron resources root. A new
+versioned confinement-evidence schema binds the target, runtime and proxy
+digests, sandbox manifest, SRT and policy versions, native report, packaged
+smoke report, signing report, exact signed-file inventory, and dependency report
+by SHA-256 rather than Boolean claims. Beta/prod staging and package
+configuration reject absent or mismatched evidence before packaging, and
+packaged execution remains unavailable under the same gate. Development again
+resolves its built host-target runtime and built proxy/assets; native SRT policy
+and platform evidence remain authoritative. Missing, stale, linked,
+wrong-target, wrong-architecture, partial, or changed resources remain
+unavailable.
+
+The PE helper parser requires the complete COFF header, a declared PE32+
+optional header of at least `0x70` bytes, a declared range contained in the
+file before reading its magic, PE32+ magic `0x20b`, the expected x64/arm64
+machine, and the executable-image characteristic. Tests cover both target
+architectures, undersized nonzero headers, the exact minimum boundary, truncated
+headers, PE32 substitution, missing executable characteristics, and malformed
+files.
+
+The Desktop sidecar case-insensitively strips every inherited document-runtime
+key and `KOALA_SANDBOX_WORKER_PATH`, then adds values only from complete verified
+resolver results. Development and release staging remove owned
+staged runtime, attestation, and temporary paths before rebuilding or copying,
+and reject overlapping source/destination roots. Electron Builder verifies the
+sandbox-runtime manifest before loading package configuration and places the
+generic worker, document proxy, target SRT assets/license, document bootstrap,
+document worker/runtime, runtime manifest, and detached attestation in explicit
+`extraResources` outside `app.asar`.
+
+The repository now patches pinned SRT `0.0.76` so configured Java-agent,
+seccomp, and Windows helper paths are mandatory regular files and are
+identity/digest checked again before wrapping. Missing or changed assets fail
+closed, and the emitted proxy is scanned to exclude npm-global, system-prefix,
+Homebrew, and home-directory lookup strings. The build test creates an isolated
+output, seeds stale proxy/bootstrap files, invokes the real build once, and
+checks stale removal and the exact resulting inventory without relying on the
+workspace `dist` tree.
+
+Document confinement Phase 6 verification completed on 2026-09-21:
+
+- OpenCode Node build passed and emitted the Windows x64 proxy plus one Windows
+  x64 SRT helper tree.
+- OpenCode document, sandbox, patched-dependency, and build suite: 233 passed
+  with 766 assertions.
+- The emitted document proxy passed `node --check` and the real Node IPC
+  malformed-launch rejection test.
+- Desktop resolver, sidecar-environment, staging, and package-configuration
+  suites: 39 passed with 116 assertions.
+- Document Runtime build and suite: 82 passed with 199 assertions; 2 existing
+  symlink-capability tests skipped on this Windows host.
+- Koala document-runtime contract suite: 204 passed with 428 assertions.
+- OpenCode, Koala, Desktop, and Document Runtime typechecks passed.
+- Desktop production build passed, including fresh OpenCode and development
+  document-runtime builds.
+- Native SRT confinement was not exercised or claimed. Phase 7 target-native
+  policy, teardown, packaging, and installed-app evidence remains required.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.

@@ -18,6 +18,10 @@ export async function productionRuntimeFixture(
   attestationPath: string,
   releaseReady = true,
   smokeEvidence = false,
+  confinementEvidence?: {
+    readonly proxySha256: string
+    readonly sandboxRuntimeManifestSha256: string
+  },
 ) {
   const nativePackage = runtimeNativePackage(target)
   const components = [
@@ -129,6 +133,24 @@ export async function productionRuntimeFixture(
             render: "passed",
             ocr: "passed",
             reportSha256: "abcdef0123456789".repeat(4),
+          },
+        }
+      : {}),
+    ...(confinementEvidence
+      ? {
+          confinementEvidence: {
+            evidenceVersion: 1,
+            target,
+            runtimeManifestSha256: createHash("sha256").update(body).digest("hex"),
+            proxySha256: confinementEvidence.proxySha256,
+            sandboxRuntimeManifestSha256: confinementEvidence.sandboxRuntimeManifestSha256,
+            srtVersion: "0.0.76",
+            policyVersion: 1,
+            nativeTestReportSha256: "1234567890abcdef".repeat(4),
+            packagedSmokeReportSha256: "fedcba0987654321".repeat(4),
+            signingReportSha256: "0123456789abcdef".repeat(4),
+            signedFileInventorySha256: "abcdef0123456789".repeat(4),
+            dependencyReportSha256: "13579bdf02468ace".repeat(4),
           },
         }
       : {}),

@@ -1,0 +1,183 @@
+diff --git a/dist/sandbox/explicit-asset.d.ts b/dist/sandbox/explicit-asset.d.ts
+new file mode 100644
+--- /dev/null
++++ b/dist/sandbox/explicit-asset.d.ts
+@@ -0,0 +1 @@
++export declare function resolveExplicitAsset(file: string, label: string): string;
+diff --git a/dist/sandbox/explicit-asset.js b/dist/sandbox/explicit-asset.js
+new file mode 100644
+--- /dev/null
++++ b/dist/sandbox/explicit-asset.js
+@@ -0,0 +1,30 @@
++import { createHash } from 'node:crypto';
++import { lstatSync, readFileSync } from 'node:fs';
++const snapshots = new Map();
++export function resolveExplicitAsset(file, label) {
++    let info;
++    try {
++        info = lstatSync(file, { bigint: true });
++    }
++    catch {
++        throw new Error(`${label} is missing`);
++    }
++    if (!info.isFile() || info.isSymbolicLink()) {
++        throw new Error(`${label} is not a regular file`);
++    }
++    const bytes = readFileSync(file);
++    const after = lstatSync(file, { bigint: true });
++    if (!after.isFile() || after.isSymbolicLink() || info.dev !== after.dev || info.ino !== after.ino ||
++        info.size !== after.size || info.mtimeNs !== after.mtimeNs) {
++        throw new Error(`${label} changed during resolution`);
++    }
++    const digest = createHash('sha256').update(bytes).digest('hex');
++    const fingerprint = `${after.dev}:${after.ino}:${after.size}:${after.mtimeNs}:${digest}`;
++    const key = `${label}\0${file}`;
++    const previous = snapshots.get(key);
++    if (previous !== undefined && previous !== fingerprint) {
++        throw new Error(`${label} changed after resolution`);
++    }
++    snapshots.set(key, fingerprint);
++    return file;
++}
+diff --git a/dist/sandbox/generate-seccomp-filter.js b/dist/sandbox/generate-seccomp-filter.js
+--- a/dist/sandbox/generate-seccomp-filter.js
++++ b/dist/sandbox/generate-seccomp-filter.js
+@@ -4,5 +4,6 @@ import * as fs from 'node:fs';
+ import { execSync } from 'node:child_process';
+ import { homedir } from 'node:os';
+ import { logForDebugging } from '../utils/debug.js';
++import { resolveExplicitAsset } from './explicit-asset.js';
+ // Cache for path lookups (key: explicit path or empty string, value: resolved path or null)
+ const applySeccompPathCache = new Map();
+@@ -113,12 +114,8 @@ function getLocalSeccompPaths(filename) {
+  *   then global npm install (for native builds where vendor directory isn't bundled).
+  */
+ export function getApplySeccompBinaryPath(seccompBinaryPath) {
+-    const cacheKey = seccompBinaryPath ?? '';
+-    if (applySeccompPathCache.has(cacheKey)) {
+-        return applySeccompPathCache.get(cacheKey);
+-    }
+-    const result = findApplySeccompPath(seccompBinaryPath);
+-    applySeccompPathCache.set(cacheKey, result);
+-    return result;
++    if (seccompBinaryPath === undefined)
++        return null;
++    return resolveExplicitAsset(seccompBinaryPath, 'seccomp.applyPath');
+ }
+ function findApplySeccompPath(seccompBinaryPath) {
+diff --git a/dist/sandbox/java-proxy-agent.js b/dist/sandbox/java-proxy-agent.js
+--- a/dist/sandbox/java-proxy-agent.js
++++ b/dist/sandbox/java-proxy-agent.js
+@@ -19,11 +19,6 @@
+  * stays in HTTPS_PROXY, which the agent reads itself, so the JVM's "Picked
+  * up JAVA_TOOL_OPTIONS: …" stderr line leaks nothing.
+  */
+-import { existsSync } from 'node:fs';
+-import { dirname, join } from 'node:path';
+-import { fileURLToPath } from 'node:url';
+-import { logForDebugging } from '../utils/debug.js';
+-import { getGlobalNpmPaths } from './generate-seccomp-filter.js';
++import { resolveExplicitAsset } from './explicit-asset.js';
+ export const JAVA_PROXY_AGENT_JAR_NAME = 'srt-proxy-agent.jar';
+-const jarPathCache = new Map();
+ /**
+@@ -39,9 +34,5 @@
+ export function getJavaProxyAgentJarPath(explicitPath) {
+-    const key = explicitPath ?? '';
+-    const cached = jarPathCache.get(key);
+-    if (cached !== undefined)
+-        return cached;
+-    const found = findJar(explicitPath);
+-    jarPathCache.set(key, found);
+-    return found;
++    if (explicitPath === undefined)
++        return null;
++    return resolveExplicitAsset(explicitPath, 'javaAgentJarPath');
+ }
+@@ -48,22 +39,0 @@
+-function findJar(explicitPath) {
+-    if (explicitPath) {
+-        if (existsSync(explicitPath))
+-            return explicitPath;
+-        logForDebugging(`[java-proxy-agent] javaAgentJarPath not found: ${explicitPath}`, { level: 'warn' });
+-    }
+-    const baseDir = dirname(fileURLToPath(import.meta.url));
+-    const rel = join('vendor', 'java-proxy-agent', JAVA_PROXY_AGENT_JAR_NAME);
+-    const candidates = [
+-        join(baseDir, rel),
+-        join(baseDir, '..', '..', rel),
+-        join(baseDir, '..', rel),
+-        ...getGlobalNpmPaths().map(base => join(base, rel)),
+-    ];
+-    for (const p of candidates) {
+-        if (existsSync(p))
+-            return p;
+-    }
+-    logForDebugging(`[java-proxy-agent] ${JAVA_PROXY_AGENT_JAR_NAME} not found; JVMs in the ` +
+-        `sandbox will not be pointed at the proxy (run \`npm run build:java-agent\`)`, { level: 'warn' });
+-    return null;
+-}
+diff --git a/dist/sandbox/linux-sandbox-utils.js b/dist/sandbox/linux-sandbox-utils.js
+--- a/dist/sandbox/linux-sandbox-utils.js
++++ b/dist/sandbox/linux-sandbox-utils.js
+@@ -611,7 +611,7 @@ function resolveApplySeccompPrefix(applyPath, argv0) {
+         if (!applyPath) {
+             throw new Error('seccompConfig.argv0 requires seccompConfig.applyPath');
+         }
+-        return `ARGV0=${quote([argv0])} ${quote([applyPath])} `;
++        return `ARGV0=${quote([argv0])} ${quote([getApplySeccompBinaryPath(applyPath)])} `;
+     }
+     const binary = getApplySeccompBinaryPath(applyPath);
+     return binary ? `${quote([binary])} ` : undefined;
+diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
+--- a/dist/sandbox/sandbox-manager.js
++++ b/dist/sandbox/sandbox-manager.js
+@@ -1180,5 +1180,7 @@ function isNetworkInitialized() {
+     return managerContext !== undefined;
+ }
+ async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
++    if (config?.javaAgentJarPath !== undefined)
++        getJavaProxyAgentJarPath(config.javaAgentJarPath);
+     const platform = getPlatform();
+     const commandId = options?.commandId;
+@@ -1394,4 +1396,6 @@ async function wrapWithSandbox(command, binShell, customConfig, abortSignal, opti
+  */
+ async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
+     const platform = getPlatform();
++    if (platform === 'windows' && config?.javaAgentJarPath !== undefined)
++        getJavaProxyAgentJarPath(config.javaAgentJarPath);
+     if (platform === 'windows') {
+@@ -1478,8 +1482,6 @@ async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal,
+             gitSafeDirectories: getGitSafeDirectories(customConfig),
+             caCertPath: mitmCA?.trustBundlePath,
+             binShell: parseWindowsBinShell(binShell),
+-            srtWin: customConfig?.windows?.srtWin
+-                ? resolveSrtWin(customConfig.windows.srtWin)
+-                : (srtWinSpawn ?? resolveSrtWin(config?.windows?.srtWin)),
++            srtWin: resolveSrtWin(customConfig?.windows?.srtWin ?? config?.windows?.srtWin),
+         });
+     }
+diff --git a/dist/sandbox/windows-sandbox-utils.js b/dist/sandbox/windows-sandbox-utils.js
+--- a/dist/sandbox/windows-sandbox-utils.js
++++ b/dist/sandbox/windows-sandbox-utils.js
+@@ -12,4 +12,5 @@ export { containsGlobCharsWin, stripExtendedPathPrefix, buildGitConfigEnv, isUnc
+ // the existing `src/index.ts` surface.
+ export { containsGlobCharsWin, stripExtendedPathPrefix, buildGitConfigEnv, isUncPath, } from './sandbox-utils.js';
+ import { certThumbprint, generateCa, validateCaPair } from './mitm-ca.js';
++import { resolveExplicitAsset } from './explicit-asset.js';
+ /**
+@@ -195,9 +196,10 @@ export function resolveSrtWin(cfg) {
+         throw new WindowsSandboxError('srt_win_not_found', `no srt-win path configured; set windows.srtWin.path (e.g. to the ` +
+             `exported VENDORED_SRT_WIN_EXE constant for the packaged binary)`);
+     }
+-    if (!fs.existsSync(cfg.path)) {
+-        throw new WindowsSandboxError('srt_win_not_found', `windows.srtWin.path is set to '${cfg.path}' but the file does ` +
+-            `not exist`);
++    try {
++        return { exe: resolveExplicitAsset(cfg.path, 'windows.srtWin.path'), prependArgs: [SRT_WIN_DISPATCH_ARG1] };
++    }
++    catch {
++        throw new WindowsSandboxError('srt_win_not_found', 'configured windows.srtWin.path is missing, invalid, or changed');
+     }
+-    return { exe: cfg.path, prependArgs: [SRT_WIN_DISPATCH_ARG1] };
+ }

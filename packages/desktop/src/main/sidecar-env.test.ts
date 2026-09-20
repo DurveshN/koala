@@ -17,6 +17,10 @@ describe("sidecar environment", () => {
         KOALA_DOCUMENT_RUNTIME_OVERRIDE: "C:\\untrusted\\override",
         KOALA_DOCUMENT_RUNTIME_RELEASE_ROOT: "C:\\ci\\runtime",
         KOALA_DOCUMENT_RUNTIME_ATTESTATION: "C:\\ci\\runtime.attestation.json",
+        KOALA_DOCUMENT_RUNTIME_PROXY_PATH: "C:\\untrusted\\proxy.mjs",
+        KOALA_DOCUMENT_RUNTIME_PROXY_ASSETS_ROOT: "C:\\untrusted\\sandbox-runtime",
+        KOALA_DOCUMENT_RUNTIME_FUTURE_KEY: "untrusted",
+        KOALA_SANDBOX_WORKER_PATH: "C:\\untrusted\\sandbox-worker.mjs",
         KOALA_LOCAL_MODEL: "http://127.0.0.1:8000/v1",
         OPENCODE_DISABLE_AUTOUPDATE: "0",
         OPENCODE_DISABLE_SHARE: "0",
@@ -30,6 +34,8 @@ describe("sidecar environment", () => {
         root: "C:\\Program Files\\Koala\\resources\\document-runtime",
         manifestSha256: "a".repeat(64),
         releaseReady: true,
+        proxyPath: "C:\\Program Files\\Koala\\resources\\sandbox-runtime\\document-runtime-proxy.mjs",
+        proxyAssetsRoot: "C:\\Program Files\\Koala\\resources\\sandbox-runtime",
       },
     )
 
@@ -39,6 +45,9 @@ describe("sidecar environment", () => {
       KOALA_AGENT_EXECUTION: "sandbox",
       KOALA_DOCUMENT_RUNTIME_MANIFEST_SHA256: "a".repeat(64),
       KOALA_DOCUMENT_RUNTIME_PATH: "C:\\Program Files\\Koala\\resources\\document-runtime",
+      KOALA_DOCUMENT_RUNTIME_PROXY_ASSETS_ROOT: "C:\\Program Files\\Koala\\resources\\sandbox-runtime",
+      KOALA_DOCUMENT_RUNTIME_PROXY_PATH:
+        "C:\\Program Files\\Koala\\resources\\sandbox-runtime\\document-runtime-proxy.mjs",
       KOALA_DOCUMENT_RUNTIME_REQUIRE_RELEASE_READY: "true",
       KOALA_SANDBOX_WORKER_PATH: "C:\\Koala\\sandbox-worker.mjs",
       METADATA_SERVER_DETECTION: "none",
@@ -66,8 +75,16 @@ describe("sidecar environment", () => {
       KOALA_DOCUMENT_RUNTIME_OVERRIDE: "/untrusted/override",
       KOALA_DOCUMENT_RUNTIME_RELEASE_ROOT: "/external/ci/runtime",
       KOALA_DOCUMENT_RUNTIME_ATTESTATION: "/external/ci/runtime.attestation.json",
+      KOALA_DOCUMENT_RUNTIME_PROXY_PATH: "/untrusted/document-runtime-proxy.mjs",
+      KOALA_DOCUMENT_RUNTIME_PROXY_ASSETS_ROOT: "/untrusted/sandbox-runtime",
+      KOALA_DOCUMENT_RUNTIME_FUTURE_KEY: "untrusted",
+      KOALA_SANDBOX_WORKER_PATH: "/untrusted/sandbox-worker.mjs",
+      koala_document_runtime_lowercase: "/untrusted/lowercase",
+      koala_sandbox_worker_path: "/untrusted/lowercase-worker.mjs",
     })
 
     expect(Object.keys(env).filter((key) => key.startsWith("KOALA_DOCUMENT_RUNTIME"))).toEqual([])
+    expect(env.KOALA_SANDBOX_WORKER_PATH).toBeUndefined()
+    expect(env.koala_sandbox_worker_path).toBeUndefined()
   })
 })

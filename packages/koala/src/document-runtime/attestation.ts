@@ -7,6 +7,7 @@ import { DocumentRuntimeTarget } from "./target"
 export const AttestationVersion = Schema.Literal(1)
 export const ProductionProfileVersion = Schema.Literal(1)
 export const SmokeEvidenceVersion = Schema.Literal(1)
+export const ConfinementEvidenceVersion = Schema.Literal(1)
 
 const ExecutablePaths = Schema.Array(DocumentRuntimeManifest.RelativePath).check(
   Schema.isMinLength(1),
@@ -20,6 +21,7 @@ const ExecutablePaths = Schema.Array(DocumentRuntimeManifest.RelativePath).check
 
 export interface Attestation extends Schema.Schema.Type<typeof Attestation> {}
 export interface SmokeEvidence extends Schema.Schema.Type<typeof SmokeEvidence> {}
+export interface ConfinementEvidence extends Schema.Schema.Type<typeof ConfinementEvidence> {}
 export const SmokeEvidence = Schema.Struct({
   evidenceVersion: SmokeEvidenceVersion,
   target: DocumentRuntimeTarget.Target,
@@ -29,6 +31,21 @@ export const SmokeEvidence = Schema.Struct({
   ocr: Schema.Literal("passed"),
   reportSha256: DocumentRuntimeManifest.Digest,
 }).annotate({ identifier: "DocumentRuntimeAttestation.SmokeEvidence" })
+
+export const ConfinementEvidence = Schema.Struct({
+  evidenceVersion: ConfinementEvidenceVersion,
+  target: DocumentRuntimeTarget.Target,
+  runtimeManifestSha256: DocumentRuntimeManifest.Digest,
+  proxySha256: DocumentRuntimeManifest.Digest,
+  sandboxRuntimeManifestSha256: DocumentRuntimeManifest.Digest,
+  srtVersion: Schema.Literal("0.0.76"),
+  policyVersion: Schema.Literal(1),
+  nativeTestReportSha256: DocumentRuntimeManifest.Digest,
+  packagedSmokeReportSha256: DocumentRuntimeManifest.Digest,
+  signingReportSha256: DocumentRuntimeManifest.Digest,
+  signedFileInventorySha256: DocumentRuntimeManifest.Digest,
+  dependencyReportSha256: DocumentRuntimeManifest.Digest,
+}).annotate({ identifier: "DocumentRuntimeAttestation.ConfinementEvidence" })
 
 export const Attestation = Schema.Struct({
   attestationVersion: AttestationVersion,
@@ -45,4 +62,5 @@ export const Attestation = Schema.Struct({
   ),
   executables: ExecutablePaths,
   smokeEvidence: Schema.optionalKey(SmokeEvidence),
+  confinementEvidence: Schema.optionalKey(ConfinementEvidence),
 }).annotate({ identifier: "DocumentRuntimeAttestation.Attestation" })
