@@ -1,0 +1,204 @@
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
+import path from "node:path"
+
+export interface ProcessHandle {
+  readonly pid?: number
+  readonly exitCode: number | null
+  readonly signalCode: NodeJS.Signals | null
+  readonly once: ChildProcess["once"]
+  readonly off: ChildProcess["off"]
+  readonly kill: ChildProcess["kill"]
+}
+
+export interface ObservedExit {
+  readonly code: number | null
+  readonly signal: NodeJS.Signals | null
+}
+
+export type ExitResult =
+  | { readonly status: "exited"; readonly exit: ObservedExit }
+  | {
+      readonly status: "unavailable"
+      readonly code:
+        | "invalid-timeout"
+        | "missing-pid"
+        | "tree-termination-failed"
+        | "helper-exit-not-observed"
+        | "exit-not-observed"
+    }
+
+export type SpawnTreeKiller = (executable: string, args: ReadonlyArray<string>, options: SpawnOptions) => ProcessHandle
+
+export interface TerminationDependencies {
+  readonly killProcessGroup: (pid: number) => void
+  readonly spawnTreeKiller: SpawnTreeKiller
+}
+
+const defaultDependencies: TerminationDependencies = {
+  killProcessGroup: (pid) => process.kill(-pid, "SIGKILL"),
+  spawnTreeKiller: (executable, args, options) => spawn(executable, args, options),
+}
+
+export async function terminateProcessTree(
+  child: ProcessHandle,
+  options: {
+    readonly platform?: NodeJS.Platform
+    readonly systemRoot?: string
+    readonly timeoutMs: number
+    readonly dependencies?: TerminationDependencies
+  },
+): Promise<ExitResult> {
+  if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1) {
+    return { status: "unavailable", code: "invalid-timeout" }
+  }
+  const observed = observedExit(child)
+  if (observed) return { status: "exited", exit: observed }
+  if (!child.pid) return { status: "unavailable", code: "missing-pid" }
+
+  const dependencies = options.dependencies ?? defaultDependencies
+  const deadline = Date.now() + options.timeoutMs
+  if ((options.platform ?? process.platform) !== "win32") {
+    try {
+      dependencies.killProcessGroup(child.pid)
+    } catch {
+      tryKill(child)
+      await observeBefore(child, deadline)
+      return { status: "unavailable", code: "tree-termination-failed" }
+    }
+    const result = await observeBefore(child, deadline)
+    if (result.status !== "exited") tryKill(child)
+    return result
+  }
+
+  if (!options.systemRoot || !validSystemRoot(options.systemRoot)) {
+    tryKill(child)
+    return { status: "unavailable", code: "tree-termination-failed" }
+  }
+
+  let killer: ProcessHandle
+  try {
+    killer = dependencies.spawnTreeKiller(
+      path.win32.join(options.systemRoot, "System32", "taskkill.exe"),
+      ["/pid", String(child.pid), "/T", "/F"],
+      {
+        env: { SystemRoot: options.systemRoot, WINDIR: options.systemRoot },
+        shell: false,
+        stdio: "ignore",
+        windowsHide: true,
+      },
+    )
+  } catch {
+    tryKill(child)
+    await observeBefore(child, deadline)
+    return { status: "unavailable", code: "tree-termination-failed" }
+  }
+
+  const killerExit = await waitForTreeKiller(killer, Math.max(1, Math.floor(options.timeoutMs / 2)))
+  if (killerExit.status !== "exited") {
+    const helperWait = waitForTreeKiller(killer, remaining(deadline))
+    const childWait = waitForObservedExit(child, remaining(deadline))
+    const helperSignaled = tryKill(killer)
+    tryKill(child)
+    const [helperObserved] = await Promise.all([helperWait, childWait])
+    if (!helperSignaled || helperObserved.status !== "exited") {
+      return { status: "unavailable", code: "helper-exit-not-observed" }
+    }
+    return { status: "unavailable", code: "tree-termination-failed" }
+  }
+  if (killerExit.exit.code !== 0 || killerExit.exit.signal !== null) {
+    const childWait = waitForObservedExit(child, remaining(deadline))
+    tryKill(child)
+    await childWait
+    return { status: "unavailable", code: "tree-termination-failed" }
+  }
+  const result = await observeBefore(child, deadline)
+  if (result.status !== "exited") tryKill(child)
+  return result
+}
+
+export function waitForObservedExit(child: ProcessHandle, timeoutMs: number): Promise<ExitResult> {
+  const observed = observedExit(child)
+  if (observed) return Promise.resolve({ status: "exited", exit: observed })
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    return Promise.resolve({ status: "unavailable", code: "invalid-timeout" })
+  }
+
+  return new Promise((resolve) => {
+    let settled = false
+    const complete = (result: ExitResult) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.off("exit", onExit)
+      resolve(result)
+    }
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) =>
+      complete({ status: "exited", exit: { code, signal } })
+    const timer = setTimeout(() => complete({ status: "unavailable", code: "exit-not-observed" }), timeoutMs)
+    child.once("exit", onExit)
+    const raced = observedExit(child)
+    if (raced) complete({ status: "exited", exit: raced })
+  })
+}
+
+function waitForTreeKiller(child: ProcessHandle, timeoutMs: number): Promise<ExitResult> {
+  const observed = observedExit(child)
+  if (observed) return Promise.resolve({ status: "exited", exit: observed })
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    return Promise.resolve({ status: "unavailable", code: "invalid-timeout" })
+  }
+
+  return new Promise((resolve) => {
+    let settled = false
+    const complete = (result: ExitResult) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.off("error", onError)
+      child.off("exit", onExit)
+      resolve(result)
+    }
+    const onError = () => complete({ status: "unavailable", code: "tree-termination-failed" })
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) =>
+      complete({ status: "exited", exit: { code, signal } })
+    const timer = setTimeout(() => complete({ status: "unavailable", code: "exit-not-observed" }), timeoutMs)
+    child.once("error", onError)
+    child.once("exit", onExit)
+    const raced = observedExit(child)
+    if (raced) complete({ status: "exited", exit: raced })
+  })
+}
+
+async function observeBefore(child: ProcessHandle, deadline: number): Promise<ExitResult> {
+  const result = await waitForObservedExit(child, remaining(deadline))
+  return result.status === "exited" ? result : { status: "unavailable", code: "exit-not-observed" }
+}
+
+function observedExit(child: ProcessHandle): ObservedExit | undefined {
+  if (child.exitCode === null && child.signalCode === null) return
+  return { code: child.exitCode, signal: child.signalCode }
+}
+
+function validSystemRoot(value: string) {
+  return (
+    !value.includes("\0") &&
+    path.win32.isAbsolute(value) &&
+    path.win32.normalize(value) === value &&
+    /^[A-Za-z]:\\/.test(value) &&
+    !value.slice(2).includes(":")
+  )
+}
+
+function tryKill(child: ProcessHandle) {
+  try {
+    return child.kill("SIGKILL")
+  } catch {
+    return false
+  }
+}
+
+function remaining(deadline: number) {
+  return Math.max(1, deadline - Date.now())
+}
+
+export * as DocumentProcess from "./process"

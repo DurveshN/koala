@@ -395,6 +395,53 @@ Document confinement Phase 2 verification completed on 2026-09-20:
 - Koala, Document Runtime, downstream OpenCode, and Desktop typechecks passed.
 - Both emitted worker JavaScript files passed `node --check`.
 
+Document-runtime confinement Phase 3 is implemented as a document-only OpenCode
+policy and process boundary. It validates canonical pairwise-disjoint runtime,
+job, and SRT asset roots; resolves the exact runtime and target-specific SRT
+files; checks host/target identity; uses fixed loader roots; creates an empty
+strict network policy; grants runtime/job reads and job-only ordinary writes;
+and explicitly deny-writes the runtime, SRT assets, ambient writable roots, and
+SRT persistent compatibility paths. The broker and bootstrap handoff
+environments are closed allowlists, and the fixed bootstrap descriptor handles
+shell metacharacters without admitting caller commands. Linux resolves and
+identity-checks fixed-location `bwrap`, `socat`, `rg`, and shell executables once,
+then passes their canonical absolute paths through SRT's supported fields.
+macOS similarly checks the fixed `env`, `sandbox-exec`, and shell paths. The
+broker uses a fixed system-only `PATH`; inherited search paths are not retained.
+Effective SRT config, read, write, network, default-write expansion, and weaker-
+mode state is inspected before use. The document-specific tree reaper has fixed
+deadlines, handles synchronous and asynchronous tree-killer failures, and
+reports success only after an observed child exit. Failed or timed-out Windows
+tree-killer helpers are signaled and observed within reserved cleanup time;
+missing helper-exit confirmation is a distinct typed unhealthy result.
+
+Windows policy preparation rejects UNC/device/ADS paths and the entire visible-
+volume inventory when any entry is non-fixed, nonlocal, unknown, or uses an
+unsupported filesystem. It also rejects paths with reported reparse points and
+requires complete native volume, reparse, and explicit loader-file/root evidence
+with matching filesystem identities. Windows receives no recursive executable-
+directory or `SystemRoot` read grant. The evidence and exact volume-deny set are
+checked again at the effective-policy boundary. No exact target-specific Windows
+loader inventory is currently attested, so the closed loader registry returns
+`windows-loader-evidence-required` and Windows remains disabled. Independently,
+stock SRT `0.0.76` cannot provide conclusive ACL reset outcomes and returns
+`windows-acl-reset-evidence-required` when that check is reached; no weaker
+policy is selected.
+
+Document confinement Phase 3 verification completed on 2026-09-20:
+
+- OpenCode document and generic sandbox regression suites: 99 passed with 271
+  assertions across 6 files.
+- The document policy/process slice: 48 passed with 139 assertions across 2
+  files.
+- `packages/opencode`: `bun typecheck` passed.
+- `packages/opencode`: `bun run script/build-node.ts` passed.
+- `packages/opencode`: single-target Windows x64 build and version smoke test
+  passed.
+- Native confinement was not claimed: this Windows host still lacks provisioned
+  SRT account/WFP evidence, and stock SRT `0.0.76` does not expose conclusive ACL
+  reset evidence.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.
