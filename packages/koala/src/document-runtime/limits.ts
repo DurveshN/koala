@@ -25,6 +25,8 @@ export const MaxNdjsonFramesPerDirection = 512
 export const MaxNdjsonBytesPerDirection = 1_048_576
 export const MaxNdjsonPendingWrites = 32
 export const MaxInnerStderrBytes = 65_536
+export const MaxOutputChunkBytes = 10_240
+export const MaxOutputChunkBase64Characters = 13_656
 
 export const Hard = Schema.Struct({
   dpi: Schema.Literal(FixedDpi),

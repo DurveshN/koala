@@ -6,6 +6,7 @@ import { DocumentSandboxProtocol } from "./sandbox-protocol"
 const jobID = "job_123e4567-e89b-42d3-a456-426614174000"
 const otherJobID = "job_223e4567-e89b-42d3-a456-426614174000"
 const pageID = "page_123e4567-e89b-42d3-a456-426614174000"
+const outputID = "output_123e4567-e89b-42d3-a456-426614174000"
 const resultID = "ocr_123e4567-e89b-42d3-a456-426614174000"
 const target = "x86_64-unknown-linux-gnu"
 const otherTarget = "aarch64-unknown-linux-gnu"
@@ -65,7 +66,13 @@ const launch = () => ({
   target,
   runtimeRoot: "/opt/koala/document-runtime",
   manifestSha256,
+  parentRoot: "/tmp/koala",
+  parentIdentity: { dev: "1", ino: "1" },
+  parentMode: 0o500,
   jobRoot: "/tmp/koala/job-1",
+  jobRootIdentity: { dev: "1", ino: "2" },
+  pendingRoot: "/tmp/koala/pending-1",
+  pendingRootIdentity: { dev: "1", ino: "3" },
   start: render(),
 })
 
@@ -76,6 +83,8 @@ const pageReady = () => ({
   page: 1,
   pageID,
   outputPath: "pages/page-1.png",
+  outputID,
+  outputSha256: manifestSha256,
   dimensions: { width: 2_000, height: 3_000 },
   pngBytes: 1024,
   temporaryBytes: 1024,
@@ -113,7 +122,12 @@ describe("DocumentSandboxProtocol schemas", () => {
     { ...launch(), start: probe() },
     { ...launch(), start: imageOcr() },
     { protocolVersion: 1, type: "command", jobID, command: renderedPageOcr() },
-    { protocolVersion: 1, type: "command", jobID, command: { protocolVersion: 1, type: "release-page", jobID, page: 1, pageID } },
+    {
+      protocolVersion: 1,
+      type: "command",
+      jobID,
+      command: { protocolVersion: 1, type: "release-page", jobID, page: 1, pageID },
+    },
     cancel(),
   ] as const)("round trips the $type parent request", (request) => {
     expectEqual(encodeParent(DocumentSandboxProtocol.decodeParentRequest(request)), request)
@@ -135,6 +149,8 @@ describe("DocumentSandboxProtocol schemas", () => {
     "dependency-failed",
     "spawn-failed",
     "transport-overflow",
+    "output-handoff-failed",
+    "root-identity-failed",
     "worker-crashed",
     "termination-failed",
     "command-cleanup-failed",
@@ -162,6 +178,13 @@ describe("DocumentSandboxProtocol schemas", () => {
     { ...launch(), jobID: "job-invalid" },
     { ...launch(), runtimeRoot: "relative/runtime" },
     { ...launch(), jobRoot: "../job" },
+    { ...launch(), pendingRoot: "../pending" },
+    { ...launch(), pendingRoot: launch().jobRoot },
+    { ...launch(), pendingRoot: "/other/pending" },
+    { ...launch(), parentIdentity: { dev: "01", ino: "1" } },
+    { ...launch(), jobRootIdentity: { dev: "-1", ino: "1" } },
+    { ...launch(), pendingRootIdentity: { dev: "1", ino: "1.5" } },
+    { ...launch(), pendingRootIdentity: { dev: "18446744073709551616", ino: "1" } },
     { ...launch(), excess: true },
     { ...launch(), start: { ...render(), excess: true } },
     { ...launch(), start: { ...render(), limits: { ...limits, excess: true } } },
@@ -265,6 +288,8 @@ describe("DocumentSandboxProtocol lifecycle", () => {
           pageID,
           resultID,
           outputPath: "ocr/page-1.tsv",
+          outputID,
+          outputSha256: manifestSha256,
           tsvBytes: 512,
           temporaryBytes: 1536,
         }),
@@ -326,6 +351,8 @@ describe("DocumentSandboxProtocol lifecycle", () => {
           pageID,
           resultID,
           outputPath: "ocr/page-1.tsv",
+          outputID,
+          outputSha256: manifestSha256,
           tsvBytes: 512,
           temporaryBytes: 512,
         }),
@@ -346,20 +373,20 @@ describe("DocumentSandboxProtocol lifecycle", () => {
     expect(state.phase).toBe("closed")
   })
 
-  test.each([null, jobID] as const)("accepts a pre-acceptance failure and matching closure for job %p", (failureJobID) => {
-    const terminal = advance(launched(), proxy(failure(failureJobID)))
-    expect(terminal.phase).toBe("terminal")
-    expect(advance(terminal, proxy(closed(failureJobID))).phase).toBe("closed")
-  })
+  test.each([null, jobID] as const)(
+    "accepts a pre-acceptance failure and matching closure for job %p",
+    (failureJobID) => {
+      const terminal = advance(launched(), proxy(failure(failureJobID)))
+      expect(terminal.phase).toBe("terminal")
+      expect(advance(terminal, proxy(closed(failureJobID))).phase).toBe("closed")
+    },
+  )
 
   test("accepts cancellation before acceptance and delegates it to document order", () => {
     const cancelling = advance(launched(), parent(cancel()))
     expect(cancelling.order?.phase).toBe("cancelling")
     const acceptedState = advance(cancelling, proxy(accepted()))
-    const terminal = advance(
-      acceptedState,
-      proxy(outerEvent({ protocolVersion: 1, type: "cancelled", jobID })),
-    )
+    const terminal = advance(acceptedState, proxy(outerEvent({ protocolVersion: 1, type: "cancelled", jobID })))
     expect(advance(terminal, proxy(closed())).phase).toBe("closed")
   })
 
@@ -467,9 +494,9 @@ describe("DocumentSandboxProtocol lifecycle", () => {
   })
 
   test("rejects invalid delegated page order and requested-limit excess", () => {
-    expect(
-      DocumentSandboxProtocol.advanceLifecycle(started(), proxy(outerEvent({ ...pageReady(), page: 2 }))),
-    ).toEqual({ ok: false, code: "invalid-order" })
+    expect(DocumentSandboxProtocol.advanceLifecycle(started(), proxy(outerEvent({ ...pageReady(), page: 2 })))).toEqual(
+      { ok: false, code: "invalid-order" },
+    )
 
     const limitedLaunch = parent({
       ...launch(),

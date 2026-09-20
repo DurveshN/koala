@@ -81,6 +81,8 @@ export interface PathInspection {
   readonly kind: "directory" | "file"
   readonly reparsePoint: boolean
   readonly identity: string
+  readonly filesystemIdentity: { readonly dev: bigint; readonly ino: bigint }
+  readonly mode?: number
 }
 
 export interface PolicyDependencies {
@@ -92,7 +94,13 @@ export interface PolicyDependencies {
 export interface PrepareInput {
   readonly target: DocumentRuntimeTarget.Target
   readonly runtimeRoot: string
+  readonly parentRoot: string
+  readonly parentIdentity: { readonly dev: bigint; readonly ino: bigint }
+  readonly parentMode?: number
   readonly jobRoot: string
+  readonly jobRootIdentity: { readonly dev: bigint; readonly ino: bigint }
+  readonly pendingRoot: string
+  readonly pendingRootIdentity: { readonly dev: bigint; readonly ino: bigint }
   readonly sandboxAssetsRoot: string
   readonly executablePath: string
   readonly manifestSha256: DocumentRuntimeManifest.Digest
@@ -104,7 +112,13 @@ export interface PrepareInput {
 export interface PreparedPolicy {
   readonly target: DocumentRuntimeTarget.Target
   readonly runtimeRoot: string
+  readonly parentRoot: string
+  readonly parentIdentity: { readonly dev: bigint; readonly ino: bigint }
+  readonly parentMode?: number
   readonly jobRoot: string
+  readonly jobRootIdentity: { readonly dev: bigint; readonly ino: bigint }
+  readonly pendingRoot: string
+  readonly pendingRootIdentity: { readonly dev: bigint; readonly ino: bigint }
   readonly sandboxAssets: SandboxAssets
   readonly runtimeAssets: ResolvedRuntimeAssets
   readonly executablePath: string
@@ -156,13 +170,15 @@ export interface InspectableSandboxManager {
 
 const defaultDependencies: PolicyDependencies = {
   inspectPath: async (value) => {
-    const info = await lstat(value).catch(() => undefined)
+    const info = await lstat(value, { bigint: true }).catch(() => undefined)
     if (!info) return
     return {
       canonicalPath: await realpath(value),
       kind: info.isDirectory() ? "directory" : info.isFile() ? "file" : "directory",
       reparsePoint: info.isSymbolicLink() || (!info.isDirectory() && !info.isFile()),
       identity: `${info.dev}:${info.ino}`,
+      filesystemIdentity: { dev: info.dev, ino: info.ino },
+      mode: Number(info.mode & 0o777n),
     }
   },
   accessExecutable: async (value) =>
@@ -204,7 +220,9 @@ export async function prepare(
     const evidence = await validateWindowsEvidence(
       [
         roots.value.runtimeRoot,
+        roots.value.parentRoot,
         roots.value.jobRoot,
+        roots.value.pendingRoot,
         roots.value.sandboxAssetsRoot,
         roots.value.executablePath,
         roots.value.systemRoot,
@@ -220,6 +238,7 @@ export async function prepare(
     target: input.target,
     runtimeRoot: roots.value.runtimeRoot,
     jobRoot: roots.value.jobRoot,
+    pendingRoot: roots.value.pendingRoot,
     executablePath: roots.value.executablePath,
     systemRoot: roots.value.systemRoot,
     sandboxAssets,
@@ -233,7 +252,13 @@ export async function prepare(
   return available({
     target: input.target,
     runtimeRoot: roots.value.runtimeRoot,
+    parentRoot: roots.value.parentRoot,
+    parentIdentity: input.parentIdentity,
+    parentMode: input.parentMode,
     jobRoot: roots.value.jobRoot,
+    jobRootIdentity: input.jobRootIdentity,
+    pendingRoot: roots.value.pendingRoot,
+    pendingRootIdentity: input.pendingRootIdentity,
     sandboxAssets,
     runtimeAssets,
     executablePath: roots.value.executablePath,
@@ -375,6 +400,7 @@ export function buildConfig(input: {
   readonly target: DocumentRuntimeTarget.Target
   readonly runtimeRoot: string
   readonly jobRoot: string
+  readonly pendingRoot: string
   readonly executablePath: string
   readonly systemRoot?: string
   readonly sandboxAssets: SandboxAssets
@@ -393,6 +419,7 @@ export function buildConfig(input: {
   const denyWrite = unique(
     [
       input.runtimeRoot,
+      input.pendingRoot,
       input.sandboxAssets.root,
       ...persistentCompatibilityWritePaths(platform, environment),
       ...ambientWriteRoots(platform, environment),
@@ -761,7 +788,9 @@ async function validateRoots(input: PrepareInput, platform: NodeJS.Platform, dep
   const systemRoot = platform === "win32" ? (environment.SystemRoot ?? environment.SYSTEMROOT) : undefined
   const expected: ReadonlyArray<readonly [string | undefined, "directory" | "file"]> = [
     [input.runtimeRoot, "directory"],
+    [input.parentRoot, "directory"],
     [input.jobRoot, "directory"],
+    [input.pendingRoot, "directory"],
     [input.sandboxAssetsRoot, "directory"],
     [input.executablePath, "file"],
     ...(platform === "win32" ? ([[systemRoot, "directory"]] as const) : []),
@@ -780,10 +809,19 @@ async function validateRoots(input: PrepareInput, platform: NodeJS.Platform, dep
     }
     inspected.push(info.canonicalPath)
   }
-  if (platform !== "win32" && !(await dependencies.accessExecutable(inspected[3] ?? ""))) {
+  if (platform !== "win32" && !(await dependencies.accessExecutable(inspected[5] ?? ""))) {
     return unavailable("invalid-path")
   }
-  const roots = inspected.slice(0, 3)
+  for (const [index, identity] of [input.parentIdentity, input.jobRootIdentity, input.pendingRootIdentity].entries()) {
+    const info = await dependencies.inspectPath(inspected[index + 1] ?? "").catch(() => undefined)
+    if (!info || !sameIdentity(info.filesystemIdentity, identity)) return unavailable("invalid-path")
+  }
+  if (platform !== "win32" && input.parentMode !== 0o500) return unavailable("invalid-path")
+  if (platform !== "win32") {
+    const parent = await dependencies.inspectPath(inspected[1] ?? "").catch(() => undefined)
+    if (parent?.mode !== input.parentMode) return unavailable("invalid-path")
+  }
+  const roots = [inspected[0] ?? "", inspected[2] ?? "", inspected[3] ?? "", inspected[4] ?? ""]
   if (
     roots.some((root, index) =>
       roots.some((other, otherIndex) => index !== otherIndex && overlap(root, other, platform)),
@@ -791,12 +829,21 @@ async function validateRoots(input: PrepareInput, platform: NodeJS.Platform, dep
   ) {
     return unavailable("overlapping-roots")
   }
+  const paths = pathForPlatform(platform)
+  if (
+    !samePath(paths.dirname(inspected[2] ?? ""), inspected[1] ?? "", platform === "win32") ||
+    !samePath(paths.dirname(inspected[3] ?? ""), inspected[1] ?? "", platform === "win32")
+  ) {
+    return unavailable("overlapping-roots")
+  }
   return available({
     runtimeRoot: inspected[0] ?? "",
-    jobRoot: inspected[1] ?? "",
-    sandboxAssetsRoot: inspected[2] ?? "",
-    executablePath: inspected[3] ?? "",
-    systemRoot: inspected[4],
+    parentRoot: inspected[1] ?? "",
+    jobRoot: inspected[2] ?? "",
+    pendingRoot: inspected[3] ?? "",
+    sandboxAssetsRoot: inspected[4] ?? "",
+    executablePath: inspected[5] ?? "",
+    systemRoot: inspected[6],
   })
 }
 
@@ -971,6 +1018,13 @@ function atOrUnder(value: string, root: string, insensitive: boolean) {
 
 function samePath(left: string, right: string, insensitive = false) {
   return insensitive ? left.toLowerCase() === right.toLowerCase() : left === right
+}
+
+function sameIdentity(
+  left: { readonly dev: bigint; readonly ino: bigint },
+  right: { readonly dev: bigint; readonly ino: bigint },
+) {
+  return left.dev === right.dev && left.ino === right.ino
 }
 
 function sameSet(left: ReadonlyArray<string>, right: ReadonlyArray<string>, insensitive = false) {

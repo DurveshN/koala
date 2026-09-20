@@ -9,13 +9,20 @@ import {
   type TransportError,
 } from "@koala-ai/document-runtime/transport"
 import { spawn, type SpawnOptions } from "node:child_process"
+import { createHash } from "node:crypto"
 import { EventEmitter } from "node:events"
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, readdir, rm } from "node:fs/promises"
+import os from "node:os"
 import { PassThrough } from "node:stream"
+import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { DocumentProxy, type ParentPort, type ProxyChild, type ProxyDependencies } from "@/document/proxy"
+import { DocumentProxyOutput } from "@/document/proxy-output"
+import { DocumentPendingRoot } from "@/document/pending-root"
 import { DocumentSandboxPolicy, type PreparedPolicy } from "@/document/sandbox-policy"
 
 const jobID = DocumentRuntimeProtocol.JobID.make("job_00000000-0000-4000-8000-000000000001")
+const outputID = DocumentRuntimeProtocol.OutputID.make("output_00000000-0000-4000-8000-000000000001")
 const digest = "a".repeat(64)
 
 describe("document confinement proxy lifecycle", () => {
@@ -37,6 +44,135 @@ describe("document confinement proxy lifecycle", () => {
     expect(harness.parent.messages[2]).toMatchObject({ type: "event", event: { type: "completed" } })
     expect(harness.manager.cleanupCalls).toBe(1)
     expect(harness.manager.resetCalls).toBe(1)
+  })
+
+  test("uses the real receiver for transfer, stable publication, and release", async () => {
+    const roots = await realRoots()
+    try {
+      const harness = makeHarness({ createOutputReceiver: DocumentProxyOutput.create })
+      const request = renderLaunch({
+        parentRoot: roots.parent,
+        parentIdentity: wireIdentity(roots.parentInfo),
+        jobRoot: roots.job,
+        jobRootIdentity: wireIdentity(roots.jobInfo),
+        pendingRoot: roots.pending,
+        pendingRootIdentity: wireIdentity(roots.pendingInfo),
+      })
+      const pending = DocumentProxy.startProxy(harness.dependencies)
+      harness.parent.emit(request)
+      await harness.parent.waitFor("accepted")
+      harness.transport.emit(renderStarted())
+      const body = Buffer.from("png")
+      const sha256 = createHash("sha256").update(body).digest("hex")
+      harness.transport.emit(outputStart(body.byteLength))
+      harness.transport.emit(outputChunk(0, body))
+      harness.transport.emit(outputEnd(1, body.byteLength, sha256))
+      harness.transport.emit(
+        pageReady({
+          outputSha256: sha256,
+          pngBytes: body.byteLength,
+          temporaryBytes: body.byteLength,
+        }),
+      )
+      await waitUntil(() =>
+        harness.parent.messages.some((message) => message.type === "event" && message.event.type === "page-ready"),
+      )
+      const page = harness.parent.messages.find(
+        (message) => message.type === "event" && message.event.type === "page-ready",
+      )
+      if (!page || page.type !== "event" || page.event.type !== "page-ready") throw new Error("missing page")
+      expect(page.event.outputPath).not.toBe("pages/one.png")
+      expect(await readFile(path.join(roots.pending, page.event.outputPath))).toEqual(body)
+      expect(JSON.stringify(harness.parent.messages)).not.toContain(DocumentRuntimeProtocol.encodeCanonicalBase64(body))
+
+      await rm(path.join(roots.pending, page.event.outputPath))
+      harness.parent.emit(releaseCommand())
+      await waitUntil(() =>
+        harness.transport.sent.some(
+          (message) =>
+            typeof message === "object" && message !== null && "type" in message && message.type === "release-page",
+        ),
+      )
+      harness.transport.emit(renderCompleted())
+      await tick()
+      harness.child.complete(0)
+      await pending
+      expect(types(harness)).toEqual(["accepted", "event", "event", "event", "closed"])
+    } finally {
+      if (process.platform !== "win32") await chmod(roots.parent, 0o700).catch(() => undefined)
+      await rm(roots.parent, { recursive: true, force: true })
+    }
+  })
+
+  test("cleans a real receiver partial file before reporting transfer failure", async () => {
+    const roots = await realRoots()
+    try {
+      const harness = makeHarness({ createOutputReceiver: DocumentProxyOutput.create })
+      const pending = DocumentProxy.startProxy(harness.dependencies)
+      harness.parent.emit(
+        renderLaunch({
+          parentRoot: roots.parent,
+          parentIdentity: wireIdentity(roots.parentInfo),
+          jobRoot: roots.job,
+          jobRootIdentity: wireIdentity(roots.jobInfo),
+          pendingRoot: roots.pending,
+          pendingRootIdentity: wireIdentity(roots.pendingInfo),
+        }),
+      )
+      await harness.parent.waitFor("accepted")
+      harness.transport.emit(renderStarted())
+      harness.transport.emit(outputStart(2))
+      harness.transport.emit(outputChunk(1, Buffer.from("x")))
+      await pending
+
+      expect(failureOf(harness)).toMatchObject({ code: "output-handoff-failed", stage: "worker" })
+      expect(await readdir(roots.pending)).toEqual([])
+      expect(harness.calls).toEqual(expect.arrayContaining(["sweep", "cleanup", "reset"]))
+    } finally {
+      if (process.platform !== "win32") await chmod(roots.parent, 0o700).catch(() => undefined)
+      await rm(roots.parent, { recursive: true, force: true })
+    }
+  })
+
+  test("maps a real receiver post-open root race to root-identity-failed", async () => {
+    const roots = await realRoots()
+    try {
+      let checks = 0
+      const harness = makeHarness({
+        createOutputReceiver: (evidence, request) =>
+          DocumentProxyOutput.create(evidence, request, {
+            ...DocumentProxyOutput.defaultDependencies,
+            verifyRoot: async (value) => {
+              checks++
+              if (checks >= 2) throw new DocumentPendingRoot.EvidenceError("simulated-root-replacement")
+              return DocumentPendingRoot.verify(value)
+            },
+          }),
+      })
+      const pending = DocumentProxy.startProxy(harness.dependencies)
+      harness.parent.emit(
+        renderLaunch({
+          parentRoot: roots.parent,
+          parentIdentity: wireIdentity(roots.parentInfo),
+          jobRoot: roots.job,
+          jobRootIdentity: wireIdentity(roots.jobInfo),
+          pendingRoot: roots.pending,
+          pendingRootIdentity: wireIdentity(roots.pendingInfo),
+        }),
+      )
+      await harness.parent.waitFor("accepted")
+      harness.transport.emit(renderStarted())
+      harness.transport.emit(outputStart(1))
+      await pending
+
+      expect(failureOf(harness)).toMatchObject({ code: "root-identity-failed", stage: "worker" })
+      const entries = await readdir(roots.pending)
+      expect(entries).toHaveLength(1)
+      expect((await lstat(path.join(roots.pending, entries[0]!))).size).toBe(0)
+    } finally {
+      if (process.platform !== "win32") await chmod(roots.parent, 0o700).catch(() => undefined)
+      await rm(roots.parent, { recursive: true, force: true })
+    }
   })
 
   test("binds bounded pipes before acceptance, re-encodes ordered messages, and holds success through teardown", async () => {
@@ -150,6 +286,9 @@ describe("document confinement proxy lifecycle", () => {
     harness.transport.block = true
     harness.transport.emit(renderStarted())
     harness.transport.emit(pageReady())
+    await waitUntil(() =>
+      harness.parent.messages.some((message) => message.type === "event" && message.event.type === "page-ready"),
+    )
     harness.parent.emit(ocrCommand())
     await waitUntil(() => harness.transport.sent.length === 2)
     for (let index = 0; index < DocumentRuntimeLimits.MaxOuterPendingMessages; index++) {
@@ -345,6 +484,7 @@ describe("document confinement proxy failure boundaries", () => {
     exact.child.stdout.write(frameAtSize(started(), DocumentRuntimeLimits.MaxNdjsonLineBytes))
     await exact.parent.waitFor("event")
     exact.child.stdout.write(Buffer.from(`${JSON.stringify(completed())}\n`))
+    await tick()
     exact.child.complete(0)
     await exactPending
     expect(types(exact)).toEqual(["accepted", "event", "event", "closed"])
@@ -710,7 +850,7 @@ function makeHarness(options: HarnessOptions = {}) {
     preparePolicy: async (input) => {
       calls.push("prepare-policy")
       await options.startupGate?.wait("prepare-policy")
-      return { status: "available", value: preparedPolicy(input.runtimeRoot, input.jobRoot) }
+      return { status: "available", value: preparedPolicy(input) }
     },
     verifyDependencies: async () => {
       calls.push("verify-dependencies")
@@ -740,6 +880,14 @@ function makeHarness(options: HarnessOptions = {}) {
       if (options.transportFailure) throw new Error("transport /private/path canary")
       return transport
     },
+    createOutputReceiver: () => ({
+      handle: async (message) =>
+        message.type === "output-start" || message.type === "output-chunk" || message.type === "output-end"
+          ? undefined
+          : message,
+      release: async () => true,
+      cleanup: async () => undefined,
+    }),
     sweepProcessTree: async () => {
       terminations++
       calls.push("sweep")
@@ -773,7 +921,7 @@ function makeHarness(options: HarnessOptions = {}) {
   }
 }
 
-function preparedPolicy(runtimeRoot: string, jobRoot: string): PreparedPolicy {
+function preparedPolicy(input: Parameters<typeof DocumentSandboxPolicy.prepare>[0]): PreparedPolicy {
   const target = "x86_64-unknown-linux-gnu" as const
   const sandboxAssets = DocumentSandboxPolicy.resolveSandboxAssets("/sandbox", target)
   const hostHelpers = {
@@ -784,16 +932,23 @@ function preparedPolicy(runtimeRoot: string, jobRoot: string): PreparedPolicy {
   }
   return {
     target,
-    runtimeRoot,
-    jobRoot,
+    runtimeRoot: input.runtimeRoot,
+    parentRoot: input.parentRoot,
+    parentIdentity: input.parentIdentity,
+    parentMode: input.parentMode,
+    jobRoot: input.jobRoot,
+    jobRootIdentity: input.jobRootIdentity,
+    pendingRoot: input.pendingRoot,
+    pendingRootIdentity: input.pendingRootIdentity,
     sandboxAssets,
-    runtimeAssets: DocumentSandboxPolicy.resolveRuntimeAssets(runtimeRoot, target),
+    runtimeAssets: DocumentSandboxPolicy.resolveRuntimeAssets(input.runtimeRoot, target),
     executablePath: "/host/node",
     hostHelpers,
     config: DocumentSandboxPolicy.buildConfig({
       target,
-      runtimeRoot,
-      jobRoot,
+      runtimeRoot: input.runtimeRoot,
+      jobRoot: input.jobRoot,
+      pendingRoot: input.pendingRoot,
       executablePath: "/host/node",
       sandboxAssets,
       hostHelpers,
@@ -801,7 +956,7 @@ function preparedPolicy(runtimeRoot: string, jobRoot: string): PreparedPolicy {
     }),
     command: { command: "fixed-bootstrap", binShell: "/bin/sh" },
     brokerEnvironment: { PATH: "/usr/bin:/bin" },
-    handoffEnvironment: { DOCUMENT_JOB_ROOT: jobRoot },
+    handoffEnvironment: { DOCUMENT_JOB_ROOT: input.jobRoot },
   }
 }
 
@@ -919,6 +1074,7 @@ function fakeChild(missingPipe = false, missingPid = false) {
 }
 
 function launch(overrides: Record<string, unknown> = {}) {
+  const jobRoot = typeof overrides.jobRoot === "string" ? overrides.jobRoot : "/jobs/one"
   return DocumentSandboxProtocol.decodeParentRequest({
     protocolVersion: 1,
     type: "launch",
@@ -926,7 +1082,13 @@ function launch(overrides: Record<string, unknown> = {}) {
     target: "x86_64-unknown-linux-gnu",
     runtimeRoot: "/runtime",
     manifestSha256: digest,
-    jobRoot: "/jobs/one",
+    parentRoot: pathForTest(jobRoot).dirname(jobRoot),
+    parentIdentity: { dev: "1", ino: "1" },
+    parentMode: process.platform === "win32" ? null : 0o500,
+    jobRoot,
+    jobRootIdentity: { dev: "1", ino: "2" },
+    pendingRoot: pathForTest(jobRoot).join(pathForTest(jobRoot).dirname(jobRoot), "pending"),
+    pendingRootIdentity: { dev: "1", ino: "3" },
     start: {
       protocolVersion: 1,
       type: "probe",
@@ -936,6 +1098,10 @@ function launch(overrides: Record<string, unknown> = {}) {
     },
     ...overrides,
   }) as Extract<DocumentSandboxProtocol.ParentRequest, { readonly type: "launch" }>
+}
+
+function pathForTest(value: string) {
+  return /^[A-Za-z]:\\/.test(value) ? path.win32 : path.posix
 }
 
 function sizedLaunch(bytes: number) {
@@ -966,7 +1132,7 @@ function completed() {
   })
 }
 
-function renderLaunch() {
+function renderLaunch(overrides: Record<string, unknown> = {}) {
   return launch({
     start: {
       protocolVersion: 1,
@@ -978,6 +1144,7 @@ function renderLaunch() {
       pageCount: 1,
       limits: DocumentRuntimeLimits.requestedHard,
     },
+    ...overrides,
   })
 }
 
@@ -990,7 +1157,7 @@ function renderStarted() {
   })
 }
 
-function pageReady() {
+function pageReady(overrides: Record<string, unknown> = {}) {
   return DocumentRuntimeProtocol.decodeWorkerEvent({
     protocolVersion: 1,
     type: "page-ready",
@@ -998,9 +1165,75 @@ function pageReady() {
     page: 1,
     pageID: "page_00000000-0000-4000-8000-000000000001",
     outputPath: "pages/one.png",
+    outputID,
+    outputSha256: digest,
     dimensions: { width: 1, height: 1 },
     pngBytes: 1,
     temporaryBytes: 1,
+    ...overrides,
+  })
+}
+
+function outputStart(declaredBytes: number) {
+  return DocumentRuntimeProtocol.decodeWorkerOutput({
+    protocolVersion: 1,
+    type: "output-start",
+    jobID,
+    outputID,
+    kind: "page-png",
+    page: 1,
+    pageID: "page_00000000-0000-4000-8000-000000000001",
+    sourcePath: "pages/one.png",
+    declaredBytes,
+  })
+}
+
+function outputChunk(sequence: number, body: Uint8Array) {
+  return DocumentRuntimeProtocol.decodeWorkerOutput({
+    protocolVersion: 1,
+    type: "output-chunk",
+    jobID,
+    outputID,
+    sequence,
+    data: DocumentRuntimeProtocol.encodeCanonicalBase64(body),
+  })
+}
+
+function outputEnd(chunks: number, actualBytes: number, sha256: string) {
+  return DocumentRuntimeProtocol.decodeWorkerOutput({
+    protocolVersion: 1,
+    type: "output-end",
+    jobID,
+    outputID,
+    chunks,
+    actualBytes,
+    sha256,
+  })
+}
+
+function releaseCommand() {
+  return DocumentSandboxProtocol.decodeParentRequest({
+    protocolVersion: 1,
+    type: "command",
+    jobID,
+    command: {
+      protocolVersion: 1,
+      type: "release-page",
+      jobID,
+      page: 1,
+      pageID: "page_00000000-0000-4000-8000-000000000001",
+    },
+  })
+}
+
+function renderCompleted() {
+  return DocumentRuntimeProtocol.decodeWorkerEvent({
+    protocolVersion: 1,
+    type: "completed",
+    jobID,
+    operation: "render",
+    pagesProcessed: 1,
+    temporaryBytes: 0,
   })
 }
 
@@ -1123,6 +1356,22 @@ async function waitUntil(predicate: () => boolean) {
     if (Date.now() >= deadline) throw new Error("condition not reached")
     await tick()
   }
+}
+
+async function realRoots() {
+  const parent = await realpath(await mkdtemp(path.join(os.tmpdir(), "document-proxy-roots-")))
+  const job = path.join(parent, "job")
+  const pending = path.join(parent, "pending")
+  await Promise.all([mkdir(job), mkdir(pending)])
+  if (process.platform !== "win32") await chmod(parent, 0o500)
+  const [parentInfo, jobInfo, pendingInfo] = await Promise.all(
+    [parent, job, pending].map((value) => lstat(value, { bigint: true })),
+  )
+  return { parent, job, pending, parentInfo, jobInfo, pendingInfo }
+}
+
+function wireIdentity(identity: { readonly dev: bigint; readonly ino: bigint }) {
+  return { dev: identity.dev.toString(), ino: identity.ino.toString() }
 }
 
 function tick() {

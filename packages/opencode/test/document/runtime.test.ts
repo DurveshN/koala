@@ -2,13 +2,12 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { DocumentRuntimeLimits } from "@koala-ai/core/document-runtime/limits"
 import { DocumentRuntimeManifest } from "@koala-ai/core/document-runtime/manifest"
 import { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
-import { terminateProcessTree } from "@koala-ai/document-runtime"
 import { Deferred, Effect, Fiber, Ref, Schema } from "effect"
 import { createHash } from "node:crypto"
-import { fork } from "node:child_process"
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import { DocumentRuntime } from "@/document/runtime"
 
 const roots: string[] = []
@@ -16,69 +15,63 @@ const target = DocumentRuntimeTarget.fromHost(
   Schema.decodeUnknownSync(DocumentRuntimeTarget.HostPlatform)(process.platform),
   Schema.decodeUnknownSync(DocumentRuntimeTarget.HostArchitecture)(process.arch),
 )
-const runtime = await makeRuntime("fixture-worker.js", true)
+const proxyPath = fileURLToPath(new URL("./fixture-proxy.js", import.meta.url))
+const proxyAssetsRoot = import.meta.dir
+const runtime = await makeRuntime("success", true)
 
 afterAll(async () => {
   await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })))
 })
 
-describe("document runtime adapter", () => {
-  test("reads one immutable production configuration without fallback", () => {
+describe("document runtime proxy coordinator", () => {
+  test("requires one complete runtime, digest, proxy, and assets configuration", () => {
     expect(
       DocumentRuntime.configFromEnvironment({
         KOALA_DOCUMENT_RUNTIME_PATH: runtime.config.runtimePath,
         KOALA_DOCUMENT_RUNTIME_MANIFEST_SHA256: runtime.config.manifestSha256,
+        KOALA_DOCUMENT_RUNTIME_PROXY_PATH: proxyPath,
+        KOALA_DOCUMENT_RUNTIME_PROXY_ASSETS_ROOT: proxyAssetsRoot,
         KOALA_DOCUMENT_RUNTIME_REQUIRE_RELEASE_READY: "true",
       }),
-    ).toEqual({ ...runtime.config, requireReleaseReady: true })
-    expect(DocumentRuntime.configFromEnvironment({ PATH: runtime.config.runtimePath })).toBeUndefined()
-    expect(
-      DocumentRuntime.configFromEnvironment({
-        KOALA_DOCUMENT_RUNTIME_PATH: "relative",
+    ).toEqual(runtime.config)
+    for (const key of [
+      "KOALA_DOCUMENT_RUNTIME_PATH",
+      "KOALA_DOCUMENT_RUNTIME_MANIFEST_SHA256",
+      "KOALA_DOCUMENT_RUNTIME_PROXY_PATH",
+      "KOALA_DOCUMENT_RUNTIME_PROXY_ASSETS_ROOT",
+    ]) {
+      const environment = {
+        KOALA_DOCUMENT_RUNTIME_PATH: runtime.config.runtimePath,
         KOALA_DOCUMENT_RUNTIME_MANIFEST_SHA256: runtime.config.manifestSha256,
-      }),
-    ).toEqual({ runtimePath: "relative", manifestSha256: runtime.config.manifestSha256, requireReleaseReady: false })
-    expect(
-      DocumentRuntime.workerEnvironment(
-        runtime.config.runtimePath,
-        target,
-        DocumentRuntimeManifest.Digest.make(runtime.config.manifestSha256),
-        "C:\\private-job",
-        { PATH: "credential-canary", AWS_SECRET_ACCESS_KEY: "credential-canary" },
-      ),
-    ).not.toHaveProperty("PATH")
-  })
-
-  test("probes a verified root with a reduced worker environment", async () => {
-    process.env.AWS_SECRET_ACCESS_KEY = "credential-canary"
-    try {
-      const available = await run(
-        runtime.config,
-        Effect.gen(function* () {
-          return yield* (yield* DocumentRuntime.Service).probe()
-        }),
-      )
-      expect(available).toEqual({ status: "available", target, runtimeVersion: "0.1.0-test", releaseReady: true })
-    } finally {
-      delete process.env.AWS_SECRET_ACCESS_KEY
+        KOALA_DOCUMENT_RUNTIME_PROXY_PATH: proxyPath,
+        KOALA_DOCUMENT_RUNTIME_PROXY_ASSETS_ROOT: proxyAssetsRoot,
+      }
+      delete environment[key as keyof typeof environment]
+      expect(DocumentRuntime.configFromEnvironment(environment)).toBeUndefined()
     }
+    expect(DocumentRuntime.configFromEnvironment({ PATH: runtime.config.runtimePath })).toBeUndefined()
   })
 
-  test("fails closed when no native-confinement launcher is supplied", async () => {
-    expect(
-      await Effect.runPromise(
-        Effect.gen(function* () {
-          return yield* (yield* DocumentRuntime.Service).availability()
-        }).pipe(Effect.provide(DocumentRuntime.layer(runtime.config))),
-      ),
-    ).toEqual({ status: "unavailable", code: "runtime-unavailable" })
+  test("probes through the configured proxy and removes the private child and parent", async () => {
+    const before = new Set(await Array.fromAsync(new Bun.Glob("opencode-document-*").scan(os.tmpdir())))
+    const available = await run(
+      runtime.config,
+      Effect.gen(function* () {
+        return yield* (yield* DocumentRuntime.Service).probe()
+      }),
+    )
+    const after = new Set(await Array.fromAsync(new Bun.Glob("opencode-document-*").scan(os.tmpdir())))
+    expect(available).toEqual({ status: "available", target, runtimeVersion: "0.1.0-test", releaseReady: true })
+    expect(after).toEqual(before)
   })
 
-  test("fails closed for absent, relative, hash-mismatched, and incomplete runtimes", async () => {
-    const incomplete = await makeRuntime("fixture-worker.js", false)
+  test("fails closed for absent, partial, relative, hash-mismatched, and incomplete configuration", async () => {
+    const incomplete = await makeRuntime("success", false, false)
     const configs: Array<DocumentRuntime.Config | undefined> = [
       undefined,
       { ...runtime.config, runtimePath: "relative" },
+      { ...runtime.config, proxyPath: "relative" },
+      { ...runtime.config, proxyAssetsRoot: "relative" },
       { ...runtime.config, manifestSha256: "0".repeat(64) },
       { ...incomplete.config, requireReleaseReady: true },
     ]
@@ -94,7 +87,7 @@ describe("document runtime adapter", () => {
     }
   })
 
-  test("returns direct image OCR bytes without exposing a private path", async () => {
+  test("returns image OCR bytes only after the proxy closes and the job tree is deleted", async () => {
     const image = await temporaryFile("source.png", png(12, 8))
     const result = await run(
       runtime.config,
@@ -108,10 +101,10 @@ describe("document runtime adapter", () => {
     expect(Object.keys(result).sort()).toEqual(["dimensions", "page", "tsv", "tsvBytes"])
   })
 
-  test("keeps each rendered page and TSV scoped to one callback then releases it", async () => {
+  test("preserves inner and outer continuation order while scoping each rendered page", async () => {
     const pdf = await temporaryFile("source.pdf", Buffer.from("fixture-pdf"))
     const paths: string[] = []
-    const pages = await run(
+    const result = await run(
       runtime.config,
       Effect.gen(function* () {
         return yield* (yield* DocumentRuntime.Service).renderAndOcr(
@@ -123,20 +116,22 @@ describe("document runtime adapter", () => {
                 expect(await Bun.file(paths[paths.length - 1]).exists()).toBe(false)
               }
               expect(await Bun.file(page.pagePath).exists()).toBe(true)
-              expect(await Bun.file(page.tsvPath).exists()).toBe(true)
-              expect(await Bun.file(page.tsvPath).text()).toContain(`\t${page.page}\tfixture`)
+              expect(await Bun.file(page.tsvPath).text()).toContain(`\t${page.page}\n`)
+              expect(path.basename(path.dirname(page.pagePath))).toStartWith("pending-")
+              expect(path.basename(path.dirname(page.tsvPath))).toStartWith("pending-")
+              expect(page.pagePath).not.toContain(`${path.sep}pages${path.sep}`)
+              expect(page.tsvPath).not.toContain(`${path.sep}ocr${path.sep}`)
               paths.push(page.pagePath, page.tsvPath)
             }),
         )
       }),
     )
-    expect(pages).toEqual({ pagesProcessed: 2 })
-    expect(paths).toHaveLength(4)
+    expect(result).toEqual({ pagesProcessed: 2 })
     expect(await Promise.all(paths.map((file) => Bun.file(file).exists()))).toEqual([false, false, false, false])
   })
 
-  test("shares a process-global two-job concurrency limit across layers", async () => {
-    const pdf = await temporaryFile("source.pdf", Buffer.from("fixture-pdf"))
+  test("retains the process-global two-job concurrency limit across layers", async () => {
+    const pdf = await temporaryFile("concurrency.pdf", Buffer.from("fixture-pdf"))
     await run(
       runtime.config,
       Effect.gen(function* () {
@@ -150,8 +145,8 @@ describe("document runtime adapter", () => {
           Effect.gen(function* () {
             const current = yield* Ref.updateAndGet(active, (value) => value + 1)
             yield* Ref.update(maximum, (value) => Math.max(value, current))
-            yield* Ref.update(calls, (value) => value + 1)
-            if (current === 2) yield* Deferred.succeed(twoEntered, undefined)
+            const count = yield* Ref.updateAndGet(calls, (value) => value + 1)
+            if (count === 2) yield* Deferred.succeed(twoEntered, undefined)
             yield* Deferred.await(gate)
             yield* Ref.update(active, (value) => value - 1)
           })
@@ -172,26 +167,12 @@ describe("document runtime adapter", () => {
     )
   })
 
-  test("rejects the incomplete real built worker until bundled Tesseract is present", async () => {
-    const built = path.resolve(import.meta.dir, "../../../document-runtime/dist", target, "worker", "worker.js")
-    if (!(await Bun.file(built).exists())) return
-    const builtRuntime = await makeRuntime(built, false)
-    const error = await run(
-      builtRuntime.config,
-      Effect.gen(function* () {
-        return yield* (yield* DocumentRuntime.Service).probe()
-      }).pipe(Effect.flip),
-    )
-    expect(error).toEqual(expect.objectContaining({ code: "runtime-unavailable", stage: "probe" }))
-  })
-
   test.each([
-    ["fixture-invalid-worker.js", "worker-failed"],
-    ["fixture-wrong-order-worker.js", "invalid-order"],
-    ["fixture-wrong-job-worker.js", "job-mismatch"],
-    ["fixture-crash-worker.js", "worker-failed"],
-  ])("rejects invalid or crashed worker %s", async (fixture, code) => {
-    const broken = await makeRuntime(fixture, true)
+    ["invalid-outer", "protocol-mismatch"],
+    ["wrong-order", "invalid-order"],
+    ["wrong-job", "protocol-mismatch"],
+  ])("rejects hostile outer lifecycle mode %s without leaking diagnostics", async (mode, code) => {
+    const broken = await makeRuntime(mode, true)
     const error = await run(
       broken.config,
       Effect.gen(function* () {
@@ -203,46 +184,66 @@ describe("document runtime adapter", () => {
     expect(error).not.toHaveProperty("cause")
   })
 
-  test("enforces the whole-job deadline and accepts caller interruption", async () => {
-    const hanging = await makeRuntime("fixture-hang-worker.js", true)
-    const image = await temporaryFile("source.png", png(12, 8))
-    const limits = { ...DocumentRuntimeLimits.requestedHard, jobDeadlineMs: 25 }
-    const deadline = await run(
-      hanging.config,
+  test("does not poison later jobs after an ordinary parser failure with confirmed closure", async () => {
+    const parserFailure = await makeRuntime("parser-failure", true)
+    const error = await run(
+      parserFailure.config,
       Effect.gen(function* () {
-        return yield* (yield* DocumentRuntime.Service).ocr({ inputPath: image, limits })
+        return yield* (yield* DocumentRuntime.Service).probe()
       }).pipe(Effect.flip),
     )
-    expect(deadline).toEqual(
-      expect.objectContaining({ code: "job-deadline-exceeded", stage: "worker", retryable: true }),
-    )
-
-    const cancelPdf = await temporaryFile("cancel.pdf", Buffer.from("fixture-pdf"))
-    const scoped = await run(
-      runtime.config,
-      Effect.gen(function* () {
-        const service = yield* DocumentRuntime.Service
-        const entered = yield* Deferred.make<DocumentRuntime.ScopedPage>()
-        const fiber = yield* service
-          .renderAndOcr({ inputPath: cancelPdf, startPage: 1, pageCount: 1 }, (page) =>
-            Deferred.succeed(entered, page).pipe(Effect.andThen(Effect.never)),
-          )
-          .pipe(Effect.forkChild)
-        const page = yield* Deferred.await(entered).pipe(Effect.timeout("5 seconds"))
-        expect(yield* Effect.promise(() => Bun.file(page.pagePath).exists())).toBe(true)
-        expect(yield* Effect.promise(() => Bun.file(page.tsvPath).exists())).toBe(true)
-        yield* Fiber.interrupt(fiber)
-        return page
-      }),
-    )
-    expect(await Bun.file(scoped.pagePath).exists()).toBe(false)
-    expect(await Bun.file(scoped.tsvPath).exists()).toBe(false)
+    expect(error).toEqual(expect.objectContaining({ code: "render-failed", stage: "render" }))
+    expect(
+      await run(
+        runtime.config,
+        Effect.gen(function* () {
+          return yield* (yield* DocumentRuntime.Service).availability()
+        }),
+      ),
+    ).toEqual(expect.objectContaining({ status: "available" }))
   })
 
-  test("bounds a stalled confinement-launcher termination and applies the process-tree fallback", async () => {
-    const hanging = await makeRuntime("fixture-ignore-cancel-worker.js", true)
-    const image = await temporaryFile("bounded-reap.png", png(12, 8))
-    const started = Date.now()
+  test("rejects an oversized worker output without exposing its writable path", async () => {
+    const oversized = await makeRuntime("oversize-output", true)
+    const image = await temporaryFile("oversized.png", png(12, 8))
+    const error = await run(
+      oversized.config,
+      Effect.gen(function* () {
+        return yield* (yield* DocumentRuntime.Service).ocr({ inputPath: image })
+      }).pipe(Effect.flip),
+    )
+    expect(error).toEqual(expect.objectContaining({ code: "worker-failed" }))
+    expect(
+      await run(
+        runtime.config,
+        Effect.gen(function* () {
+          return yield* (yield* DocumentRuntime.Service).availability()
+        }),
+      ),
+    ).toEqual(expect.objectContaining({ status: "available" }))
+  })
+
+  test.each(["duplicate-output-id", "wrong-output-extension"])(
+    "rejects parent output correlation mode %s",
+    async (mode) => {
+      const broken = await makeRuntime(mode, true)
+      const pdf = await temporaryFile(`${mode}.pdf`, Buffer.from("fixture-pdf"))
+      const error = await run(
+        broken.config,
+        Effect.gen(function* () {
+          return yield* (yield* DocumentRuntime.Service).renderAndOcr(
+            { inputPath: pdf, startPage: 1, pageCount: 1 },
+            () => Effect.void,
+          )
+        }).pipe(Effect.flip),
+      )
+      expect(error).toEqual(expect.objectContaining({ code: "invalid-order", stage: "worker" }))
+    },
+  )
+
+  test("wraps deadline and caller interruption in one outer cancel and verifies cleanup", async () => {
+    const hanging = await makeRuntime("hang", true)
+    const image = await temporaryFile("deadline.png", png(12, 8))
     const error = await run(
       hanging.config,
       Effect.gen(function* () {
@@ -251,34 +252,54 @@ describe("document runtime adapter", () => {
           limits: { ...DocumentRuntimeLimits.requestedHard, jobDeadlineMs: 25 },
         })
       }).pipe(Effect.flip),
-      { ...testLauncher, terminate: () => new Promise<void>(() => undefined) },
     )
-    expect(error).toEqual(expect.objectContaining({ code: "job-deadline-exceeded", stage: "worker" }))
-    expect(Date.now() - started).toBeLessThan(6_000)
+    expect(error).toEqual(expect.objectContaining({ code: "job-deadline-exceeded", retryable: true }))
+
+    const pdf = await temporaryFile("cancel.pdf", Buffer.from("fixture-pdf"))
+    const page = await run(
+      runtime.config,
+      Effect.gen(function* () {
+        const service = yield* DocumentRuntime.Service
+        const entered = yield* Deferred.make<DocumentRuntime.ScopedPage>()
+        const fiber = yield* service
+          .renderAndOcr({ inputPath: pdf, startPage: 1, pageCount: 1 }, (value) =>
+            Deferred.succeed(entered, value).pipe(Effect.andThen(Effect.never)),
+          )
+          .pipe(Effect.forkChild)
+        const value = yield* Deferred.await(entered).pipe(Effect.timeout("5 seconds"))
+        yield* Fiber.interrupt(fiber)
+        return value
+      }),
+    )
+    expect(await Bun.file(page.pagePath).exists()).toBe(false)
+    expect(await Bun.file(page.tsvPath).exists()).toBe(false)
+  })
+
+  test("latches the process unhealthy after pending-root identity failure", async () => {
+    const identityFailure = await makeRuntime("root-identity-failure", true)
+    const error = await run(
+      identityFailure.config,
+      Effect.gen(function* () {
+        return yield* (yield* DocumentRuntime.Service).probe()
+      }).pipe(Effect.flip),
+    )
+    expect(error).toEqual(expect.objectContaining({ code: "worker-failed" }))
+    expect(
+      await run(
+        runtime.config,
+        Effect.gen(function* () {
+          return yield* (yield* DocumentRuntime.Service).availability()
+        }),
+      ),
+    ).toEqual({ status: "unavailable", code: "runtime-unavailable" })
   })
 })
-
-const testLauncher: DocumentRuntime.NativeConfinementLauncher = {
-  launch: (input) =>
-    fork(input.workerPath, [], {
-      cwd: input.cwd,
-      detached: process.platform !== "win32",
-      env: input.environment,
-      execArgv: [],
-      serialization: "json",
-      stdio: ["ignore", "pipe", "pipe", "ipc"],
-    }),
-  terminate: (child, graceMs) => terminateProcessTree(child, process.platform, process.env.SystemRoot, graceMs),
-}
 
 async function run<A, E>(
   config: DocumentRuntime.Config | undefined,
   effect: Effect.Effect<A, E, DocumentRuntime.Service>,
-  launcher = testLauncher,
 ) {
-  return Effect.runPromise(
-    effect.pipe(Effect.provide(DocumentRuntime.layer(config, launcher))),
-  )
+  return Effect.runPromise(effect.pipe(Effect.provide(DocumentRuntime.layer(config))))
 }
 
 async function temporaryFile(name: string, body: Uint8Array) {
@@ -289,7 +310,7 @@ async function temporaryFile(name: string, body: Uint8Array) {
   return file
 }
 
-async function makeRuntime(worker: string, releaseReady: boolean) {
+async function makeRuntime(mode: string, releaseReady: boolean, complete = true) {
   const root = await mkdtemp(path.join(os.tmpdir(), "document-adapter-runtime-"))
   roots.push(root)
   const nativePackage = {
@@ -302,6 +323,8 @@ async function makeRuntime(worker: string, releaseReady: boolean) {
   }[target]
   const executable = target.includes("windows") ? "bin/tesseract.exe" : "bin/tesseract"
   const files = [
+    "package.json",
+    "worker/bootstrap.js",
     "worker/worker.js",
     executable,
     "tessdata/eng.traineddata",
@@ -316,13 +339,10 @@ async function makeRuntime(worker: string, releaseReady: boolean) {
     "LICENSE",
   ]
   for (const file of files) await mkdir(path.dirname(path.join(root, ...file.split("/"))), { recursive: true })
-  await copyFile(
-    path.isAbsolute(worker) ? worker : path.join(import.meta.dir, worker),
-    path.join(root, "worker", "worker.js"),
-  )
+  await copyFile(proxyPath, path.join(root, "worker", "worker.js"))
   await Promise.all(
     files
-      .slice(1)
+      .filter((file) => file !== "worker/worker.js")
       .map((file) => writeFile(path.join(root, ...file.split("/")), file === executable ? "fixture" : file)),
   )
   if (!target.includes("windows")) await chmod(path.join(root, executable), 0o755)
@@ -350,12 +370,12 @@ async function makeRuntime(worker: string, releaseReady: boolean) {
       {
         name: "fixture",
         version: "0.1.0",
-        sourceRevision: "test",
+        sourceRevision: mode,
         sourceSha256: DocumentRuntimeManifest.Digest.make("1".repeat(64)),
         licenseFiles: ["LICENSE"],
       },
     ],
-    files: manifestFiles,
+    files: complete ? manifestFiles : manifestFiles.filter((file) => file.path !== "worker/bootstrap.js"),
     dependencies: [],
   })
   const manifestBody = `${JSON.stringify(manifest)}\n`
@@ -365,6 +385,8 @@ async function makeRuntime(worker: string, releaseReady: boolean) {
     config: {
       runtimePath: root,
       manifestSha256: createHash("sha256").update(manifestBody).digest("hex"),
+      proxyPath,
+      proxyAssetsRoot,
       requireReleaseReady: releaseReady,
     } satisfies DocumentRuntime.Config,
   }

@@ -21,6 +21,16 @@ export const AbsolutePath = Schema.String.check(
 ).pipe(Schema.brand("DocumentSandboxProtocol.AbsolutePath"))
 export type AbsolutePath = typeof AbsolutePath.Type
 
+const FilesystemIdentityComponent = Schema.String.check(
+  Schema.isPattern(/^(?:0|[1-9][0-9]{0,19})$/),
+  Schema.makeFilter((value) => (BigInt(value) <= 18_446_744_073_709_551_615n ? undefined : "Identity exceeds uint64")),
+)
+export const FilesystemIdentity = Schema.Struct({
+  dev: FilesystemIdentityComponent,
+  ino: FilesystemIdentityComponent,
+})
+export type FilesystemIdentity = typeof FilesystemIdentity.Type
+
 export const LaunchRequest = Schema.Struct({
   protocolVersion: ProtocolVersion,
   type: Schema.Literal("launch"),
@@ -28,7 +38,13 @@ export const LaunchRequest = Schema.Struct({
   target: DocumentRuntimeTarget.Target,
   runtimeRoot: AbsolutePath,
   manifestSha256: DocumentRuntimeManifest.Digest,
+  parentRoot: AbsolutePath,
+  parentIdentity: FilesystemIdentity,
+  parentMode: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(0o777))),
   jobRoot: AbsolutePath,
+  jobRootIdentity: FilesystemIdentity,
+  pendingRoot: AbsolutePath,
+  pendingRootIdentity: FilesystemIdentity,
   start: DocumentRuntimeProtocol.InitialRequest,
 }).check(
   Schema.makeFilter((request) =>
@@ -43,6 +59,11 @@ export const LaunchRequest = Schema.Struct({
     request.start.type !== "probe" || request.manifestSha256 === request.start.manifestSha256
       ? undefined
       : "Probe manifest digest must match the launch digest",
+  ),
+  Schema.makeFilter((request) =>
+    siblingRoots(request.parentRoot, request.jobRoot, request.pendingRoot)
+      ? undefined
+      : "Job and pending roots must be distinct direct siblings",
   ),
 )
 
@@ -93,6 +114,8 @@ export const FailureCode = Schema.Literals([
   "dependency-failed",
   "spawn-failed",
   "transport-overflow",
+  "output-handoff-failed",
+  "root-identity-failed",
   "worker-crashed",
   "termination-failed",
   "command-cleanup-failed",
@@ -224,4 +247,16 @@ export function advanceLifecycle(state: LifecycleState, message: ParentRequest |
 
 function lifecycleSuccess(state: LifecycleState): LifecycleResult {
   return { ok: true, state }
+}
+
+function siblingRoots(parent: string, left: string, right: string) {
+  const normalize = (value: string) => value.replaceAll("\\", "/").replace(/\/+$/, "")
+  const leftPath = normalize(left)
+  const rightPath = normalize(right)
+  if (leftPath.toLowerCase() === rightPath.toLowerCase()) return false
+  const expected = normalize(parent).toLowerCase()
+  return (
+    leftPath.slice(0, leftPath.lastIndexOf("/")).toLowerCase() === expected &&
+    rightPath.slice(0, rightPath.lastIndexOf("/")).toLowerCase() === expected
+  )
 }

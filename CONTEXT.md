@@ -485,6 +485,106 @@ Document confinement Phase 4 verification completed on 2026-09-20:
   execution remains inactive pending the Phase 5 coordinator cutover and later
   native release gates.
 
+Document-runtime confinement Phase 5 is implemented. Each coordinator job now
+uses a private temporary parent, random child directory, precreated job-local
+`tmp`, parent-owned sibling pending directory, canonical paths, and bigint
+filesystem identities. The confined worker streams every PNG and TSV through
+strict `output-start`, canonical-base64 `output-chunk`, and `output-end` NDJSON
+frames before its matching normal event. Ten-KiB raw chunks and requested
+per-output, cumulative payload, and live-temporary limits are accounted
+separately from the 512-frame/1-MiB control budget. The proxy never opens the
+worker path: it writes and hashes decoded bytes serially into an exclusive
+random pending file, verifies its identity, exact size, and SHA-256, then
+rewrites the normal event to its own pending-relative path and verified digest.
+The parent opens only that pending file with no link following and repeats the
+identity, size, stability, and digest checks. OCR reads and render callbacks
+consume only these stable files; worker-writable paths and transfer payloads do
+not cross parent IPC.
+
+After confirmed process-tree exit, cleanup rechecks the parent, child, and
+pending identities, refuses link/reparse or replacement traversal, and
+atomically renames each owned directory to a random tombstone beneath the
+non-writable parent. A short-lived fixed helper performs recursive deletion
+under a hard deadline. The parent requires observed clean helper exit,
+tombstone absence, an empty identity-matched parent, and verified parent
+absence. Timeout, helper error, or missing exit evidence leaves process-known
+tombstone names for later reconciliation and marks the runtime unhealthy.
+Incremental creation ownership uses the same verified bounded cleanup path;
+uncertain creation cleanup also propagates to the unhealthy latch.
+
+The OpenCode coordinator now requires one complete runtime-path, manifest-
+digest, proxy-path, and proxy-assets configuration and launches only the
+canonical proxy beneath that assets root. It wraps launch, continuation, and
+cancellation in the strict outer protocol, reserves lifecycle transitions
+synchronously before serialized bounded IPC sends, independently advances outer
+and inner ordering, retains the process-global two-job semaphore, and accepts
+success only after the terminal event, `closed`, IPC disconnect, clean proxy
+exit, bounded stdout/stderr end-and-close drainage, output promotion, and
+verified tombstone and parent deletion. Late send callbacks cannot replace a
+newer cancellation or terminal state. Missing closure, unconfirmed termination
+or deletion, diagnostic overflow/error/incomplete drainage, and proxy-reported
+command-cleanup, reset, or termination failures set a process-global unhealthy
+latch; a cleanly closed parser failure does not. Later jobs fail closed after
+the latch is set.
+
+The proxy independently validates that `jobRoot` and `pendingRoot` are canonical
+non-link direct siblings beneath the same private parent. Only `jobRoot` enters
+the sandbox allowlists, command working directory, and bootstrap handoff;
+`pendingRoot` is explicitly denied to the sandbox and remains proxy/parent-owned.
+Output transfer IDs are job-unique, only one transfer may be active, chunk
+sequences and exact final-short geometry are enforced, and duplicate,
+interleaved, missing, trailing, malformed, oversized, or digest-mismatched
+payloads enter curated teardown without exposing base64, paths, or bytes.
+Recorded private-parent, job-root, and pending-root bigint identities cross the
+JSON outer protocol as strict canonical decimal strings and return to bigint
+before policy and filesystem comparisons. Proxy and parent pending-file
+operations revalidate both parent and pending canonical paths, non-link status,
+and identities around create, open, finalize, read, and release boundaries;
+root-evidence mismatch has a distinct proxy failure and marks the process
+unhealthy. The worker fills each logical 10-KiB output chunk across repeated
+short reads before encoding it. Parent shutdown uses one absolute ten-second
+deadline shared by cancel delivery, cooperative closure, tree reaping,
+diagnostic drainage, tombstoning, and helper deletion, with time reserved for
+the deletion phase rather than adding independent maxima.
+
+Proxy pending-file creation is a transactional acquisition: the exclusive
+zero-byte handle, path, and bigint identity are retained immediately after open;
+post-open root and pathname identity checks complete before the receiver accepts
+or writes a payload chunk. Failure closes the handle and removes the entry only
+when the original root and file identity can still be proven. Handle close is
+attempted exactly once and its result is retained through output-end and cleanup;
+an unconfirmed close is a root/cleanup failure and marks the runtime unhealthy.
+POSIX private
+parents become owner read/execute-only after both children are created and are
+restored to owner-only writable mode solely by trusted cleanup after confirmed
+tree exit. Windows remains unavailable without the existing ACL-reset and Job
+Object evidence gates.
+
+The direct document-worker launcher, parent-built inner environment, legacy IPC
+adapter and self-start, production document-runtime `process.send` calls, direct
+IPC compatibility test, and seven direct-worker fixtures are removed. Runtime
+tests use one real outer-protocol proxy fixture, and structural tests reject a
+direct worker launch or source proxy fallback. Phase 6 still needs to build,
+stage, and resolve the production proxy and SRT assets, so default production
+configuration remains unavailable until those values are supplied.
+
+Document confinement streaming-handoff remediation verification completed on
+2026-09-21:
+
+- OpenCode document, proxy, sandbox, and `sandbox_execute` regressions: 202
+  passed with 647 assertions.
+- Document Runtime suite: 82 passed with 199 assertions; 2 existing symlink
+  capability tests skipped on this Windows host.
+- Koala document-runtime suite: 202 passed with 426 assertions.
+- Desktop document-runtime, sandbox-runtime, sidecar-environment, staging, and
+  packaging suites: 27 passed with 59 assertions.
+- Koala, Document Runtime, OpenCode, and Desktop typechecks passed.
+- Document Runtime, OpenCode Node, and Desktop builds passed; both emitted
+  worker files passed `node --check`.
+- Native SRT confinement was not exercised or claimed. This Windows host still
+  lacks the Phase 7 native loader, Job Object, ACL reset, and WFP evidence, and
+  stock SRT `0.0.76` remains unable to provide the required ACL-reset evidence.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.

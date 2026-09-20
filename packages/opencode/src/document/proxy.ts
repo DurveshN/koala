@@ -14,6 +14,8 @@ import path from "node:path"
 import type { Readable, Writable } from "node:stream"
 import { pathToFileURL } from "node:url"
 import { DocumentProcess, type ObservedExit, type ProcessHandle } from "./process"
+import { DocumentProxyOutput, type Receiver as OutputReceiver } from "./proxy-output"
+import { DocumentPendingRoot } from "./pending-root"
 import {
   DocumentSandboxPolicy,
   type BootstrapCommand,
@@ -85,6 +87,7 @@ export interface ProxyDependencies {
   readonly applyHandoffEnvironment: typeof DocumentSandboxPolicy.applyHandoffEnvironment
   readonly spawnCommand: (executable: string, args: ReadonlyArray<string>, options: SpawnOptions) => ProxyChild
   readonly createTransport: (input: Readable, output: Writable) => NodeStreamTransport
+  readonly createOutputReceiver: typeof DocumentProxyOutput.create
   readonly sweepProcessTree: typeof DocumentProcess.terminateProcessTree
   readonly verifyWindowsTreeEmpty?: (pid: number) => Promise<boolean>
   readonly timers: TimerDependencies
@@ -102,6 +105,8 @@ const failurePriority: Record<DocumentSandboxProtocol.FailureCode, number> = {
   "dependency-failed": 40,
   "spawn-failed": 50,
   "transport-overflow": 60,
+  "output-handoff-failed": 90,
+  "root-identity-failed": 95,
   "worker-crashed": 70,
   "command-cleanup-failed": 100,
   "reset-failed": 200,
@@ -123,6 +128,7 @@ export function defaultDependencies(): ProxyDependencies {
     applyHandoffEnvironment: DocumentSandboxPolicy.applyHandoffEnvironment,
     spawnCommand: (executable, args, options) => spawn(executable, args, options),
     createTransport: createNodeStreamTransport,
+    createOutputReceiver: DocumentProxyOutput.create,
     sweepProcessTree: DocumentProcess.terminateProcessTree,
     timers: {
       set: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -140,6 +146,7 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
   let order: DocumentRuntimeProtocol.OrderState | undefined
   let child: ProxyChild | undefined
   let transport: NodeStreamTransport | undefined
+  let outputReceiver: OutputReceiver | undefined
   let terminal: DocumentRuntimeProtocol.WorkerEvent | undefined
   let selectedFailure: ProxyFailure | undefined
   let initialized = false
@@ -156,6 +163,7 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
   let streamsClosing = false
   let outerPending = 0
   let outerTail = Promise.resolve()
+  let innerTail = Promise.resolve()
   const parentQueue: unknown[] = []
   const parentSendWaiters = new Set<(error: Error | null) => void>()
   let resolveDone: () => void
@@ -216,12 +224,8 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       outerPending--
     })
   }
-  const sendEvent = (event: DocumentRuntimeProtocol.WorkerEvent) => {
-    void send({ protocolVersion: 1, type: "event", jobID: event.jobID, event }).catch(() => {
-      fail("transport-overflow", "transport")
-      void shutdown()
-    })
-  }
+  const sendEvent = (event: DocumentRuntimeProtocol.WorkerEvent) =>
+    send({ protocolVersion: 1, type: "event", jobID: event.jobID, event })
 
   const onStderr = (chunk: unknown) => {
     if (phase === "closed" || streamsClosing) return
@@ -263,8 +267,10 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
         fail("worker-crashed", "worker")
       }
     }
-    if (!terminal && !selectedFailure) fail("worker-crashed", "worker")
-    void shutdown()
+    void innerTail.then(() => {
+      if (!terminal && !selectedFailure) fail("worker-crashed", "worker")
+      void shutdown()
+    })
   }
   const onInnerDisconnect = (error?: TransportError) => {
     if (phase === "closed" || streamsClosing) return
@@ -272,25 +278,35 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
     fail(error ? "transport-overflow" : "worker-crashed", error ? "transport" : "worker")
     void shutdown()
   }
-  const onInnerMessage = (input: unknown) => {
+  const handleInnerMessage = async (input: unknown) => {
     if (phase !== "active" || !launch || !order || terminal) {
       fail("protocol-mismatch", "transport")
-      void shutdown()
+      await shutdown()
       return
     }
-    let event: DocumentRuntimeProtocol.WorkerEvent
+    let message: DocumentRuntimeProtocol.WorkerOutput
+    let event: DocumentRuntimeProtocol.WorkerEvent | undefined
     try {
-      event = DocumentRuntimeProtocol.decodeWorkerEvent(input)
-      event = DocumentRuntimeProtocol.decodeWorkerEvent(JSON.parse(JSON.stringify(event)))
-    } catch {
-      fail("protocol-mismatch", "transport")
-      void shutdown()
+      message = DocumentRuntimeProtocol.decodeWorkerOutput(input)
+      message = DocumentRuntimeProtocol.decodeWorkerOutput(JSON.parse(JSON.stringify(message)))
+      event = await outputReceiver?.handle(message)
+    } catch (error) {
+      fail(
+        error instanceof DocumentPendingRoot.EvidenceError
+          ? "root-identity-failed"
+          : isOutputInput(input)
+            ? "output-handoff-failed"
+            : "protocol-mismatch",
+        isOutputInput(input) ? "worker" : "transport",
+      )
+      await shutdown()
       return
     }
+    if (!event) return
     const next = DocumentRuntimeProtocol.advanceOrder(order, event)
     if (!next.ok) {
       fail("protocol-mismatch", "transport")
-      void shutdown()
+      await shutdown()
       return
     }
     order = next.state
@@ -299,7 +315,17 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       if (childClosed) void shutdown()
       return
     }
-    sendEvent(event)
+    try {
+      await sendEvent(event)
+    } catch {
+      fail("transport-overflow", "transport")
+      await shutdown()
+    }
+  }
+  const onInnerMessage = (input: unknown) => {
+    const result = innerTail.then(() => handleInnerMessage(input))
+    innerTail = result.catch(() => undefined)
+    return result
   }
 
   const cleanupChildListeners = () => {
@@ -381,6 +407,16 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       else treeContained = true
     }
     if (treeContained) await teardownManager()
+    if (selectedFailure || terminal?.type !== "completed") {
+      try {
+        await outputReceiver?.cleanup()
+      } catch (error) {
+        fail(
+          error instanceof DocumentPendingRoot.EvidenceError ? "root-identity-failed" : "output-handoff-failed",
+          "worker",
+        )
+      }
+    }
     streamsClosing = true
     try {
       transport?.close()
@@ -449,6 +485,10 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       fail("protocol-mismatch", "transport")
       return shutdown()
     }
+    if (request.type === "release-page" && !(await outputReceiver?.release(request))) {
+      fail("output-handoff-failed", "worker")
+      return shutdown()
+    }
     try {
       await transport?.send(request)
       order = next.state
@@ -482,7 +522,13 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       .preparePolicy({
         target: message.target,
         runtimeRoot: message.runtimeRoot,
+        parentRoot: message.parentRoot,
+        parentIdentity: DocumentPendingRoot.identityFromWire(message.parentIdentity),
+        parentMode: message.parentMode ?? undefined,
         jobRoot: message.jobRoot,
+        jobRootIdentity: DocumentPendingRoot.identityFromWire(message.jobRootIdentity),
+        pendingRoot: message.pendingRoot,
+        pendingRootIdentity: DocumentPendingRoot.identityFromWire(message.pendingRootIdentity),
         sandboxAssetsRoot: dependencies.sandboxAssetsRoot,
         executablePath: dependencies.executablePath,
         manifestSha256: message.manifestSha256,
@@ -500,7 +546,13 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
     if (
       policy.target !== message.target ||
       policy.runtimeRoot !== message.runtimeRoot ||
+      policy.parentRoot !== message.parentRoot ||
+      !sameIdentity(policy.parentIdentity, DocumentPendingRoot.identityFromWire(message.parentIdentity)) ||
+      policy.parentMode !== (message.parentMode ?? undefined) ||
       policy.jobRoot !== message.jobRoot ||
+      !sameIdentity(policy.jobRootIdentity, DocumentPendingRoot.identityFromWire(message.jobRootIdentity)) ||
+      policy.pendingRoot !== message.pendingRoot ||
+      !sameIdentity(policy.pendingRootIdentity, DocumentPendingRoot.identityFromWire(message.pendingRootIdentity)) ||
       policy.sandboxAssets.root !== dependencies.sandboxAssetsRoot ||
       policy.executablePath !== dependencies.executablePath ||
       policy.runtimeAssets.bootstrap !==
@@ -509,6 +561,16 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       fail("sandbox-unavailable", "sandbox")
       return shutdown()
     }
+    outputReceiver = dependencies.createOutputReceiver(
+      {
+        parentRoot: message.parentRoot,
+        parentIdentity: DocumentPendingRoot.identityFromWire(message.parentIdentity),
+        parentMode: message.parentMode,
+        pendingRoot: message.pendingRoot,
+        pendingRootIdentity: DocumentPendingRoot.identityFromWire(message.pendingRootIdentity),
+      },
+      message.start,
+    )
 
     if (stopStarting()) return shutdownPromise
     initialized = true
@@ -722,8 +784,24 @@ function protocolMismatch(input: unknown) {
   )
 }
 
+function isOutputInput(input: unknown) {
+  return (
+    typeof input === "object" &&
+    input !== null &&
+    "type" in input &&
+    (input.type === "output-start" || input.type === "output-chunk" || input.type === "output-end")
+  )
+}
+
 function pathForPlatform(platform: NodeJS.Platform) {
   return platform === "win32" ? path.win32 : path.posix
+}
+
+function sameIdentity(
+  left: { readonly dev: bigint; readonly ino: bigint },
+  right: { readonly dev: bigint; readonly ino: bigint },
+) {
+  return left.dev === right.dev && left.ino === right.ino
 }
 
 function processParentPort(): ParentPort {

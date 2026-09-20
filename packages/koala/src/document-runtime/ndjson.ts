@@ -24,6 +24,8 @@ export class NdjsonError extends Error {
 export interface Decoder {
   readonly frames: number
   readonly bytes: number
+  readonly outputFrames: number
+  readonly outputBytes: number
   readonly bufferedBytes: number
   readonly push: (chunk: Uint8Array) => ReadonlyArray<unknown>
   readonly end: () => void
@@ -32,6 +34,8 @@ export interface Decoder {
 export interface Encoder {
   readonly frames: number
   readonly bytes: number
+  readonly outputFrames: number
+  readonly outputBytes: number
   readonly encode: (value: unknown) => Uint8Array
 }
 
@@ -39,6 +43,8 @@ export function makeDecoder(): Decoder {
   let buffered = new Uint8Array()
   let frames = 0
   let bytes = 0
+  let outputFrames = 0
+  let outputBytes = 0
   let failure: NdjsonError | undefined
   let ended = false
 
@@ -57,14 +63,15 @@ export function makeDecoder(): Decoder {
     get bufferedBytes() {
       return buffered.byteLength
     },
+    get outputFrames() {
+      return outputFrames
+    },
+    get outputBytes() {
+      return outputBytes
+    },
     push(chunk) {
       if (failure) throw failure
       if (ended) return fail("closed")
-      if (bytes + chunk.byteLength > DocumentRuntimeLimits.MaxNdjsonBytesPerDirection) {
-        return fail("aggregate-overflow")
-      }
-      bytes += chunk.byteLength
-
       const input = concatenate(buffered, chunk)
       const values: unknown[] = []
       let start = 0
@@ -73,8 +80,6 @@ export function makeDecoder(): Decoder {
         const lineBytes = index - start + 1
         if (lineBytes > DocumentRuntimeLimits.MaxNdjsonLineBytes) return fail("line-overflow")
         if (lineBytes === 1) return fail("blank-line")
-        if (frames === DocumentRuntimeLimits.MaxNdjsonFramesPerDirection) return fail("frame-overflow")
-
         let text: string
         try {
           text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(input.subarray(start, index))
@@ -82,11 +87,23 @@ export function makeDecoder(): Decoder {
           return fail("malformed-utf8")
         }
         try {
-          values.push(JSON.parse(text))
+          const value = JSON.parse(text)
+          const output = isOutputFrame(value)
+          if (!output && frames === DocumentRuntimeLimits.MaxNdjsonFramesPerDirection) return fail("frame-overflow")
+          if (!output && bytes + lineBytes > DocumentRuntimeLimits.MaxNdjsonBytesPerDirection) {
+            return fail("aggregate-overflow")
+          }
+          values.push(value)
+          if (output) {
+            outputFrames++
+            outputBytes += lineBytes
+          } else {
+            frames++
+            bytes += lineBytes
+          }
         } catch {
           return fail("malformed-json")
         }
-        frames++
         start = index + 1
       }
 
@@ -109,6 +126,8 @@ export function makeEncoder(): Encoder {
   const encoder = new TextEncoder()
   let frames = 0
   let bytes = 0
+  let outputFrames = 0
+  let outputBytes = 0
   let failure: NdjsonError | undefined
 
   const fail = (code: ErrorCode): never => {
@@ -123,9 +142,16 @@ export function makeEncoder(): Encoder {
     get bytes() {
       return bytes
     },
+    get outputFrames() {
+      return outputFrames
+    },
+    get outputBytes() {
+      return outputBytes
+    },
     encode(value) {
       if (failure) throw failure
-      if (frames === DocumentRuntimeLimits.MaxNdjsonFramesPerDirection) return fail("frame-overflow")
+      const output = isOutputFrame(value)
+      if (!output && frames === DocumentRuntimeLimits.MaxNdjsonFramesPerDirection) return fail("frame-overflow")
 
       let json: string | undefined
       try {
@@ -136,14 +162,28 @@ export function makeEncoder(): Encoder {
       if (json === undefined) return fail("malformed-json")
       const frame = encoder.encode(`${json}\n`)
       if (frame.byteLength > DocumentRuntimeLimits.MaxNdjsonLineBytes) return fail("line-overflow")
-      if (bytes + frame.byteLength > DocumentRuntimeLimits.MaxNdjsonBytesPerDirection) {
+      if (!output && bytes + frame.byteLength > DocumentRuntimeLimits.MaxNdjsonBytesPerDirection) {
         return fail("aggregate-overflow")
       }
-      frames++
-      bytes += frame.byteLength
+      if (output) {
+        outputFrames++
+        outputBytes += frame.byteLength
+      } else {
+        frames++
+        bytes += frame.byteLength
+      }
       return frame
     },
   }
+}
+
+function isOutputFrame(value: unknown) {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    (value.type === "output-start" || value.type === "output-chunk" || value.type === "output-end")
+  )
 }
 
 function concatenate(left: Uint8Array, right: Uint8Array) {

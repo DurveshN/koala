@@ -5,6 +5,33 @@ import { DocumentRuntimeNdjson } from "./ndjson"
 const text = new TextEncoder()
 
 describe("DocumentRuntimeNdjson", () => {
+  test("accounts output frames separately from control frames and bytes", () => {
+    const encoder = DocumentRuntimeNdjson.makeEncoder()
+    const output = encoder.encode({ protocolVersion: 1, type: "output-chunk", data: "AAAA" })
+    const control = encoder.encode({ protocolVersion: 1, type: "started" })
+    expect(encoder.frames).toBe(1)
+    expect(encoder.bytes).toBe(control.byteLength)
+    expect(encoder.outputFrames).toBe(1)
+    expect(encoder.outputBytes).toBe(output.byteLength)
+
+    const decoder = DocumentRuntimeNdjson.makeDecoder()
+    decoder.push(new Uint8Array([...output, ...control]))
+    expect(decoder.frames).toBe(1)
+    expect(decoder.bytes).toBe(control.byteLength)
+    expect(decoder.outputFrames).toBe(1)
+    expect(decoder.outputBytes).toBe(output.byteLength)
+  })
+
+  test("does not charge output frames to the control frame ceiling", () => {
+    const encoder = DocumentRuntimeNdjson.makeEncoder()
+    for (let sequence = 0; sequence <= DocumentRuntimeLimits.MaxNdjsonFramesPerDirection; sequence++) {
+      encoder.encode({ protocolVersion: 1, type: "output-chunk", sequence, data: "AAAA" })
+    }
+    expect(encoder.frames).toBe(0)
+    expect(encoder.outputFrames).toBe(DocumentRuntimeLimits.MaxNdjsonFramesPerDirection + 1)
+    expect(() => encoder.encode({ protocolVersion: 1, type: "started" })).not.toThrow()
+  })
+
   test("frames split UTF-8 and combined lines without Node APIs", () => {
     const decoder = DocumentRuntimeNdjson.makeDecoder()
     const encoded = text.encode(`${JSON.stringify({ value: "koala-ü" })}\n${JSON.stringify([1, 2])}\n`)
@@ -51,9 +78,9 @@ describe("DocumentRuntimeNdjson", () => {
     expect(() => exact.end()).toThrow("unterminated-eof")
 
     const overflow = DocumentRuntimeNdjson.makeDecoder()
-    expect(() =>
-      overflow.push(text.encode("x".repeat(DocumentRuntimeLimits.MaxNdjsonUnterminatedBytes + 1))),
-    ).toThrow("buffer-overflow")
+    expect(() => overflow.push(text.encode("x".repeat(DocumentRuntimeLimits.MaxNdjsonUnterminatedBytes + 1)))).toThrow(
+      "buffer-overflow",
+    )
   })
 
   test("accepts exactly 512 frames and rejects frame 513", () => {
@@ -93,9 +120,7 @@ describe("DocumentRuntimeNdjson", () => {
     expect(new TextDecoder().decode(encoder.encode({ ok: true }))).toBe('{"ok":true}\n')
 
     const oversized = DocumentRuntimeNdjson.makeEncoder()
-    expect(() => oversized.encode("x".repeat(DocumentRuntimeLimits.MaxNdjsonLineBytes - 2))).toThrow(
-      "line-overflow",
-    )
+    expect(() => oversized.encode("x".repeat(DocumentRuntimeLimits.MaxNdjsonLineBytes - 2))).toThrow("line-overflow")
     expect(() => oversized.encode({ ok: true })).toThrow("line-overflow")
   })
 

@@ -5,12 +5,12 @@ import { DocumentRuntimeNdjson } from "@koala-ai/core/document-runtime/ndjson"
 import { DocumentRuntimeProtocol } from "@koala-ai/core/document-runtime/protocol"
 import { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
 import { createHash } from "node:crypto"
-import { fork, spawn } from "node:child_process"
-import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { spawn } from "node:child_process"
+import { cp, mkdtemp, mkdir, open, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { pdfFixture } from "./fixture/pdf"
-import { startWorker, type WorkerTransport } from "../src/worker"
+import { readLogicalChunk, startWorker, type WorkerTransport } from "../src/worker"
 
 const roots: string[] = []
 const jobID = "job_123e4567-e89b-42d3-a456-426614174000" as DocumentRuntimeProtocol.JobID
@@ -20,12 +20,32 @@ afterEach(async () => {
 })
 
 describe("document IPC worker", () => {
+  test("fills logical 10 KiB chunks across repeated short reads", async () => {
+    const root = await job()
+    const value = path.join(root, "short-read.bin")
+    await writeFile(value, Buffer.alloc(DocumentRuntimeLimits.MaxOutputChunkBytes + 17, 7))
+    const file = await open(value, "r")
+    const handle = {
+      read: (buffer: Uint8Array, offset: number, length: number, position: number | null) =>
+        file.read(buffer, offset, Math.min(length, 137), position),
+      stat: file.stat.bind(file),
+      close: file.close.bind(file),
+    }
+    const buffer = Buffer.alloc(DocumentRuntimeLimits.MaxOutputChunkBytes)
+    expect(await readLogicalChunk(handle, buffer)).toEqual({
+      bytesRead: DocumentRuntimeLimits.MaxOutputChunkBytes,
+      eof: false,
+    })
+    expect(await readLogicalChunk(handle, buffer)).toEqual({ bytesRead: 17, eof: true })
+    await handle.close()
+  })
+
   test("renders one page at a time, publishes relative paths, waits for release, and completes", async () => {
     const jobRoot = await job()
     const input = pdfFixture(2)
     await mkdir(path.join(jobRoot, "input"), { mode: 0o700 })
     await writeFile(path.join(jobRoot, "input", "source.pdf"), input)
-    const messages: DocumentRuntimeProtocol.WorkerEvent[] = []
+    const messages: DocumentRuntimeProtocol.WorkerOutput[] = []
     let receive: (input: unknown) => void = () => undefined
     let firstExisted = false
     const completed = Promise.withResolvers<void>()
@@ -56,8 +76,35 @@ describe("document IPC worker", () => {
     })
     await completed.promise
     expect(firstExisted).toBe(true)
-    expect(messages.map((message) => message.type)).toEqual(["started", "page-ready", "page-ready", "completed"])
-    expect(messages.filter((message) => message.type === "page-ready").map((message) => message.page)).toEqual([1, 2])
+    const events = messages.filter(
+      (message): message is DocumentRuntimeProtocol.WorkerEvent =>
+        !["output-start", "output-chunk", "output-end"].includes(message.type),
+    )
+    expect(events.map((message) => message.type)).toEqual(["started", "page-ready", "page-ready", "completed"])
+    expect(events.filter((message) => message.type === "page-ready").map((message) => message.page)).toEqual([1, 2])
+    const starts = messages.filter(
+      (message): message is Extract<DocumentRuntimeProtocol.WorkerOutput, { readonly type: "output-start" }> =>
+        message.type === "output-start",
+    )
+    const ends = messages.filter(
+      (message): message is Extract<DocumentRuntimeProtocol.WorkerOutput, { readonly type: "output-end" }> =>
+        message.type === "output-end",
+    )
+    expect(starts).toHaveLength(2)
+    expect(ends).toHaveLength(2)
+    for (const start of starts) {
+      const chunks = messages.filter(
+        (message): message is Extract<DocumentRuntimeProtocol.WorkerOutput, { readonly type: "output-chunk" }> =>
+          message.type === "output-chunk" && message.outputID === start.outputID,
+      )
+      const bytes = Buffer.concat(
+        chunks.map((message) => Buffer.from(DocumentRuntimeProtocol.decodeCanonicalBase64(message.data))),
+      )
+      const end = ends.find((message) => message.outputID === start.outputID)
+      expect(bytes.byteLength).toBe(start.declaredBytes)
+      expect(end).toMatchObject({ chunks: chunks.length, actualBytes: bytes.byteLength })
+      expect(String(end?.sha256)).toBe(createHash("sha256").update(bytes).digest("hex"))
+    }
   })
 
   test("cancels while waiting for release and emits no raw error", async () => {
@@ -147,11 +194,19 @@ describe("document IPC worker", () => {
     child.stdout.on("data", (chunk: Buffer) => {
       try {
         for (const input of decoder.push(chunk)) {
-          const event = DocumentRuntimeProtocol.decodeWorkerEvent(input)
+          const output = DocumentRuntimeProtocol.decodeWorkerOutput(input)
+          if (output.type === "output-start" || output.type === "output-chunk" || output.type === "output-end") continue
+          const event = output
           events.push(event)
           if (event.type === "page-ready") {
             child.stdin.write(
-              encoder.encode({ protocolVersion: 1, type: "release-page", jobID, page: event.page, pageID: event.pageID }),
+              encoder.encode({
+                protocolVersion: 1,
+                type: "release-page",
+                jobID,
+                page: event.page,
+                pageID: event.pageID,
+              }),
             )
           }
           if (event.type === "completed" || event.type === "failure") terminal.resolve(event)
@@ -182,56 +237,6 @@ describe("document IPC worker", () => {
       expect(status).toEqual({ code: 0, signal: null })
       expect(stderrBytes).toBeLessThanOrEqual(DocumentRuntimeLimits.MaxInnerStderrBytes)
       expect(Buffer.concat(stderr).toString("utf8")).toBe("")
-    } finally {
-      if (child.exitCode === null && child.signalCode === null) child.kill()
-    }
-  })
-
-  test("keeps the direct Node IPC entrypoint as a Phase 5 compatibility path", async () => {
-    const jobRoot = await job()
-    const input = pdfFixture()
-    await mkdir(path.join(jobRoot, "input"), { mode: 0o700 })
-    await writeFile(path.join(jobRoot, "input", "source.pdf"), input)
-    const workerConfig = await config(jobRoot)
-    const child = fork(path.join(workerConfig.runtimeRoot, "worker", "worker.js"), [], {
-      env: {
-        DOCUMENT_RUNTIME_ROOT: workerConfig.runtimeRoot,
-        DOCUMENT_JOB_ROOT: jobRoot,
-        DOCUMENT_RUNTIME_TARGET: workerConfig.target,
-        DOCUMENT_RUNTIME_MANIFEST_SHA256: workerConfig.manifestSha256,
-        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
-      },
-      execArgv: [],
-      serialization: "json",
-      stdio: ["ignore", "ignore", "ignore", "ipc"],
-    })
-    const events: DocumentRuntimeProtocol.WorkerEvent[] = []
-    const terminal = Promise.withResolvers<DocumentRuntimeProtocol.WorkerEvent>()
-    const exited = Promise.withResolvers<{ code: number | null; signal: NodeJS.Signals | null }>()
-    child.on("error", terminal.reject)
-    child.on("exit", (code, signal) => exited.resolve({ code, signal }))
-    child.on("message", (input: unknown) => {
-      const event = DocumentRuntimeProtocol.decodeWorkerEvent(input)
-      events.push(event)
-      if (event.type === "page-ready") {
-        child.send({ protocolVersion: 1, type: "release-page", jobID, page: event.page, pageID: event.pageID })
-      }
-      if (event.type === "completed" || event.type === "failure") terminal.resolve(event)
-    })
-    child.send({
-      protocolVersion: 1,
-      type: "render",
-      jobID,
-      inputPath: "input/source.pdf",
-      inputBytes: input.byteLength,
-      startPage: 1,
-      pageCount: 1,
-      limits: DocumentRuntimeLimits.requestedHard,
-    })
-    try {
-      expect(await terminal.promise).toEqual(expect.objectContaining({ type: "completed", pagesProcessed: 1 }))
-      expect(await exited.promise).toEqual({ code: 0, signal: null })
-      expect(events.map((event) => event.type)).toEqual(["started", "page-ready", "completed"])
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill()
     }

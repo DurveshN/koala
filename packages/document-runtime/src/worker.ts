@@ -3,13 +3,13 @@ import { DocumentRuntimeManifest } from "@koala-ai/core/document-runtime/manifes
 import { DocumentRuntimeProtocol } from "@koala-ai/core/document-runtime/protocol"
 import { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
 import { Schema } from "effect"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { constants } from "node:fs"
-import { access, lstat, rm } from "node:fs/promises"
+import { access, lstat, open, rm } from "node:fs/promises"
+import type { FileHandle } from "node:fs/promises"
 import path from "node:path"
 import { RuntimeFailure, runtimeFailure } from "./error"
 import { validateOcrImage } from "./image"
-import { createLegacyIpcTransport } from "./legacy-ipc"
 import { loadAndVerifyManifest } from "./manifest"
 import { makePrivateDirectory, resolveInRoot, validateInputFile, validatePrivateJobRoot } from "./path"
 import { openPdf, probeRenderer, readPdfBytes, renderPdfPage } from "./render"
@@ -19,8 +19,8 @@ import { createNodeStreamTransport } from "./transport"
 
 const decodeInitialRequest = DocumentRuntimeProtocol.decodeInitialRequest
 const decodeRequest = DocumentRuntimeProtocol.decodeWorkerRequest
-const encodeEvent = Schema.encodeSync(DocumentRuntimeProtocol.WorkerEvent)
-const decodeEvent = DocumentRuntimeProtocol.decodeWorkerEvent
+const encodeOutput = Schema.encodeSync(DocumentRuntimeProtocol.WorkerOutput)
+const decodeOutput = DocumentRuntimeProtocol.decodeWorkerOutput
 const decodeTarget = Schema.decodeUnknownSync(DocumentRuntimeTarget.Target)
 const decodeDigest = Schema.decodeUnknownSync(DocumentRuntimeManifest.Digest)
 
@@ -34,17 +34,29 @@ export type WorkerConfig = {
 export type WorkerTransport = {
   readonly onMessage: (listener: (input: unknown) => void) => void
   readonly onDisconnect: (listener: () => void) => void
-  readonly send: (event: DocumentRuntimeProtocol.WorkerEvent) => Promise<void>
+  readonly send: (event: DocumentRuntimeProtocol.WorkerOutput) => Promise<void>
   readonly close: () => void
 }
 
 export type WorkerDependencies = {
   readonly removeGenerated?: (files: ReadonlyArray<string>) => Promise<void>
+  readonly openOutput?: (value: string) => Promise<OutputHandle>
+}
+
+export interface OutputHandle {
+  readonly read: (
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number | null,
+  ) => Promise<{ readonly bytesRead: number }>
+  readonly close: FileHandle["close"]
 }
 
 export function startWorker(config: WorkerConfig, transport: WorkerTransport, dependencies: WorkerDependencies = {}) {
   let request: DocumentRuntimeProtocol.StartRequest | undefined
   let order: DocumentRuntimeProtocol.OrderState | undefined
+  let outputOrder: DocumentRuntimeProtocol.OutputOrderState | undefined
   let running = false
   let terminal = false
   let commandWaiter: ((message: DocumentRuntimeProtocol.WorkerRequest) => void) | undefined
@@ -54,6 +66,8 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport, de
   let disconnected = false
   const generated = new Set<string>()
   const cleanup = () => cleanGenerated(generated, dependencies.removeGenerated)
+  const openOutput =
+    dependencies.openOutput ?? ((value: string) => open(value, constants.O_RDONLY | constants.O_NOFOLLOW))
 
   const interrupt = (failure: RuntimeFailure) => {
     forcedFailure = failure
@@ -78,14 +92,19 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport, de
     commands.push(message)
   }
 
-  const send = async (event: DocumentRuntimeProtocol.WorkerEvent) => {
+  const send = async (event: DocumentRuntimeProtocol.WorkerOutput) => {
     if (terminal) return
-    if (order) {
+    if (order && !isOutputFrame(event)) {
       const next = DocumentRuntimeProtocol.advanceOrder(order, event)
       if (!next.ok) throw new RuntimeFailure("worker-failed", "worker")
       order = next.state
     }
-    const encoded = decodeEvent(encodeEvent(event))
+    if (outputOrder) {
+      const next = DocumentRuntimeProtocol.advanceOutputOrder(outputOrder, event)
+      if (!next.ok) throw new RuntimeFailure("worker-failed", "worker")
+      outputOrder = next.state
+    }
+    const encoded = decodeOutput(encodeOutput(event))
     await transport.send(encoded)
     if (event.type !== "completed" && event.type !== "cancelled" && event.type !== "failure") return
     terminal = true
@@ -159,24 +178,27 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport, de
       running = true
       request = message
       order = DocumentRuntimeProtocol.beginOrder(message)
+      outputOrder = DocumentRuntimeProtocol.beginOutputOrder(message)
       const jobDeadline = setTimeout(
         () => interrupt(new RuntimeFailure("job-deadline-exceeded", "worker", true)),
         message.type === "probe" ? 10 * 60_000 : message.limits.jobDeadlineMs,
       )
-      void execute(message, config, abort.signal, generated, cleanup, send, nextCommand).then(
-        () => clearTimeout(jobDeadline),
-        async (error: unknown) => {
-          clearTimeout(jobDeadline)
-          if (disconnected) {
-            terminal = true
-            await cleanup().catch(() => undefined)
-            transport.close()
-            return
-          }
-          if (abort.signal.aborted && !forcedFailure) return cancel()
-          return fail(runtimeFailure(forcedFailure ?? error, new RuntimeFailure("worker-failed", "worker")))
-        },
-      ).catch(() => transport.close())
+      void execute(message, config, abort.signal, generated, cleanup, send, nextCommand, openOutput)
+        .then(
+          () => clearTimeout(jobDeadline),
+          async (error: unknown) => {
+            clearTimeout(jobDeadline)
+            if (disconnected) {
+              terminal = true
+              await cleanup().catch(() => undefined)
+              transport.close()
+              return
+            }
+            if (abort.signal.aborted && !forcedFailure) return cancel()
+            return fail(runtimeFailure(forcedFailure ?? error, new RuntimeFailure("worker-failed", "worker")))
+          },
+        )
+        .catch(() => transport.close())
       return
     }
 
@@ -217,6 +239,14 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport, de
       return
     }
     order = next.state
+    if (outputOrder && message.type === "release-page") {
+      const outputNext = DocumentRuntimeProtocol.advanceOutputOrder(outputOrder, message)
+      if (!outputNext.ok) {
+        interrupt(new RuntimeFailure("invalid-order", "worker"))
+        return
+      }
+      outputOrder = outputNext.state
+    }
     if (commandWaiter) {
       const resolve = commandWaiter
       commandWaiter = undefined
@@ -239,8 +269,9 @@ async function execute(
   signal: AbortSignal,
   generated: Set<string>,
   cleanup: () => Promise<void>,
-  send: (event: DocumentRuntimeProtocol.WorkerEvent) => Promise<void>,
+  send: (event: DocumentRuntimeProtocol.WorkerOutput) => Promise<void>,
   nextCommand: () => Promise<DocumentRuntimeProtocol.WorkerRequest>,
+  openOutput: (value: string) => Promise<OutputHandle>,
 ) {
   const root = await validatePrivateJobRoot(config.jobRoot)
   if (
@@ -282,10 +313,10 @@ async function execute(
     return
   }
   if (request.type === "ocr") {
-    await executeOcr(request, paths, root, signal, generated, send)
+    await executeOcr(request, paths, root, signal, generated, send, openOutput)
     return
   }
-  await executeRender(request, paths, root, signal, generated, cleanup, send, nextCommand)
+  await executeRender(request, paths, root, signal, generated, cleanup, send, nextCommand, openOutput)
 }
 
 async function executeRender(
@@ -295,8 +326,9 @@ async function executeRender(
   signal: AbortSignal,
   generated: Set<string>,
   cleanup: () => Promise<void>,
-  send: (event: DocumentRuntimeProtocol.WorkerEvent) => Promise<void>,
+  send: (event: DocumentRuntimeProtocol.WorkerOutput) => Promise<void>,
   nextCommand: () => Promise<DocumentRuntimeProtocol.WorkerRequest>,
+  openOutput: (value: string) => Promise<OutputHandle>,
 ) {
   const input = resolveInRoot(jobRoot, request.inputPath)
   await validateInputFile(jobRoot, input, request.inputBytes)
@@ -338,6 +370,18 @@ async function executeRender(
         signal,
       })
       temporaryBytes = rendered.temporaryBytes
+      const pageTransfer = await streamOutput({
+        jobID: request.jobID,
+        kind: "page-png",
+        page,
+        pageID,
+        sourcePath: DocumentRuntimeProtocol.OutputSourcePath.make(outputPath),
+        path: absoluteOutput,
+        declaredBytes: rendered.pngBytes,
+        send,
+        signal,
+        openOutput,
+      })
       await send({
         protocolVersion: 1,
         type: "page-ready",
@@ -345,6 +389,8 @@ async function executeRender(
         page,
         pageID,
         outputPath: DocumentRuntimeManifest.RelativePath.make(outputPath),
+        outputID: pageTransfer.outputID,
+        outputSha256: pageTransfer.sha256,
         dimensions: { width: rendered.width, height: rendered.height },
         pngBytes: rendered.pngBytes,
         temporaryBytes,
@@ -371,6 +417,19 @@ async function executeRender(
           signal,
         })
         temporaryBytes = result.temporaryBytes
+        const tsvTransfer = await streamOutput({
+          jobID: request.jobID,
+          kind: "ocr-tsv",
+          page,
+          pageID,
+          resultID,
+          sourcePath: DocumentRuntimeProtocol.OutputSourcePath.make(tsvPath),
+          path: absoluteTsv,
+          declaredBytes: result.tsvBytes,
+          send,
+          signal,
+          openOutput,
+        })
         await send({
           protocolVersion: 1,
           type: "ocr-result",
@@ -379,6 +438,8 @@ async function executeRender(
           pageID,
           resultID,
           outputPath: DocumentRuntimeManifest.RelativePath.make(tsvPath),
+          outputID: tsvTransfer.outputID,
+          outputSha256: tsvTransfer.sha256,
           tsvBytes: result.tsvBytes,
           temporaryBytes,
         })
@@ -413,7 +474,8 @@ async function executeOcr(
   jobRoot: string,
   signal: AbortSignal,
   generated: Set<string>,
-  send: (event: DocumentRuntimeProtocol.WorkerEvent) => Promise<void>,
+  send: (event: DocumentRuntimeProtocol.WorkerOutput) => Promise<void>,
+  openOutput: (value: string) => Promise<OutputHandle>,
 ) {
   if (request.source.kind !== "image") throw new RuntimeFailure("invalid-order", "input")
   const input = resolveInRoot(jobRoot, request.source.inputPath)
@@ -433,6 +495,19 @@ async function executeOcr(
     limits: request.limits,
     signal,
   })
+  const transfer = await streamOutput({
+    jobID: request.jobID,
+    kind: "ocr-tsv",
+    page: request.page,
+    pageID: request.pageID,
+    resultID,
+    sourcePath: DocumentRuntimeProtocol.OutputSourcePath.make(tsvPath),
+    path: output,
+    declaredBytes: result.tsvBytes,
+    send,
+    signal,
+    openOutput,
+  })
   await send({
     protocolVersion: 1,
     type: "ocr-result",
@@ -441,17 +516,120 @@ async function executeOcr(
     pageID: request.pageID,
     resultID,
     outputPath: DocumentRuntimeManifest.RelativePath.make(tsvPath),
+    outputID: transfer.outputID,
+    outputSha256: transfer.sha256,
     tsvBytes: result.tsvBytes,
     temporaryBytes: result.temporaryBytes,
   })
+  await rm(output)
+  generated.delete(output)
   await send({
     protocolVersion: 1,
     type: "completed",
     jobID: request.jobID,
     operation: "ocr",
     pagesProcessed: 1,
-    temporaryBytes: result.temporaryBytes,
+    temporaryBytes: 0,
   })
+}
+
+async function streamOutput(input: {
+  readonly jobID: DocumentRuntimeProtocol.JobID
+  readonly kind: "page-png" | "ocr-tsv"
+  readonly page: number
+  readonly pageID: DocumentRuntimeProtocol.PageID
+  readonly resultID?: DocumentRuntimeProtocol.ResultID
+  readonly sourcePath: DocumentRuntimeProtocol.OutputSourcePath
+  readonly path: string
+  readonly declaredBytes: number
+  readonly send: (event: DocumentRuntimeProtocol.WorkerOutput) => Promise<void>
+  readonly signal: AbortSignal
+  readonly openOutput: (value: string) => Promise<OutputHandle>
+}) {
+  const outputID = DocumentRuntimeProtocol.OutputID.make(`output_${randomUUID()}`)
+  const start = makeOutputStart(input, outputID)
+  await input.send(start)
+  const handle = await input.openOutput(input.path)
+  const digest = createHash("sha256")
+  let actualBytes = 0
+  let chunks = 0
+  try {
+    const buffer = Buffer.allocUnsafe(DocumentRuntimeLimits.MaxOutputChunkBytes)
+    while (true) {
+      input.signal.throwIfAborted()
+      const read = await readLogicalChunk(handle, buffer)
+      if (read.bytesRead === 0) break
+      actualBytes += read.bytesRead
+      if (actualBytes > input.declaredBytes) throw new RuntimeFailure("worker-failed", "worker")
+      const bytes = buffer.subarray(0, read.bytesRead)
+      digest.update(bytes)
+      await input.send({
+        protocolVersion: 1,
+        type: "output-chunk",
+        jobID: input.jobID,
+        outputID,
+        sequence: chunks,
+        data: DocumentRuntimeProtocol.encodeCanonicalBase64(bytes),
+      })
+      chunks++
+      if (read.eof) break
+    }
+  } finally {
+    await handle.close()
+  }
+  if (actualBytes !== input.declaredBytes) throw new RuntimeFailure("worker-failed", "worker")
+  const sha256 = DocumentRuntimeManifest.Digest.make(digest.digest("hex"))
+  await input.send({
+    protocolVersion: 1,
+    type: "output-end",
+    jobID: input.jobID,
+    outputID,
+    chunks,
+    actualBytes,
+    sha256,
+  })
+  return { outputID, sha256 }
+}
+
+export async function readLogicalChunk(handle: OutputHandle, buffer: Uint8Array) {
+  let bytesRead = 0
+  let eof = false
+  while (bytesRead < buffer.byteLength) {
+    const result = await handle.read(buffer, bytesRead, buffer.byteLength - bytesRead, null)
+    if (result.bytesRead === 0) {
+      eof = true
+      break
+    }
+    bytesRead += result.bytesRead
+  }
+  return { bytesRead, eof }
+}
+
+function makeOutputStart(
+  input: {
+    readonly jobID: DocumentRuntimeProtocol.JobID
+    readonly kind: "page-png" | "ocr-tsv"
+    readonly page: number
+    readonly pageID: DocumentRuntimeProtocol.PageID
+    readonly resultID?: DocumentRuntimeProtocol.ResultID
+    readonly sourcePath: DocumentRuntimeProtocol.OutputSourcePath
+    readonly declaredBytes: number
+  },
+  outputID: DocumentRuntimeProtocol.OutputID,
+): DocumentRuntimeProtocol.OutputStart {
+  const common = {
+    protocolVersion: 1 as const,
+    type: "output-start" as const,
+    jobID: input.jobID,
+    outputID,
+    page: input.page,
+    pageID: input.pageID,
+    sourcePath: input.sourcePath,
+    declaredBytes: input.declaredBytes,
+  }
+  if (input.kind === "page-png") return { ...common, kind: input.kind }
+  if (!input.resultID) throw new RuntimeFailure("worker-failed", "worker")
+  return { ...common, kind: input.kind, resultID: input.resultID }
 }
 
 async function validateRuntimeTool(tesseractExecutable: string, tessdataPath: string) {
@@ -479,12 +657,12 @@ async function cleanGenerated(files: Set<string>, remove?: (files: ReadonlyArray
   files.clear()
 }
 
-export function startWorkerProcess(environment: NodeJS.ProcessEnv = process.env) {
-  return startWorker(workerConfigFromEnvironment(environment), createNodeStreamTransport(process.stdin, process.stdout))
+function isOutputFrame(event: DocumentRuntimeProtocol.WorkerOutput): event is DocumentRuntimeProtocol.OutputFrame {
+  return event.type === "output-start" || event.type === "output-chunk" || event.type === "output-end"
 }
 
-export function startLegacyIpcWorker(environment: NodeJS.ProcessEnv = process.env) {
-  return startWorker(workerConfigFromEnvironment(environment), createLegacyIpcTransport())
+export function startWorkerProcess(environment: NodeJS.ProcessEnv = process.env) {
+  return startWorker(workerConfigFromEnvironment(environment), createNodeStreamTransport(process.stdin, process.stdout))
 }
 
 function protocolMismatch(input: unknown) {
@@ -508,13 +686,5 @@ export function workerConfigFromEnvironment(environment: NodeJS.ProcessEnv): Wor
     jobRoot: path.resolve(environment.DOCUMENT_JOB_ROOT),
     target: decodeTarget(environment.DOCUMENT_RUNTIME_TARGET),
     manifestSha256: decodeDigest(environment.DOCUMENT_RUNTIME_MANIFEST_SHA256),
-  }
-}
-
-if (process.send) {
-  try {
-    startLegacyIpcWorker()
-  } catch {
-    if (process.connected) process.disconnect()
   }
 }

@@ -2,41 +2,42 @@ import {
   loadAndVerifyManifest,
   readImageDimensions,
   runtimePaths,
-  terminateProcessTree,
   type VerifiedManifest,
 } from "@koala-ai/document-runtime"
 import { DocumentRuntimeLimits } from "@koala-ai/core/document-runtime/limits"
 import { DocumentRuntimeManifest } from "@koala-ai/core/document-runtime/manifest"
 import { DocumentRuntimeProtocol } from "@koala-ai/core/document-runtime/protocol"
+import { DocumentSandboxProtocol } from "@koala-ai/core/document-runtime/sandbox-protocol"
 import { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
 import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
 import { Context, Effect, Layer, Queue, Schema, Semaphore } from "effect"
 import { randomUUID } from "node:crypto"
-import type { ChildProcess } from "node:child_process"
+import { fork, type ChildProcess } from "node:child_process"
 import { constants } from "node:fs"
-import { chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rm, writeFile } from "node:fs/promises"
-import os from "node:os"
+import { lstat, mkdir, open, realpath, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { DocumentDiagnostics } from "./diagnostics"
+import { DocumentJobRoot } from "./job-root"
+import { DocumentOuterChannel } from "./outer-channel"
+import { DocumentPendingOutput } from "./pending-output"
+import { DocumentPendingRoot } from "./pending-root"
+import { DocumentProcess } from "./process"
+import { DocumentSandboxPolicy } from "./sandbox-policy"
 
-const DiagnosticBytes = DocumentRuntimeLimits.MaxNativeStderrBytes
-const SignalCapacity = 32
+const DiagnosticBytes = DocumentRuntimeLimits.MaxInnerStderrBytes
+const SignalCapacity = DocumentRuntimeLimits.MaxOuterPendingMessages
+const CleanupWatchdogMs = 10_000
+const DeletionReserveMs = 2_000
 const jobs = Semaphore.makeUnsafe(DocumentRuntimeLimits.MaxConcurrentJobs)
-const encodeRequest = Schema.encodeSync(DocumentRuntimeProtocol.WorkerRequest)
+const unsafeJobRoots = new Set<string>()
+let unhealthy = false
 
 export interface Config {
   readonly runtimePath: string
   readonly manifestSha256: string
+  readonly proxyPath: string
+  readonly proxyAssetsRoot: string
   readonly requireReleaseReady?: boolean
-}
-
-export interface NativeConfinementLauncher {
-  readonly launch: (input: {
-    readonly workerPath: string
-    readonly cwd: string
-    readonly environment: NodeJS.ProcessEnv
-  }) => ChildProcess
-  // The launcher owns OS-level descendant containment, including after the immediate child exits.
-  readonly terminate: (child: ChildProcess, graceMs: number) => Promise<void>
 }
 
 export interface Available {
@@ -108,12 +109,12 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/DocumentRuntime") {}
 
-export function layer(config: Config | undefined, launcher?: NativeConfinementLauncher) {
+export function layer(config: Config | undefined) {
   const policy = config ? { ...config } : undefined
   const probe: Interface["probe"] = Effect.fn("DocumentRuntime.probe")(() =>
     limited(
-      withRuntime(policy, launcher, (runtime) =>
-        withJob((jobRoot) =>
+      withRuntime(policy, (runtime) =>
+        withJob((job) =>
           Effect.gen(function* () {
             const request = yield* decodeInput(DocumentRuntimeProtocol.ProbeRequest, {
               protocolVersion: 1,
@@ -122,7 +123,7 @@ export function layer(config: Config | undefined, launcher?: NativeConfinementLa
               target: runtime.target,
               manifestSha256: runtime.manifestSha256,
             })
-            return yield* runWorker(runtime, jobRoot, request, (session) => probeWorker(session, runtime))
+            return yield* runProxy(runtime, job, request, (session) => probeWorker(session, runtime))
           }),
         ),
       ),
@@ -134,21 +135,20 @@ export function layer(config: Config | undefined, launcher?: NativeConfinementLa
       Effect.gen(function* () {
         const limits = yield* requestedLimits(input.limits)
         const page = yield* decodeInput(DocumentRuntimeLimits.PageNumber, input.page ?? 1)
-        const runtime = yield* verifiedRuntime(policy, launcher)
-        return yield* withJob((jobRoot) =>
+        const runtime = yield* verifiedRuntime(policy)
+        return yield* withJob((job) =>
           Effect.gen(function* () {
-            const staged = yield* stageInput(jobRoot, input.inputPath, "input/image", limits.imageInputBytes)
+            const staged = yield* stageInput(job.path, input.inputPath, "input/image", limits.imageInputBytes)
             const dimensions = yield* attempt(
-              () => readImageDimensions(jobRoot, staged.path, staged.bytes),
+              () => readImageDimensions(job.path, staged.path, staged.bytes),
               failure("invalid-request", "input"),
             )
-            const currentPageID = DocumentRuntimeProtocol.PageID.make(`page_${randomUUID()}`)
-            const request = yield* decodeInput(DocumentRuntimeProtocol.OcrRequest, {
+            const request = yield* decodeInput(DocumentRuntimeProtocol.ImageOcrRequest, {
               protocolVersion: 1,
               type: "ocr",
               jobID: jobID(),
               page,
-              pageID: currentPageID,
+              pageID: DocumentRuntimeProtocol.PageID.make(`page_${randomUUID()}`),
               source: {
                 kind: "image",
                 inputPath: DocumentRuntimeManifest.RelativePath.make("input/image"),
@@ -157,9 +157,7 @@ export function layer(config: Config | undefined, launcher?: NativeConfinementLa
               },
               limits,
             })
-            return yield* runWorker(runtime, jobRoot, request, (session, request) =>
-              ocrWorker(session, request, jobRoot, dimensions),
-            )
+            return yield* runProxy(runtime, job, request, (session, decoded) => ocrWorker(session, decoded, dimensions))
           }),
         )
       }),
@@ -170,10 +168,10 @@ export function layer(config: Config | undefined, launcher?: NativeConfinementLa
     limited(
       Effect.gen(function* () {
         const limits = yield* requestedLimits(input.limits)
-        const runtime = yield* verifiedRuntime(policy, launcher)
-        return yield* withJob((jobRoot) =>
+        const runtime = yield* verifiedRuntime(policy)
+        return yield* withJob((job) =>
           Effect.gen(function* () {
-            const staged = yield* stageInput(jobRoot, input.inputPath, "input/document.pdf", limits.pdfInputBytes)
+            const staged = yield* stageInput(job.path, input.inputPath, "input/document.pdf", limits.pdfInputBytes)
             const request = yield* decodeInput(DocumentRuntimeProtocol.RenderRequest, {
               protocolVersion: 1,
               type: "render",
@@ -184,8 +182,8 @@ export function layer(config: Config | undefined, launcher?: NativeConfinementLa
               pageCount: input.pageCount,
               limits,
             })
-            return yield* runWorker(runtime, jobRoot, request, (session, decoded) =>
-              renderWorker(session, decoded, jobRoot, callback),
+            return yield* runProxy(runtime, job, request, (session, decoded) =>
+              renderWorker(session, decoded, callback),
             )
           }),
         )
@@ -214,13 +212,23 @@ export const node = makeGlobalNode({ service: Service, layer: layer(productionCo
 export function configFromEnvironment(environment: NodeJS.ProcessEnv): Config | undefined {
   const runtimePath = environment.KOALA_DOCUMENT_RUNTIME_PATH
   const manifestSha256 = environment.KOALA_DOCUMENT_RUNTIME_MANIFEST_SHA256
+  const proxyPath = environment.KOALA_DOCUMENT_RUNTIME_PROXY_PATH
+  const proxyAssetsRoot = environment.KOALA_DOCUMENT_RUNTIME_PROXY_ASSETS_ROOT
   const release = environment.KOALA_DOCUMENT_RUNTIME_REQUIRE_RELEASE_READY
-  if (!runtimePath || !manifestSha256 || (release !== undefined && !["0", "1", "false", "true"].includes(release))) {
+  if (
+    !runtimePath ||
+    !manifestSha256 ||
+    !proxyPath ||
+    !proxyAssetsRoot ||
+    (release !== undefined && !["0", "1", "false", "true"].includes(release))
+  ) {
     return undefined
   }
   return {
     runtimePath,
     manifestSha256,
+    proxyPath,
+    proxyAssetsRoot,
     requireReleaseReady: release === "1" || release === "true",
   }
 }
@@ -229,19 +237,25 @@ interface Runtime {
   readonly target: DocumentRuntimeTarget.Target
   readonly manifest: VerifiedManifest
   readonly manifestSha256: DocumentRuntimeManifest.Digest
-  readonly paths: ReturnType<typeof runtimePaths>
-  readonly launcher: NativeConfinementLauncher
+  readonly proxyPath: string
+  readonly proxyAssetsRoot: string
 }
 
 interface Session {
   readonly child: ChildProcess
   readonly queue: Queue.Queue<Signal>
-  readonly request: DocumentRuntimeProtocol.StartRequest
-  readonly launcher: NativeConfinementLauncher
-  order: DocumentRuntimeProtocol.OrderState
-  terminal: boolean
+  readonly request: DocumentRuntimeProtocol.InitialRequest
+  readonly job: DocumentJobRoot.Root
+  readonly channel: DocumentOuterChannel.Channel
+  diagnostics?: DocumentDiagnostics.Tracker
+  cleanup?: () => void
+  complete: boolean
   diagnosticBytes: number
   overflowed: boolean
+  spawnAbsenceConfirmed: boolean
+  shutdownDeadline?: number
+  readonly outputIDs: Set<DocumentRuntimeProtocol.OutputID>
+  readonly outputPaths: Set<DocumentRuntimeManifest.RelativePath>
 }
 
 type Signal =
@@ -254,17 +268,19 @@ function limited<A, E, R>(effect: Effect.Effect<A, E, R>) {
   return jobs.withPermits(1)(effect)
 }
 
-function withRuntime<A, E, R>(
-  config: Config | undefined,
-  launcher: NativeConfinementLauncher | undefined,
-  use: (runtime: Runtime) => Effect.Effect<A, E, R>,
-) {
-  return Effect.flatMap(verifiedRuntime(config, launcher), use)
+function withRuntime<A, E, R>(config: Config | undefined, use: (runtime: Runtime) => Effect.Effect<A, E, R>) {
+  return Effect.flatMap(verifiedRuntime(config), use)
 }
 
-function verifiedRuntime(config: Config | undefined, launcher: NativeConfinementLauncher | undefined) {
+function verifiedRuntime(config: Config | undefined) {
   return Effect.gen(function* () {
-    if (!config || !launcher || !path.isAbsolute(config.runtimePath)) {
+    if (
+      unhealthy ||
+      !config ||
+      !path.isAbsolute(config.runtimePath) ||
+      !path.isAbsolute(config.proxyPath) ||
+      !path.isAbsolute(config.proxyAssetsRoot)
+    ) {
       return yield* failure("runtime-unavailable", "probe")
     }
     const target = yield* hostTarget()
@@ -275,13 +291,22 @@ function verifiedRuntime(config: Config | undefined, launcher: NativeConfinement
       () => loadAndVerifyManifest(config.runtimePath, target, digest, config.requireReleaseReady ?? false),
       failure("runtime-unavailable", "probe"),
     )
-    const paths = runtimePaths(manifest.root, target)
+    const proxy = yield* attempt(
+      () => validateProxyPaths(config.proxyPath, config.proxyAssetsRoot, manifest.root),
+      failure("runtime-unavailable", "probe"),
+    )
     const valid = yield* attempt(
-      () => validateRuntimePaths(manifest.root, paths),
+      () => validateRuntimePaths(manifest.root, runtimePaths(manifest.root, target)),
       failure("runtime-unavailable", "probe"),
     )
     if (!valid) return yield* failure("runtime-unavailable", "probe")
-    return { target, manifest, manifestSha256: digest, paths, launcher }
+    return {
+      target,
+      manifest,
+      manifestSha256: digest,
+      proxyPath: proxy.proxyPath,
+      proxyAssetsRoot: proxy.proxyAssetsRoot,
+    }
   })
 }
 
@@ -296,8 +321,30 @@ function hostTarget() {
   })
 }
 
+async function validateProxyPaths(proxyPath: string, proxyAssetsRoot: string, runtimeRoot: string) {
+  const canonicalAssets = await realpath(proxyAssetsRoot)
+  const assets = await lstat(canonicalAssets)
+  if (!assets.isDirectory() || assets.isSymbolicLink() || !samePath(canonicalAssets, path.normalize(proxyAssetsRoot))) {
+    throw new Error("invalid-proxy-assets")
+  }
+  const canonicalProxy = await realpath(proxyPath)
+  const proxy = await lstat(canonicalProxy)
+  if (
+    !proxy.isFile() ||
+    proxy.isSymbolicLink() ||
+    !samePath(canonicalProxy, path.normalize(proxyPath)) ||
+    !inside(canonicalAssets, canonicalProxy) ||
+    overlaps(canonicalAssets, runtimeRoot)
+  ) {
+    throw new Error("invalid-proxy")
+  }
+  return { proxyPath: canonicalProxy, proxyAssetsRoot: canonicalAssets }
+}
+
 async function validateRuntimePaths(root: string, paths: ReturnType<typeof runtimePaths>) {
   const files = [
+    path.join(root, "package.json"),
+    paths.bootstrap,
     paths.worker,
     paths.tesseract,
     path.join(paths.tessdata, "eng.traineddata"),
@@ -324,49 +371,88 @@ async function safeInfo(root: string, value: string, kind: "file" | "directory")
   return kind === "file" ? info.isFile() : info.isDirectory()
 }
 
-function withJob<A, E, R>(use: (jobRoot: string) => Effect.Effect<A, E, R>) {
+function withJob<A, E, R>(use: (job: DocumentJobRoot.Root) => Effect.Effect<A, E, R>) {
   return Effect.acquireUseRelease(
-    attempt(
-      async () => {
-        const root = await mkdtemp(path.join(os.tmpdir(), "opencode-document-"))
-        await chmod(root, 0o700)
-        return await realpath(root)
+    Effect.tryPromise({
+      try: () => DocumentJobRoot.create(),
+      catch: (error) => {
+        if (error instanceof DocumentJobRoot.LifecycleError && error.unhealthy) unhealthy = true
+        return failure("worker-failed", "cleanup")
       },
-      failure("worker-failed", "cleanup"),
-    ),
+    }),
     use,
-    (root) => Effect.promise(() => rm(root, { recursive: true, force: true }).catch(() => undefined)),
+    (job) =>
+      Effect.tryPromise({
+        try: () => {
+          if (unsafeJobRoots.delete(job.path)) {
+            throw new DocumentJobRoot.LifecycleError({ code: "deletion-failed", unhealthy: true })
+          }
+          return DocumentJobRoot.remove(job, { deadline: job.cleanupDeadline ?? Date.now() + CleanupWatchdogMs })
+        },
+        catch: () => {
+          unhealthy = true
+          return failure("worker-failed", "cleanup")
+        },
+      }),
   )
 }
 
-function runWorker<A, E, R>(
+function runProxy<A, E, R>(
   runtime: Runtime,
-  jobRoot: string,
-  request: DocumentRuntimeProtocol.StartRequest,
-  use: (session: Session, request: DocumentRuntimeProtocol.StartRequest) => Effect.Effect<A, E | RuntimeError, R>,
+  job: DocumentJobRoot.Root,
+  request: DocumentRuntimeProtocol.InitialRequest,
+  use: (session: Session, request: DocumentRuntimeProtocol.InitialRequest) => Effect.Effect<A, E | RuntimeError, R>,
 ) {
   return Effect.acquireUseRelease(
-    spawnWorker(runtime, jobRoot, request),
+    spawnProxy(runtime, job, request),
     (session) =>
-      Effect.andThen(send(session, request), use(session, request)).pipe(
+      Effect.andThen(
+        sendParent(session, {
+          protocolVersion: 1,
+          type: "launch",
+          jobID: request.jobID,
+          target: runtime.target,
+          runtimeRoot: runtime.manifest.root,
+          manifestSha256: runtime.manifestSha256,
+          parentRoot: job.parent,
+          parentIdentity: DocumentPendingRoot.identityToWire(job.parentIdentity),
+          parentMode: job.parentMode ?? null,
+          jobRoot: job.path,
+          jobRootIdentity: DocumentPendingRoot.identityToWire(job.identity),
+          pendingRoot: job.pending,
+          pendingRootIdentity: DocumentPendingRoot.identityToWire(job.pendingIdentity),
+          start: request,
+        }),
+        Effect.andThen(expectAccepted(session), use(session, request)),
+      ).pipe(
         Effect.timeoutOrElse({
           duration: request.type === "probe" ? DocumentRuntimeLimits.MaxJobDeadlineMs : request.limits.jobDeadlineMs,
           orElse: () => failure("job-deadline-exceeded", "worker", true),
         }),
       ),
-    (session) => Effect.promise(() => stopWorker(session)),
+    (session) => stopProxy(session, job),
   )
 }
 
-function spawnWorker(runtime: Runtime, jobRoot: string, request: DocumentRuntimeProtocol.StartRequest) {
+function spawnProxy(runtime: Runtime, job: DocumentJobRoot.Root, request: DocumentRuntimeProtocol.InitialRequest) {
   return Effect.gen(function* () {
+    yield* Effect.tryPromise({
+      try: () => DocumentJobRoot.verifyForLaunch(job),
+      catch: () => {
+        unhealthy = true
+        return failure("worker-failed", "cleanup")
+      },
+    })
     const queue = yield* Queue.bounded<Signal>(SignalCapacity)
     const child = yield* Effect.try({
       try: () =>
-        runtime.launcher.launch({
-          workerPath: runtime.paths.worker,
-          cwd: jobRoot,
-          environment: workerEnvironment(runtime.manifest.root, runtime.target, runtime.manifestSha256, jobRoot),
+        fork(runtime.proxyPath, [], {
+          cwd: job.parent,
+          detached: process.platform !== "win32",
+          env: DocumentSandboxPolicy.brokerEnvironment(runtime.proxyAssetsRoot),
+          execArgv: [],
+          serialization: "json",
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
         }),
       catch: () => failure("worker-failed", "worker"),
     })
@@ -374,30 +460,65 @@ function spawnWorker(runtime: Runtime, jobRoot: string, request: DocumentRuntime
       child,
       queue,
       request,
-      launcher: runtime.launcher,
-      order: DocumentRuntimeProtocol.beginOrder(request),
-      terminal: false,
+      job,
+      channel: DocumentOuterChannel.make(),
+      complete: false,
       diagnosticBytes: 0,
       overflowed: false,
+      spawnAbsenceConfirmed: false,
+      outputIDs: new Set(),
+      outputPaths: new Set(),
     }
     const offer = (signal: Signal) => {
       if (Queue.offerUnsafe(queue, signal)) return
       session.overflowed = true
-      child.kill("SIGKILL")
+      unhealthy = true
+      try {
+        child.kill("SIGKILL")
+      } catch {}
     }
-    const diagnostic = (chunk: Buffer | string) => {
+    const diagnostic = (chunk: unknown) => {
+      if (typeof chunk !== "string" && !(chunk instanceof Uint8Array)) {
+        session.overflowed = true
+        unhealthy = true
+        return
+      }
       session.diagnosticBytes = Math.min(DiagnosticBytes + 1, session.diagnosticBytes + Buffer.byteLength(chunk))
       if (session.diagnosticBytes <= DiagnosticBytes || session.overflowed) return
       session.overflowed = true
-      child.kill("SIGKILL")
+      unhealthy = true
+      try {
+        child.kill("SIGKILL")
+      } catch {}
     }
-    child.on("message", (value: unknown) => offer({ type: "message", value }))
-    child.once("error", () => offer({ type: "error" }))
-    child.once("disconnect", () => offer({ type: "disconnect" }))
-    child.once("exit", (code, signal) => offer({ type: "exit", code, signal }))
-    child.stdout?.on("data", diagnostic)
-    child.stderr?.on("data", diagnostic)
+    child.on("message", onMessage)
+    child.once("error", onError)
+    child.once("disconnect", onDisconnect)
+    child.once("exit", onExit)
+    session.diagnostics = DocumentDiagnostics.track(child.stdout, child.stderr, diagnostic)
+    function onMessage(value: unknown) {
+      offer({ type: "message", value })
+    }
+    function onError() {
+      if (!child.pid) session.spawnAbsenceConfirmed = true
+      offer({ type: "error" })
+    }
+    function onDisconnect() {
+      offer({ type: "disconnect" })
+    }
+    function onExit(code: number | null, signal: NodeJS.Signals | null) {
+      offer({ type: "exit", code, signal })
+    }
+    session.cleanup = () => cleanupSession(session, onMessage, onError, onDisconnect, onExit)
     return session
+  })
+}
+
+function expectAccepted(session: Session) {
+  return Effect.gen(function* () {
+    const message = yield* nextProxyMessage(session)
+    if (message.type === "failure") return yield* proxyFailure(message)
+    if (message.type !== "accepted") return yield* closureFailure()
   })
 }
 
@@ -417,8 +538,7 @@ function probeWorker(session: Session, runtime: Runtime): Effect.Effect<Availabl
 
 function ocrWorker(
   session: Session,
-  request: DocumentRuntimeProtocol.StartRequest,
-  jobRoot: string,
+  request: DocumentRuntimeProtocol.InitialRequest,
   dimensions: DocumentRuntimeLimits.RasterDimensions,
 ): Effect.Effect<OcrResult, RuntimeError> {
   return Effect.gen(function* () {
@@ -429,9 +549,14 @@ function ocrWorker(
       "ocr-result",
       (event) => event.page === request.page && event.pageID === request.pageID,
     )
-    const output = yield* outputPath(jobRoot, result.outputPath, "ocr/", result.tsvBytes)
-    const tsv = yield* attempt(() => readFile(output), failure("worker-failed", "worker"))
-    if (tsv.byteLength !== result.tsvBytes) return yield* failure("worker-failed", "worker")
+    const output = yield* resolveOutput(
+      pendingEvidence(session.job),
+      result.outputPath,
+      result.tsvBytes,
+      result.outputSha256,
+    )
+    const tsv = yield* pendingAttempt(() => DocumentPendingOutput.read(output))
+    yield* pendingAttempt(() => DocumentPendingOutput.remove(output))
     yield* expectType(session, "completed", (event) => event.operation === "ocr" && event.pagesProcessed === 1)
     yield* cleanExit(session)
     return { page: request.page, dimensions, tsv, tsvBytes: result.tsvBytes }
@@ -440,8 +565,7 @@ function ocrWorker(
 
 function renderWorker<A, E, R>(
   session: Session,
-  request: DocumentRuntimeProtocol.StartRequest,
-  jobRoot: string,
+  request: DocumentRuntimeProtocol.InitialRequest,
   callback: (page: ScopedPage) => Effect.Effect<A, E, R>,
 ): Effect.Effect<RenderResult, RuntimeError | E, R> {
   return Effect.gen(function* () {
@@ -451,8 +575,13 @@ function renderWorker<A, E, R>(
     for (const page of Array.from({ length: request.pageCount }, (_, index) => request.startPage + index)) {
       const rendered = yield* expectType(session, "page-ready", (event) => event.page === page && !seen.has(page))
       seen.add(page)
-      const pagePath = yield* outputPath(jobRoot, rendered.outputPath, "pages/", rendered.pngBytes)
-      const ocrRequest: typeof DocumentRuntimeProtocol.OcrRequest.Type = {
+      const pageOutput = yield* resolveOutput(
+        pendingEvidence(session.job),
+        rendered.outputPath,
+        rendered.pngBytes,
+        rendered.outputSha256,
+      )
+      const ocrRequest: typeof DocumentRuntimeProtocol.RenderedPageOcrRequest.Type = {
         protocolVersion: 1,
         type: "ocr",
         jobID: request.jobID,
@@ -467,15 +596,25 @@ function renderWorker<A, E, R>(
         "ocr-result",
         (event) => event.page === page && event.pageID === rendered.pageID,
       )
-      const tsvPath = yield* outputPath(jobRoot, ocr.outputPath, "ocr/", ocr.tsvBytes)
+      const tsvOutput = yield* resolveOutput(
+        pendingEvidence(session.job),
+        ocr.outputPath,
+        ocr.tsvBytes,
+        ocr.outputSha256,
+      )
       yield* callback({
         page,
-        pagePath,
-        tsvPath,
+        pagePath: pageOutput.path,
+        tsvPath: tsvOutput.path,
         dimensions: rendered.dimensions,
         pngBytes: rendered.pngBytes,
         tsvBytes: ocr.tsvBytes,
       })
+      yield* pendingAttempt(() =>
+        Promise.all([DocumentPendingOutput.remove(pageOutput), DocumentPendingOutput.remove(tsvOutput)]).then(
+          () => undefined,
+        ),
+      )
       yield* sendCommand(session, {
         protocolVersion: 1,
         type: "release-page",
@@ -510,77 +649,208 @@ function expectType<Type extends DocumentRuntimeProtocol.WorkerEvent["type"]>(
 
 function nextEvent(session: Session): Effect.Effect<DocumentRuntimeProtocol.WorkerEvent, RuntimeError> {
   return Effect.gen(function* () {
-    const signal = yield* Queue.take(session.queue)
-    if (session.overflowed) return yield* failure("worker-failed", "worker")
-    if (signal.type !== "message") return yield* failure("worker-failed", "worker")
-    const event = yield* decodeInput(DocumentRuntimeProtocol.WorkerEvent, signal.value).pipe(
-      Effect.mapError(() => failure(protocolMismatch(signal.value) ? "protocol-mismatch" : "worker-failed", "worker")),
-    )
-    const next = DocumentRuntimeProtocol.advanceOrder(session.order, event)
-    if (!next.ok) return yield* failure(next.code === "job-mismatch" ? "job-mismatch" : "invalid-order", "worker")
-    session.order = next.state
+    const message = yield* nextProxyMessage(session)
+    if (message.type === "failure") return yield* proxyFailure(message)
+    if (message.type !== "event") return yield* closureFailure()
+    const event = message.event
+    if (event.type === "page-ready" || event.type === "ocr-result") {
+      const extension = event.type === "page-ready" ? ".png" : ".tsv"
+      if (
+        !event.outputPath.endsWith(extension) ||
+        session.outputIDs.has(event.outputID) ||
+        session.outputPaths.has(event.outputPath)
+      ) {
+        return yield* failure("invalid-order", "worker")
+      }
+      session.outputIDs.add(event.outputID)
+      session.outputPaths.add(event.outputPath)
+    }
     if (event.type === "failure") {
-      session.terminal = true
       return yield* new RuntimeError({ code: event.code, stage: event.stage, retryable: event.retryable })
     }
     if (event.type === "cancelled") {
-      session.terminal = true
       return yield* failure("worker-failed", "worker")
     }
-    if (event.type === "completed") session.terminal = true
     return event
   })
 }
 
-function sendCommand(session: Session, request: DocumentRuntimeProtocol.WorkerRequest) {
-  return Effect.gen(function* () {
-    const next = DocumentRuntimeProtocol.advanceOrder(session.order, request)
-    if (!next.ok) return yield* failure(next.code === "job-mismatch" ? "job-mismatch" : "invalid-order", "worker")
-    yield* send(session, request)
-    session.order = next.state
+function sendCommand(session: Session, command: DocumentRuntimeProtocol.ContinuationRequest) {
+  return sendParent(session, {
+    protocolVersion: 1,
+    type: "command",
+    jobID: session.request.jobID,
+    command,
   })
 }
 
-function send(session: Session, request: DocumentRuntimeProtocol.WorkerRequest) {
-  return attempt(
-    () =>
-      new Promise<void>((resolve, reject) => {
-        if (!session.child.connected) return reject(new Error("disconnected"))
-        session.child.send(encodeRequest(request), (error) => (error ? reject(error) : resolve()))
-      }),
-    failure("worker-failed", "worker"),
+function sendParent(session: Session, input: unknown) {
+  const timeoutMs = session.shutdownDeadline
+    ? Math.max(1, session.shutdownDeadline - DeletionReserveMs - Date.now())
+    : DocumentRuntimeLimits.MaxCancellationGraceMs
+  return Effect.tryPromise({
+    try: () =>
+      DocumentOuterChannel.send(
+        session.channel,
+        {
+          get connected() {
+            return session.child.connected
+          },
+          send: (value, callback) => session.child.send(value, callback),
+        },
+        input,
+        timeoutMs,
+      ),
+    catch: () => failure("worker-failed", "cleanup"),
+  })
+}
+
+function nextProxyMessage(session: Session): Effect.Effect<DocumentSandboxProtocol.ProxyEvent, RuntimeError> {
+  return Effect.gen(function* () {
+    const signal = yield* Queue.take(session.queue)
+    if (session.overflowed || signal.type !== "message") {
+      unhealthy = true
+      return yield* closureFailure()
+    }
+    const message = yield* Effect.try({
+      try: () => DocumentOuterChannel.receive(session.channel, signal.value),
+      catch: (error) =>
+        failure(
+          error instanceof DocumentOuterChannel.ChannelError && error.code === "job-mismatch"
+            ? "job-mismatch"
+            : error instanceof DocumentOuterChannel.ChannelError && error.code === "invalid-order"
+              ? "invalid-order"
+              : "protocol-mismatch",
+          "worker",
+        ),
+    })
+    if (
+      message.type === "failure" &&
+      ["root-identity-failed", "termination-failed", "command-cleanup-failed", "reset-failed"].includes(message.code)
+    ) {
+      unhealthy = true
+    }
+    return message
+  })
+}
+
+function cleanExit(session: Session) {
+  return finishClosure(session)
+}
+
+function finishClosure(session: Session): Effect.Effect<void, RuntimeError> {
+  const deadline = ensureShutdownDeadline(session)
+  return Effect.gen(function* () {
+    while (session.channel.state.phase !== "terminal") {
+      const message = yield* nextProxyMessage(session)
+      if (message.type === "failure" || (message.type === "event" && isTerminal(message.event))) continue
+      if (message.type === "accepted" && session.channel.state.cancelSent) continue
+      return yield* closureFailure()
+    }
+    const closed = yield* nextProxyMessage(session)
+    if (closed.type !== "closed") return yield* closureFailure()
+    const disconnected = yield* Queue.take(session.queue)
+    if (session.overflowed || disconnected.type !== "disconnect") return yield* closureFailure()
+    const exited = yield* Queue.take(session.queue)
+    if (exited.type !== "exit" || exited.code !== 0 || exited.signal !== null) {
+      return yield* closureFailure()
+    }
+    const diagnostics = session.diagnostics
+    if (!diagnostics) return yield* closureFailure()
+    const drained = yield* Effect.promise(() =>
+      settleWithin(diagnostics.drain, Math.max(1, deadline - DeletionReserveMs - Date.now())),
+    )
+    if (!drained || session.overflowed) {
+      unhealthy = true
+      return yield* closureFailure()
+    }
+    session.complete = true
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: Math.max(1, deadline - DeletionReserveMs - Date.now()),
+      orElse: closureFailure,
+    }),
   )
 }
 
-function cleanExit(session: Session): Effect.Effect<void, RuntimeError> {
+function stopProxy(session: Session, job: DocumentJobRoot.Root) {
+  const deadline = ensureShutdownDeadline(session)
+  job.cleanupDeadline = deadline
+  if (session.complete) {
+    session.cleanup?.()
+    return Effect.void
+  }
   return Effect.gen(function* () {
-    while (true) {
-      const signal = yield* Queue.take(session.queue)
-      if (session.overflowed || signal.type === "error" || signal.type === "message") {
-        return yield* failure("worker-failed", "worker")
-      }
-      if (signal.type === "disconnect") continue
-      if (signal.code !== 0 || signal.signal !== null) return yield* failure("worker-failed", "worker")
+    if (
+      (session.channel.state.phase === "awaiting-accepted" || session.channel.state.phase === "active") &&
+      !session.channel.state.cancelSent &&
+      session.child.connected
+    ) {
+      yield* sendParent(session, { protocolVersion: 1, type: "cancel", jobID: session.request.jobID }).pipe(
+        Effect.catch(() => Effect.void),
+      )
+    }
+    const closed = yield* finishClosure(session).pipe(
+      Effect.timeoutOrElse({
+        duration: Math.max(1, deadline - DeletionReserveMs - Date.now()),
+        orElse: closureFailure,
+      }),
+      Effect.match({ onFailure: () => false, onSuccess: () => true }),
+    )
+    if (closed) {
+      session.cleanup?.()
       return
     }
+    unhealthy = true
+    const termination = yield* Effect.promise(() =>
+      DocumentProcess.terminateProcessTree(session.child, {
+        timeoutMs: Math.max(1, deadline - DeletionReserveMs - Date.now()),
+        systemRoot: process.env.SystemRoot,
+      }).catch(() => undefined),
+    )
+    if (!session.spawnAbsenceConfirmed && termination?.status !== "exited") unsafeJobRoots.add(job.path)
+    session.cleanup?.()
+    return yield* closureFailure()
   })
 }
 
-function outputPath(jobRoot: string, relative: DocumentRuntimeManifest.RelativePath, prefix: string, bytes: number) {
-  return Effect.gen(function* () {
-    if (!relative.startsWith(prefix)) return yield* failure("invalid-request", "cleanup")
-    const output = path.resolve(jobRoot, ...relative.split("/"))
-    if (!inside(jobRoot, output)) return yield* failure("invalid-request", "cleanup")
-    const valid = yield* attempt(
-      async () => {
-        const info = await lstat(output)
-        return info.isFile() && !info.isSymbolicLink() && info.size === bytes && inside(jobRoot, await realpath(output))
-      },
-      failure("invalid-request", "cleanup"),
-    )
-    if (!valid) return yield* failure("invalid-request", "cleanup")
-    return output
-  })
+function ensureShutdownDeadline(session: Session) {
+  session.shutdownDeadline ??= Date.now() + CleanupWatchdogMs
+  session.job.cleanupDeadline ??= session.shutdownDeadline
+  return session.shutdownDeadline
+}
+
+function cleanupSession(
+  session: Session,
+  onMessage: (value: unknown) => void,
+  onError: () => void,
+  onDisconnect: () => void,
+  onExit: (code: number | null, signal: NodeJS.Signals | null) => void,
+) {
+  session.child.off("message", onMessage)
+  session.child.off("error", onError)
+  session.child.off("disconnect", onDisconnect)
+  session.child.off("exit", onExit)
+  session.diagnostics?.cleanup()
+}
+
+function resolveOutput(
+  root: DocumentPendingRoot.Evidence,
+  relative: DocumentRuntimeManifest.RelativePath,
+  bytes: number,
+  sha256: DocumentRuntimeManifest.Digest,
+) {
+  return pendingAttempt(() => DocumentPendingOutput.resolve(root, relative, bytes, sha256))
+}
+
+function pendingEvidence(job: DocumentJobRoot.Root): DocumentPendingRoot.Evidence {
+  return {
+    parentRoot: job.parent,
+    parentIdentity: job.parentIdentity,
+    pendingRoot: job.pending,
+    pendingRootIdentity: job.pendingIdentity,
+    parentMode: job.parentMode ?? null,
+  }
 }
 
 function requestedLimits(input: DocumentRuntimeLimits.Requested | undefined) {
@@ -601,8 +871,9 @@ function jobID() {
 async function validateSource(source: string, maximumBytes: number) {
   if (!path.isAbsolute(source)) throw new Error("invalid source")
   const info = await lstat(source)
-  if (!info.isFile() || info.isSymbolicLink() || info.size < 1 || info.size > maximumBytes)
+  if (!info.isFile() || info.isSymbolicLink() || info.size < 1 || info.size > maximumBytes) {
     throw new Error("invalid source")
+  }
   const handle = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
     const bytes = await handle.readFile()
@@ -627,6 +898,18 @@ function stageInput(jobRoot: string, source: string, relative: string, maximumBy
   )
 }
 
+function proxyFailure(message: typeof DocumentSandboxProtocol.FailureEvent.Type) {
+  if (message.code === "protocol-mismatch") return failure("protocol-mismatch", "worker")
+  if (message.code === "sandbox-unavailable" || message.code === "dependency-failed") {
+    return failure("runtime-unavailable", "probe")
+  }
+  return failure("worker-failed", message.stage === "worker" ? "worker" : "cleanup")
+}
+
+function closureFailure() {
+  return failure("worker-failed", "cleanup")
+}
+
 function failure(
   code: DocumentRuntimeProtocol.FailureCode,
   stage: DocumentRuntimeProtocol.FailureStage,
@@ -639,101 +922,14 @@ function attempt<A>(tryPromise: () => PromiseLike<A>, error: RuntimeError) {
   return Effect.tryPromise({ try: tryPromise, catch: () => error })
 }
 
-async function stopWorker(session: Session) {
-  if (session.child.exitCode !== null || session.child.signalCode !== null) {
-    if (
-      !session.terminal &&
-      !(await settleWithin(
-        Promise.resolve().then(() =>
-          session.launcher.terminate(session.child, DocumentRuntimeLimits.MaxCancellationGraceMs),
-        ),
-        DocumentRuntimeLimits.MaxCancellationGraceMs,
-      ))
-    ) {
-      throw failure("worker-failed", "cleanup")
-    }
-    return
-  }
-  if (!session.terminal && session.child.connected) {
-    try {
-      session.child.send(
-        encodeRequest({ protocolVersion: 1, type: "cancel", jobID: session.request.jobID }),
-        () => undefined,
-      )
-    } catch {}
-  }
-  const exited = await waitForExit(session.child, DocumentRuntimeLimits.MaxCancellationGraceMs)
-  if (exited) return
-  if (!(await terminateWithDeadline(session))) throw failure("worker-failed", "cleanup")
-}
-
-async function terminateWithDeadline(session: Session) {
-  const grace = DocumentRuntimeLimits.MaxCancellationGraceMs
-  const confined = await settleWithin(Promise.resolve().then(() => session.launcher.terminate(session.child, grace)), grace)
-  if (confined && (await waitForExit(session.child, grace))) return true
-  const fallback = await settleWithin(
-    terminateProcessTree(session.child, process.platform, process.env.SystemRoot, Math.floor(grace / 2)),
-    grace,
-  )
-  return fallback && (session.child.exitCode !== null || session.child.signalCode !== null)
-}
-
-function settleWithin(promise: Promise<void>, timeoutMs: number) {
-  return new Promise<boolean>((resolve) => {
-    let settled = false
-    const complete = (result: boolean) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      resolve(result)
-    }
-    const timeout = setTimeout(() => complete(false), timeoutMs)
-    void promise.then(() => complete(true), () => complete(false))
+function pendingAttempt<A>(tryPromise: () => PromiseLike<A>) {
+  return Effect.tryPromise({
+    try: tryPromise,
+    catch: (error) => {
+      if (error instanceof DocumentPendingRoot.EvidenceError) unhealthy = true
+      return failure("worker-failed", "cleanup")
+    },
   })
-}
-
-function waitForExit(child: ChildProcess, timeoutMs: number) {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true)
-  return new Promise<boolean>((resolve) => {
-    let settled = false
-    const complete = (exited: boolean) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      child.off("exit", onExit)
-      resolve(exited)
-    }
-    const onExit = () => complete(true)
-    const timeout = setTimeout(() => complete(false), timeoutMs)
-    child.once("exit", onExit)
-    if (child.exitCode !== null || child.signalCode !== null) complete(true)
-  })
-}
-
-export function workerEnvironment(
-  runtimeRoot: string,
-  target: DocumentRuntimeTarget.Target,
-  manifestSha256: DocumentRuntimeManifest.Digest,
-  jobRoot: string,
-  source: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-  return {
-    DISABLE_SYSTEM_FONTS_LOAD: "1",
-    DOCUMENT_JOB_ROOT: jobRoot,
-    DOCUMENT_RUNTIME_MANIFEST_SHA256: manifestSha256,
-    DOCUMENT_RUNTIME_ROOT: runtimeRoot,
-    DOCUMENT_RUNTIME_TARGET: target,
-    ELECTRON_RUN_AS_NODE: "1",
-    LANG: "C",
-    LC_ALL: "C",
-    TEMP: jobRoot,
-    TMP: jobRoot,
-    TMPDIR: jobRoot,
-    TZ: "UTC",
-    ...(process.platform === "win32" && source.SystemRoot && path.isAbsolute(source.SystemRoot)
-      ? { SystemRoot: source.SystemRoot, WINDIR: source.SystemRoot }
-      : {}),
-  }
 }
 
 function inside(root: string, value: string) {
@@ -741,8 +937,30 @@ function inside(root: string, value: string) {
   return relation !== "" && relation !== ".." && !relation.startsWith(`..${path.sep}`) && !path.isAbsolute(relation)
 }
 
-function protocolMismatch(value: unknown) {
-  return typeof value === "object" && value !== null && "protocolVersion" in value && value.protocolVersion !== 1
+function overlaps(left: string, right: string) {
+  return samePath(left, right) || inside(left, right) || inside(right, left)
+}
+
+function samePath(left: string, right: string) {
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right
+}
+
+function isTerminal(event: DocumentRuntimeProtocol.WorkerEvent) {
+  return event.type === "completed" || event.type === "cancelled" || event.type === "failure"
+}
+
+function settleWithin(promise: Promise<boolean>, timeoutMs: number) {
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    const finish = (value: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    const timer = setTimeout(() => finish(false), timeoutMs)
+    void promise.then(finish, () => finish(false))
+  })
 }
 
 export * as DocumentRuntime from "./runtime"

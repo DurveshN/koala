@@ -16,6 +16,7 @@ describe("document runtime Node stream transport", () => {
 
     input.write(Buffer.from('{"value":"koala-'))
     input.write(Buffer.from('ü"}\n[1,2]\n'))
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(messages).toEqual([{ value: "koala-ü" }, [1, 2]])
     input.end("{}")
     await disconnected.promise
@@ -50,7 +51,7 @@ describe("document runtime Node stream transport", () => {
     await expect(transport.send({ late: true })).rejects.toEqual(expect.objectContaining({ code: "input-failed" }))
   })
 
-  test("clears queued input and does not deliver another frame after failure", () => {
+  test("delivers already accepted frames and stops after a later malformed frame", async () => {
     const queuedInput = new PassThrough()
     const queuedOutput = new PassThrough()
     queuedOutput.resume()
@@ -59,10 +60,12 @@ describe("document runtime Node stream transport", () => {
     queuedInput.write(Buffer.from([0xc3, 0x28, 0x0a]))
     const messages: unknown[] = []
     queued.onMessage((message) => messages.push(message))
-    expect(messages).toEqual([])
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(messages).toEqual([{ queued: 1 }, { queued: 2 }])
     expect(queuedInput.destroyed).toBe(true)
     expect(queuedOutput.destroyed).toBe(true)
 
+    messages.length = 0
     const input = new PassThrough()
     const output = new PassThrough()
     output.resume()
@@ -73,6 +76,7 @@ describe("document runtime Node stream transport", () => {
       output.emit("error", new Error("stop delivery"))
     })
     input.write(Buffer.from('{"delivered":1}\n{"blocked":2}\n'))
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(messages).toEqual([{ delivered: 1 }])
   })
 

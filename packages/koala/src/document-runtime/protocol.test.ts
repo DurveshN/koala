@@ -7,6 +7,7 @@ const jobID = "job_123e4567-e89b-42d3-a456-426614174000"
 const otherJobID = "job_223e4567-e89b-42d3-a456-426614174000"
 const pageID = "page_123e4567-e89b-42d3-a456-426614174000"
 const resultID = "ocr_123e4567-e89b-42d3-a456-426614174000"
+const outputID = "output_123e4567-e89b-42d3-a456-426614174000"
 const hash = "0123456789abcdef".repeat(4)
 const limits = DocumentRuntimeLimits.requestedHard
 const expectEqual = (actual: unknown, expected: unknown) => expect(actual).toEqual(expected)
@@ -76,6 +77,8 @@ const pageReady = () => ({
   page: 1,
   pageID,
   outputPath: "pages/page-1.png",
+  outputID,
+  outputSha256: hash,
   dimensions: { width: 2_000, height: 3_000 },
   pngBytes: 1024,
   temporaryBytes: 1024,
@@ -137,6 +140,8 @@ describe("DocumentRuntimeProtocol schemas", () => {
       pageID,
       resultID,
       outputPath: "ocr/page-1.tsv",
+      outputID,
+      outputSha256: hash,
       tsvBytes: 512,
       temporaryBytes: 1536,
     },
@@ -257,6 +262,8 @@ describe("DocumentRuntimeProtocol ordering", () => {
         pageID,
         resultID,
         outputPath: "ocr/page-1.tsv",
+        outputID,
+        outputSha256: hash,
         tsvBytes: 512,
         temporaryBytes: 1536,
       }),
@@ -274,13 +281,10 @@ describe("DocumentRuntimeProtocol ordering", () => {
       ok: true,
       state: DocumentRuntimeProtocol.beginOrder(request),
     }
-    const final = messages.reduce<DocumentRuntimeProtocol.OrderResult>(
-      (result, message) => {
-        if (!result.ok) return result
-        return DocumentRuntimeProtocol.advanceOrder(result.state, message)
-      },
-      initial,
-    )
+    const final = messages.reduce<DocumentRuntimeProtocol.OrderResult>((result, message) => {
+      if (!result.ok) return result
+      return DocumentRuntimeProtocol.advanceOrder(result.state, message)
+    }, initial)
 
     expect(final).toEqual({
       ok: true,
@@ -383,5 +387,115 @@ describe("DocumentRuntimeProtocol ordering", () => {
       ok: false,
       code: "invalid-order",
     })
+  })
+})
+
+describe("DocumentRuntimeProtocol output transfer", () => {
+  const outputID = DocumentRuntimeProtocol.OutputID.make("output_123e4567-e89b-42d3-a456-426614174000")
+  const request = Schema.decodeUnknownSync(DocumentRuntimeProtocol.RenderRequest)(render())
+  const start = DocumentRuntimeProtocol.decodeOutputFrame({
+    protocolVersion: 1,
+    type: "output-start",
+    jobID,
+    outputID,
+    kind: "page-png",
+    page: 1,
+    pageID,
+    sourcePath: "pages/page-1.png",
+    declaredBytes: DocumentRuntimeLimits.MaxOutputChunkBytes + 1,
+  })
+  const chunk = (sequence: number, bytes: number) =>
+    DocumentRuntimeProtocol.decodeOutputFrame({
+      protocolVersion: 1,
+      type: "output-chunk",
+      jobID,
+      outputID,
+      sequence,
+      data: DocumentRuntimeProtocol.encodeCanonicalBase64(new Uint8Array(bytes)),
+    })
+  const end = DocumentRuntimeProtocol.decodeOutputFrame({
+    protocolVersion: 1,
+    type: "output-end",
+    jobID,
+    outputID,
+    chunks: 2,
+    actualBytes: DocumentRuntimeLimits.MaxOutputChunkBytes + 1,
+    sha256: hash,
+  })
+
+  test("round trips strict transfer frames and canonical base64", () => {
+    for (const frame of [start, chunk(0, DocumentRuntimeLimits.MaxOutputChunkBytes), chunk(1, 1), end]) {
+      expect(DocumentRuntimeProtocol.decodeWorkerOutput(frame)).toEqual(frame)
+    }
+    expect(DocumentRuntimeProtocol.decodeCanonicalBase64("a29hbGE=")).toEqual(new TextEncoder().encode("koala"))
+    for (const value of ["a29hbGE", "a29h bGE=", "a29hbGE===", "A==="]) {
+      expect(() => DocumentRuntimeProtocol.decodeCanonicalBase64(value)).toThrow()
+    }
+  })
+
+  test("accepts exact chunks then requires a matching normal event", () => {
+    const messages = [start, chunk(0, DocumentRuntimeLimits.MaxOutputChunkBytes), chunk(1, 1), end]
+    const transferred = messages.reduce<DocumentRuntimeProtocol.OutputOrderResult>(
+      (result, message) => (result.ok ? DocumentRuntimeProtocol.advanceOutputOrder(result.state, message) : result),
+      { ok: true, state: DocumentRuntimeProtocol.beginOutputOrder(request) },
+    )
+    expect(transferred.ok).toBe(true)
+    if (!transferred.ok) return
+    const published = DocumentRuntimeProtocol.advanceOutputOrder(
+      transferred.state,
+      DocumentRuntimeProtocol.decodeWorkerEvent({
+        ...pageReady(),
+        outputID,
+        outputSha256: hash,
+        pngBytes: DocumentRuntimeLimits.MaxOutputChunkBytes + 1,
+        temporaryBytes: DocumentRuntimeLimits.MaxOutputChunkBytes + 1,
+      }),
+    )
+    expect(published.ok).toBe(true)
+  })
+
+  test("rejects interleaving, sequence gaps, short non-final chunks, missing end, and limit overflow", () => {
+    const active = DocumentRuntimeProtocol.advanceOutputOrder(DocumentRuntimeProtocol.beginOutputOrder(request), start)
+    expect(active.ok).toBe(true)
+    if (!active.ok) return
+    expect(DocumentRuntimeProtocol.advanceOutputOrder(active.state, start)).toEqual({
+      ok: false,
+      code: "invalid-output-order",
+    })
+    expect(DocumentRuntimeProtocol.advanceOutputOrder(active.state, chunk(1, 1))).toEqual({
+      ok: false,
+      code: "invalid-output-order",
+    })
+    expect(DocumentRuntimeProtocol.advanceOutputOrder(active.state, chunk(0, 1))).toEqual({
+      ok: false,
+      code: "invalid-output-order",
+    })
+    expect(DocumentRuntimeProtocol.advanceOutputOrder(active.state, end)).toEqual({
+      ok: false,
+      code: "invalid-output-order",
+    })
+    const tiny = Schema.decodeUnknownSync(DocumentRuntimeProtocol.RenderRequest)({
+      ...render(),
+      limits: { ...limits, pngBytesPerPage: 1, temporaryBytes: 1 },
+    })
+    expect(DocumentRuntimeProtocol.advanceOutputOrder(DocumentRuntimeProtocol.beginOutputOrder(tiny), start)).toEqual({
+      ok: false,
+      code: "output-limit-exceeded",
+    })
+  })
+
+  test("rejects malformed and noncanonical chunk schemas", () => {
+    for (const data of ["", "a29h bGE=", "a29hbGE===", "a29hbGE"]) {
+      expect(() =>
+        DocumentRuntimeProtocol.decodeOutputFrame({
+          protocolVersion: 1,
+          type: "output-chunk",
+          jobID,
+          outputID,
+          sequence: 0,
+          data,
+        }),
+      ).toThrow()
+    }
   })
 })

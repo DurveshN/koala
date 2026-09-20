@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { getDefaultWritePaths, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime"
 import { DocumentRuntimeManifest } from "@koala-ai/core/document-runtime/manifest"
 import { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, rm, symlink } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import {
@@ -35,6 +35,7 @@ describe("document sandbox target policy", () => {
     const paths = windows ? path.win32 : path.posix
     const root = windows ? "C:\\Koala Runtime" : "/opt/koala runtime"
     const job = windows ? "D:\\Koala Jobs\\one" : "/var/koala jobs/one"
+    const pending = windows ? "D:\\Koala Jobs\\pending" : "/var/koala jobs/pending"
     const assetsRoot = windows ? "C:\\Koala App\\sandbox-runtime" : "/opt/koala app/sandbox-runtime"
     const executable = windows ? "C:\\Koala App\\node.exe" : "/opt/koala app/node"
     const systemRoot = windows ? "C:\\Windows" : undefined
@@ -45,6 +46,7 @@ describe("document sandbox target policy", () => {
       target,
       runtimeRoot: root,
       jobRoot: job,
+      pendingRoot: pending,
       executablePath: executable,
       systemRoot,
       sandboxAssets: assets,
@@ -66,9 +68,11 @@ describe("document sandbox target policy", () => {
       allowMachLookup: [],
     })
     expect(config.filesystem.allowWrite).toEqual([job])
+    expect(config.filesystem.denyWrite).toContain(pending)
     expect(config.filesystem.allowRead).toEqual(
       expect.arrayContaining([root, job, executable, assets.javaAgentJarPath]),
     )
+    expect(config.filesystem.allowRead).not.toContain(pending)
     if (target.includes("linux")) {
       expect(config).toMatchObject({
         bwrapPath: "/usr/bin/bwrap",
@@ -138,7 +142,13 @@ describe("document sandbox target policy", () => {
       inspectPath: async (value) => {
         inspected.push(value)
         const canonicalPath = value === "/bin/sh" ? "/usr/bin/dash" : value
-        return { canonicalPath, kind: "file", reparsePoint: value === "/bin/sh", identity: `id:${canonicalPath}` }
+        return {
+          canonicalPath,
+          kind: "file",
+          reparsePoint: value === "/bin/sh",
+          identity: `id:${canonicalPath}`,
+          filesystemIdentity: { dev: 1n, ino: 1n },
+        }
       },
       accessExecutable: async () => true,
     })
@@ -162,6 +172,7 @@ describe("document sandbox target policy", () => {
           kind: "file",
           reparsePoint: false,
           identity: `id:${value}`,
+          filesystemIdentity: { dev: 1n, ino: 1n },
         }),
         accessExecutable: async () => true,
       }),
@@ -181,7 +192,13 @@ describe("document sandbox target policy", () => {
         inspectPath: async (value) =>
           value.endsWith("bwrap")
             ? undefined
-            : { canonicalPath: value, kind: "file", reparsePoint: false, identity: `id:${value}` },
+            : {
+                canonicalPath: value,
+                kind: "file",
+                reparsePoint: false,
+                identity: `id:${value}`,
+                filesystemIdentity: { dev: 1n, ino: 1n },
+              },
         accessExecutable: async () => true,
       }),
     ).toEqual({ status: "unavailable", code: "host-helper-unavailable" })
@@ -196,6 +213,7 @@ describe("document sandbox path validation", () => {
       kind: value.toLowerCase().endsWith(".dll") ? "file" : "directory",
       reparsePoint: false,
       identity: value.toLowerCase().endsWith(".dll") ? `loader:${value.toLowerCase()}` : `id:${value}`,
+      filesystemIdentity: { dev: 1n, ino: 1n },
     }),
     accessExecutable: async () => true,
   }
@@ -293,6 +311,17 @@ describe("document sandbox path validation", () => {
     expect(noncanonical).toEqual({ status: "unavailable", code: "invalid-path" })
   })
 
+  test("rejects recorded parent, job, or pending identity mismatch", async () => {
+    for (const override of [
+      { parentIdentity: { dev: 1n, ino: 2n } },
+      { jobRootIdentity: { dev: 1n, ino: 2n } },
+      { pendingRootIdentity: { dev: 1n, ino: 2n } },
+    ]) {
+      const input = linuxInput(override)
+      expect(await prepare(input, fakeFilesystem(input))).toEqual({ status: "unavailable", code: "invalid-path" })
+    }
+  })
+
   test("prepares only explicit runtime and sandbox assets", async () => {
     const input = linuxInput()
     const result = await prepare(input, fakeFilesystem(input))
@@ -312,8 +341,9 @@ describe("document sandbox path validation", () => {
       const runtime = path.join(parent, "runtime")
       const linked = path.join(parent, "linked")
       const jobRoot = path.join(parent, "job")
+      const pendingRoot = path.join(parent, "pending")
       const sandboxAssetsRoot = path.join(parent, "sandbox")
-      await Promise.all([mkdir(runtime), mkdir(jobRoot), mkdir(sandboxAssetsRoot)])
+      await Promise.all([mkdir(runtime), mkdir(jobRoot), mkdir(pendingRoot), mkdir(sandboxAssetsRoot)])
       await symlink(runtime, linked, process.platform === "win32" ? "junction" : "dir")
       if (
         (process.platform !== "darwin" && process.platform !== "linux" && process.platform !== "win32") ||
@@ -322,11 +352,19 @@ describe("document sandbox path validation", () => {
         return
       }
       const target = DocumentRuntimeTarget.fromHost(process.platform, process.arch)
+      const [parentInfo, jobInfo, pendingInfo] = await Promise.all(
+        [parent, jobRoot, pendingRoot].map((value) => lstat(value, { bigint: true })),
+      )
       expect(
         await prepare({
           target,
           runtimeRoot: linked,
+          parentRoot: parent,
+          parentIdentity: { dev: parentInfo.dev, ino: parentInfo.ino },
           jobRoot,
+          jobRootIdentity: { dev: jobInfo.dev, ino: jobInfo.ino },
+          pendingRoot,
+          pendingRootIdentity: { dev: pendingInfo.dev, ino: pendingInfo.ino },
           sandboxAssetsRoot,
           executablePath: process.execPath,
           manifestSha256: digest,
@@ -570,7 +608,13 @@ function linuxInput(overrides: Partial<Parameters<typeof prepare>[0]> = {}) {
   return {
     target: "x86_64-unknown-linux-gnu",
     runtimeRoot: "/runtime",
+    parentRoot: "/jobs",
+    parentIdentity: { dev: 1n, ino: 1n },
+    parentMode: 0o500,
     jobRoot: "/jobs/one",
+    jobRootIdentity: { dev: 1n, ino: 1n },
+    pendingRoot: "/jobs/pending",
+    pendingRootIdentity: { dev: 1n, ino: 1n },
     sandboxAssetsRoot: "/sandbox",
     executablePath: "/host/node",
     manifestSha256: digest,
@@ -615,6 +659,8 @@ function fakeFilesystem(input: Parameters<typeof prepare>[0], canonical = (value
       kind: files.has(value) ? "file" : "directory",
       reparsePoint: false,
       identity: `id:${canonical(value)}`,
+      filesystemIdentity: { dev: 1n, ino: 1n },
+      mode: value === input.parentRoot ? 0o500 : 0o700,
     }),
     accessExecutable: async () => true,
     environment: { HOME: "/home/broker", PATH: "/usr/bin:/bin", TMPDIR: "/tmp" },
@@ -626,6 +672,7 @@ function linuxConfig() {
     target: "x86_64-unknown-linux-gnu",
     runtimeRoot: "/runtime",
     jobRoot: "/jobs/one",
+    pendingRoot: "/jobs/pending",
     executablePath: "/host/node",
     sandboxAssets: resolveSandboxAssets("/sandbox", "x86_64-unknown-linux-gnu"),
     hostHelpers: helpersFor("x86_64-unknown-linux-gnu"),
@@ -639,6 +686,7 @@ function windowsConfig() {
     target: "x86_64-pc-windows-msvc",
     runtimeRoot: "C:\\runtime",
     jobRoot: "D:\\jobs\\one",
+    pendingRoot: "D:\\jobs\\pending",
     executablePath: "C:\\app\\node.exe",
     systemRoot: "C:\\Windows",
     sandboxAssets: resolveSandboxAssets("C:\\app\\sandbox-runtime", "x86_64-pc-windows-msvc"),
@@ -735,6 +783,7 @@ function windowsPolicyDependencies(evidence: WindowsVolumeEvidence) {
         kind: loader?.kind ?? "directory",
         reparsePoint: false,
         identity: loader?.identity ?? `id:${value}`,
+        filesystemIdentity: { dev: 1n, ino: 1n },
       }
     },
     accessExecutable: async () => true,

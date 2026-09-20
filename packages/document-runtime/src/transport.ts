@@ -13,7 +13,7 @@ export class TransportError extends Error {
 }
 
 export interface NodeStreamTransport {
-  readonly onMessage: (listener: (input: unknown) => void) => void
+  readonly onMessage: (listener: (input: unknown) => unknown | Promise<unknown>) => void
   readonly onDisconnect: (listener: (error?: TransportError) => void) => void
   readonly send: (value: unknown) => Promise<void>
   readonly close: () => void
@@ -30,13 +30,15 @@ export function createNodeStreamTransport(input: Readable, output: Writable): No
   const encoder = DocumentRuntimeNdjson.makeEncoder()
   const pendingMessages: unknown[] = []
   const writes: PendingWrite[] = []
-  let messageListener: ((input: unknown) => void) | undefined
+  let messageListener: ((input: unknown) => unknown | Promise<unknown>) | undefined
   let disconnectListener: ((error?: TransportError) => void) | undefined
   let failure: TransportError | undefined
   let disconnected = false
   let writing = false
   let closing = false
   let drainListener: (() => void) | undefined
+  let processingInput = false
+  let inputEnded = false
 
   const disconnect = () => {
     if (disconnected) return
@@ -87,27 +89,48 @@ export function createNodeStreamTransport(input: Readable, output: Writable): No
     destroy(output)
     return failure
   }
-  const deliver = (value: unknown) => {
+  const enqueue = (value: unknown) => {
     if (failure || closing) return
-    if (!messageListener) {
-      if (pendingMessages.length === DocumentRuntimeLimits.MaxNdjsonPendingWrites) throw fail("queue-overflow")
-      pendingMessages.push(value)
+    if (pendingMessages.length === DocumentRuntimeLimits.MaxNdjsonPendingWrites) throw fail("queue-overflow")
+    pendingMessages.push(value)
+  }
+  const finishInput = () => {
+    if (!inputEnded || processingInput || pendingMessages.length > 0 || failure || closing) return
+    closing = true
+    messageListener = undefined
+    stopInput()
+    disconnect()
+    drainWrites()
+  }
+  const drainMessages = () => {
+    if (processingInput || failure || closing || !messageListener) return
+    const value = pendingMessages.shift()
+    if (value === undefined) {
+      finishInput()
+      if (!inputEnded) input.resume()
       return
     }
-    try {
-      messageListener(value)
-    } catch {
-      throw fail("input-failed")
-    }
+    processingInput = true
+    void Promise.resolve()
+      .then(() => messageListener?.(value))
+      .then(
+        () => {
+          processingInput = false
+          drainMessages()
+        },
+        () => fail("input-failed"),
+      )
   }
   function onData(chunk: unknown) {
     if (failure || closing) return
     if (!(chunk instanceof Uint8Array)) return void fail("input-failed")
+    input.pause()
     try {
       for (const value of decoder.push(chunk)) {
         if (failure || closing) break
-        deliver(value)
+        enqueue(value)
       }
+      drainMessages()
     } catch {
       fail("input-failed")
     }
@@ -120,18 +143,16 @@ export function createNodeStreamTransport(input: Readable, output: Writable): No
       fail("input-failed")
       return
     }
-    closing = true
-    pendingMessages.length = 0
-    messageListener = undefined
+    inputEnded = true
     stopInput()
-    disconnect()
-    drainWrites()
+    drainMessages()
+    finishInput()
   }
   function onInputError() {
     fail("input-failed")
   }
   function onInputClose() {
-    const unexpected = !closing && !disconnected
+    const unexpected = !inputEnded && !closing && !disconnected
     detachInput()
     if (unexpected) fail("input-failed")
   }
@@ -201,14 +222,8 @@ export function createNodeStreamTransport(input: Readable, output: Writable): No
         return
       }
       messageListener = listener
-      try {
-        for (const value of pendingMessages.splice(0)) {
-          if (failure || closing) break
-          listener(value)
-        }
-      } catch {
-        fail("input-failed")
-      }
+      input.pause()
+      drainMessages()
     },
     onDisconnect(listener) {
       if (disconnectListener) throw new TransportError("closed")

@@ -23,6 +23,22 @@ export const ResultID = Schema.String.check(
 ).pipe(Schema.brand("DocumentRuntimeProtocol.ResultID"))
 export type ResultID = typeof ResultID.Type
 
+export const OutputID = Schema.String.check(
+  Schema.isPattern(/^output_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+).pipe(Schema.brand("DocumentRuntimeProtocol.OutputID"))
+export type OutputID = typeof OutputID.Type
+
+export const OutputSourcePath = DocumentRuntimeManifest.RelativePath.check(
+  Schema.makeFilter((value) =>
+    ((value.startsWith("pages/") && value.endsWith(".png")) || (value.startsWith("ocr/") && value.endsWith(".tsv"))) &&
+    !value.includes("\\") &&
+    !value.includes(":")
+      ? undefined
+      : "Expected a canonical document output path",
+  ),
+).pipe(Schema.brand("DocumentRuntimeProtocol.OutputSourcePath"))
+export type OutputSourcePath = typeof OutputSourcePath.Type
+
 const PdfInputBytes = Schema.Int.check(
   Schema.isGreaterThan(0),
   Schema.isLessThanOrEqualTo(DocumentRuntimeLimits.MaxPdfInputBytes),
@@ -116,14 +132,12 @@ export const ImageOcrRequest = Schema.Struct({
   source: ImageSource,
 }).check(
   Schema.makeFilter((request) =>
-    request.source.inputBytes <= request.limits.imageInputBytes
-      ? undefined
-      : "Image input exceeds the requested limit",
+    request.source.inputBytes <= request.limits.imageInputBytes ? undefined : "Image input exceeds the requested limit",
   ),
   Schema.makeFilter((request) =>
     request.source.dimensions.width <= request.limits.rasterSidePixels &&
-      request.source.dimensions.height <= request.limits.rasterSidePixels &&
-      request.source.dimensions.width * request.source.dimensions.height <= request.limits.rasterAreaPixels
+    request.source.dimensions.height <= request.limits.rasterSidePixels &&
+    request.source.dimensions.width * request.source.dimensions.height <= request.limits.rasterAreaPixels
       ? undefined
       : "Image dimensions exceed the requested raster limit",
   ),
@@ -198,6 +212,8 @@ export const PageReadyEvent = Schema.Struct({
   page: DocumentRuntimeLimits.PageNumber,
   pageID: PageID,
   outputPath: DocumentRuntimeManifest.RelativePath,
+  outputID: OutputID,
+  outputSha256: DocumentRuntimeManifest.Digest,
   dimensions: DocumentRuntimeLimits.RasterDimensions,
   pngBytes: PngBytes,
   temporaryBytes: TemporaryBytes,
@@ -210,6 +226,8 @@ export const OcrResultEvent = Schema.Struct({
   pageID: PageID,
   resultID: ResultID,
   outputPath: DocumentRuntimeManifest.RelativePath,
+  outputID: OutputID,
+  outputSha256: DocumentRuntimeManifest.Digest,
   tsvBytes: TsvBytes,
   temporaryBytes: TemporaryBytes,
 })
@@ -274,6 +292,82 @@ export const WorkerEvent = Schema.Union([
 export type WorkerEvent = typeof WorkerEvent.Type
 const decodeEvent = Schema.decodeUnknownSync(WorkerEvent, strictDecodeOptions)
 export const decodeWorkerEvent = (input: unknown) => decodeEvent(input)
+
+const OutputStartCommon = {
+  ...CommonEvent,
+  type: Schema.Literal("output-start"),
+  outputID: OutputID,
+  page: DocumentRuntimeLimits.PageNumber,
+  pageID: PageID,
+  sourcePath: OutputSourcePath,
+  declaredBytes: Schema.Int.check(
+    Schema.isGreaterThanOrEqualTo(0),
+    Schema.isLessThanOrEqualTo(DocumentRuntimeLimits.MaxPngBytesPerPage),
+  ),
+}
+
+export const PageOutputStart = Schema.Struct({
+  ...OutputStartCommon,
+  kind: Schema.Literal("page-png"),
+})
+
+export const OcrOutputStart = Schema.Struct({
+  ...OutputStartCommon,
+  kind: Schema.Literal("ocr-tsv"),
+  resultID: ResultID,
+}).check(
+  Schema.makeFilter((value) =>
+    value.declaredBytes <= DocumentRuntimeLimits.MaxTsvBytesPerPage ? undefined : "TSV output exceeds hard limit",
+  ),
+)
+
+export const OutputStart = Schema.Union([PageOutputStart, OcrOutputStart]).annotate({
+  discriminator: "kind",
+  identifier: "DocumentRuntimeProtocol.OutputStart",
+})
+export type OutputStart = typeof OutputStart.Type
+
+export const OutputChunk = Schema.Struct({
+  ...CommonEvent,
+  type: Schema.Literal("output-chunk"),
+  outputID: OutputID,
+  sequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  data: Schema.String.check(
+    Schema.isMinLength(4),
+    Schema.isMaxLength(DocumentRuntimeLimits.MaxOutputChunkBase64Characters),
+    Schema.isPattern(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
+  ),
+})
+export type OutputChunk = typeof OutputChunk.Type
+
+export const OutputEnd = Schema.Struct({
+  ...CommonEvent,
+  type: Schema.Literal("output-end"),
+  outputID: OutputID,
+  chunks: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  actualBytes: Schema.Int.check(
+    Schema.isGreaterThanOrEqualTo(0),
+    Schema.isLessThanOrEqualTo(DocumentRuntimeLimits.MaxPngBytesPerPage),
+  ),
+  sha256: DocumentRuntimeManifest.Digest,
+})
+export type OutputEnd = typeof OutputEnd.Type
+
+export const OutputFrame = Schema.Union([OutputStart, OutputChunk, OutputEnd]).annotate({
+  discriminator: "type",
+  identifier: "DocumentRuntimeProtocol.OutputFrame",
+})
+export type OutputFrame = typeof OutputFrame.Type
+const decodeOutput = Schema.decodeUnknownSync(OutputFrame, strictDecodeOptions)
+export const decodeOutputFrame = (input: unknown) => decodeOutput(input)
+
+export const WorkerOutput = Schema.Union([WorkerEvent, OutputFrame]).annotate({
+  discriminator: "type",
+  identifier: "DocumentRuntimeProtocol.WorkerOutput",
+})
+export type WorkerOutput = typeof WorkerOutput.Type
+const decodeWorkerOutputValue = Schema.decodeUnknownSync(WorkerOutput, strictDecodeOptions)
+export const decodeWorkerOutput = (input: unknown) => decodeWorkerOutputValue(input)
 export type OrderPhase =
   | "awaiting-started"
   | "awaiting-page"
@@ -412,6 +506,274 @@ export function advanceOrder(state: OrderState, message: WorkerRequest | WorkerE
       : { ok: false, code: "invalid-order" }
   }
   return { ok: false, code: "invalid-order" }
+}
+
+export interface OutputOrderState {
+  readonly jobID: JobID
+  readonly request: StartRequest
+  readonly used: ReadonlySet<OutputID>
+  readonly active?: {
+    readonly start: OutputStart
+    readonly chunks: number
+    readonly bytes: number
+  }
+  readonly completed?: {
+    readonly start: OutputStart
+    readonly chunks: number
+    readonly bytes: number
+    readonly sha256: DocumentRuntimeManifest.Digest
+  }
+  readonly published: ReadonlyArray<{
+    readonly outputID: OutputID
+    readonly page: number
+    readonly pageID: PageID
+    readonly bytes: number
+    readonly kind: "page-png" | "ocr-tsv"
+  }>
+  readonly cumulativeBytes: number
+  readonly liveBytes: number
+  readonly releasedPages: number
+  readonly terminal: boolean
+}
+
+export type OutputOrderResult =
+  | {
+      readonly ok: true
+      readonly state: OutputOrderState
+      readonly decodedChunk?: Uint8Array
+    }
+  | {
+      readonly ok: false
+      readonly code: "job-mismatch" | "invalid-output-order" | "output-limit-exceeded" | "invalid-base64"
+    }
+
+export function beginOutputOrder(request: StartRequest): OutputOrderState {
+  return {
+    jobID: request.jobID,
+    request,
+    used: new Set(),
+    published: [],
+    cumulativeBytes: 0,
+    liveBytes: 0,
+    releasedPages: 0,
+    terminal: false,
+  }
+}
+
+export function advanceOutputOrder(
+  state: OutputOrderState,
+  message: OutputFrame | WorkerEvent | typeof ReleasePageRequest.Type,
+): OutputOrderResult {
+  if (message.jobID !== state.jobID) return { ok: false, code: "job-mismatch" }
+  if (state.terminal) return { ok: false, code: "invalid-output-order" }
+  if (message.type === "output-start") return startOutput(state, message)
+  if (message.type === "output-chunk") return chunkOutput(state, message)
+  if (message.type === "output-end") return endOutput(state, message)
+  if (message.type === "page-ready" || message.type === "ocr-result") return publishOutput(state, message)
+  if (message.type === "release-page") {
+    if (state.active || state.completed) return { ok: false, code: "invalid-output-order" }
+    const released = state.published.filter(
+      (output) => output.page === message.page && output.pageID === message.pageID,
+    )
+    if (released.length === 0) return { ok: false, code: "invalid-output-order" }
+    return outputSuccess({
+      ...state,
+      published: state.published.filter((output) => output.page !== message.page || output.pageID !== message.pageID),
+      liveBytes: state.liveBytes - released.reduce((total, output) => total + output.bytes, 0),
+      releasedPages: state.releasedPages + 1,
+    })
+  }
+  if (state.active || state.completed) return { ok: false, code: "invalid-output-order" }
+  if (message.type === "completed" || message.type === "cancelled" || message.type === "failure") {
+    return outputSuccess({ ...state, terminal: true })
+  }
+  return outputSuccess(state)
+}
+
+function startOutput(state: OutputOrderState, start: OutputStart): OutputOrderResult {
+  if (state.active || state.completed || state.used.has(start.outputID)) {
+    return { ok: false, code: "invalid-output-order" }
+  }
+  if (!matchesExpectedOutput(state, start)) return { ok: false, code: "invalid-output-order" }
+  const perOutputLimit =
+    start.kind === "page-png"
+      ? state.request.type === "render"
+        ? state.request.limits.pngBytesPerPage
+        : 0
+      : state.request.type === "probe"
+        ? 0
+        : state.request.limits.tsvBytesPerPage
+  if (start.declaredBytes > perOutputLimit) return { ok: false, code: "output-limit-exceeded" }
+  if (state.cumulativeBytes + start.declaredBytes > cumulativePayloadLimit(state.request)) {
+    return { ok: false, code: "output-limit-exceeded" }
+  }
+  const temporaryLimit = state.request.type === "probe" ? 0 : state.request.limits.temporaryBytes
+  if (state.liveBytes + start.declaredBytes > temporaryLimit) {
+    return { ok: false, code: "output-limit-exceeded" }
+  }
+  return outputSuccess({
+    ...state,
+    used: new Set([...state.used, start.outputID]),
+    active: { start, chunks: 0, bytes: 0 },
+  })
+}
+
+function chunkOutput(state: OutputOrderState, chunk: OutputChunk): OutputOrderResult {
+  const active = state.active
+  if (!active || active.start.outputID !== chunk.outputID || chunk.sequence !== active.chunks) {
+    return { ok: false, code: "invalid-output-order" }
+  }
+  let decoded: Uint8Array
+  try {
+    decoded = decodeCanonicalBase64(chunk.data)
+  } catch {
+    return { ok: false, code: "invalid-base64" }
+  }
+  const expectedChunks = Math.ceil(active.start.declaredBytes / DocumentRuntimeLimits.MaxOutputChunkBytes)
+  if (chunk.sequence >= expectedChunks) return { ok: false, code: "invalid-output-order" }
+  const expectedBytes =
+    chunk.sequence === expectedChunks - 1
+      ? active.start.declaredBytes - chunk.sequence * DocumentRuntimeLimits.MaxOutputChunkBytes
+      : DocumentRuntimeLimits.MaxOutputChunkBytes
+  if (decoded.byteLength !== expectedBytes) return { ok: false, code: "invalid-output-order" }
+  return outputSuccess(
+    {
+      ...state,
+      active: {
+        ...active,
+        chunks: active.chunks + 1,
+        bytes: active.bytes + decoded.byteLength,
+      },
+    },
+    decoded,
+  )
+}
+
+function endOutput(state: OutputOrderState, end: OutputEnd): OutputOrderResult {
+  const active = state.active
+  if (!active || active.start.outputID !== end.outputID) return { ok: false, code: "invalid-output-order" }
+  const expectedChunks = Math.ceil(active.start.declaredBytes / DocumentRuntimeLimits.MaxOutputChunkBytes)
+  if (
+    active.chunks !== expectedChunks ||
+    end.chunks !== expectedChunks ||
+    active.bytes !== active.start.declaredBytes ||
+    end.actualBytes !== active.start.declaredBytes
+  ) {
+    return { ok: false, code: "invalid-output-order" }
+  }
+  return outputSuccess({
+    ...state,
+    active: undefined,
+    completed: {
+      start: active.start,
+      chunks: active.chunks,
+      bytes: active.bytes,
+      sha256: end.sha256,
+    },
+    cumulativeBytes: state.cumulativeBytes + active.bytes,
+    liveBytes: state.liveBytes + active.bytes,
+  })
+}
+
+function publishOutput(
+  state: OutputOrderState,
+  event: typeof PageReadyEvent.Type | typeof OcrResultEvent.Type,
+): OutputOrderResult {
+  const completed = state.completed
+  if (!completed) return { ok: false, code: "invalid-output-order" }
+  const start = completed.start
+  const matches =
+    start.outputID === event.outputID &&
+    start.page === event.page &&
+    start.pageID === event.pageID &&
+    start.sourcePath === event.outputPath &&
+    completed.sha256 === event.outputSha256 &&
+    (event.type === "page-ready"
+      ? start.kind === "page-png" && start.declaredBytes === event.pngBytes
+      : start.kind === "ocr-tsv" && start.resultID === event.resultID && start.declaredBytes === event.tsvBytes)
+  if (!matches) return { ok: false, code: "invalid-output-order" }
+  return outputSuccess({
+    ...state,
+    completed: undefined,
+    published: [
+      ...state.published,
+      { outputID: event.outputID, page: event.page, pageID: event.pageID, bytes: completed.bytes, kind: start.kind },
+    ],
+  })
+}
+
+function matchesExpectedOutput(state: OutputOrderState, start: OutputStart) {
+  const request = state.request
+  if (request.type === "probe") return false
+  if (start.kind === "page-png") {
+    return (
+      request.type === "render" &&
+      start.page === request.startPage + state.releasedPages &&
+      start.page <= request.startPage + request.pageCount - 1 &&
+      start.sourcePath.startsWith("pages/")
+    )
+  }
+  if (!start.sourcePath.startsWith("ocr/")) return false
+  if (request.type === "ocr") return start.page === request.page && start.pageID === request.pageID
+  return (
+    state.published.some(
+      (output) => output.kind === "page-png" && output.page === start.page && output.pageID === start.pageID,
+    ) &&
+    !state.published.some(
+      (output) => output.kind === "ocr-tsv" && output.page === start.page && output.pageID === start.pageID,
+    )
+  )
+}
+
+function cumulativePayloadLimit(request: StartRequest) {
+  if (request.type === "probe") return 0
+  if (request.type === "ocr") return request.limits.tsvBytesPerPage
+  return request.pageCount * (request.limits.pngBytesPerPage + request.limits.tsvBytesPerPage)
+}
+
+export function decodeCanonicalBase64(value: string) {
+  if (
+    value.length === 0 ||
+    value.length > DocumentRuntimeLimits.MaxOutputChunkBase64Characters ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+  ) {
+    throw new Error("invalid-base64")
+  }
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0
+  const output = new Uint8Array((value.length / 4) * 3 - padding)
+  let offset = 0
+  for (let index = 0; index < value.length; index += 4) {
+    const a = alphabet.indexOf(value[index]!)
+    const b = alphabet.indexOf(value[index + 1]!)
+    const c = value[index + 2] === "=" ? 0 : alphabet.indexOf(value[index + 2]!)
+    const d = value[index + 3] === "=" ? 0 : alphabet.indexOf(value[index + 3]!)
+    const bits = (a << 18) | (b << 12) | (c << 6) | d
+    if (offset < output.length) output[offset++] = bits >> 16
+    if (offset < output.length) output[offset++] = bits >> 8
+    if (offset < output.length) output[offset++] = bits
+  }
+  if (encodeCanonicalBase64(output) !== value) throw new Error("invalid-base64")
+  return output
+}
+
+export function encodeCanonicalBase64(value: Uint8Array) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  let output = ""
+  for (let index = 0; index < value.length; index += 3) {
+    const a = value[index]!
+    const b = value[index + 1]
+    const c = value[index + 2]
+    output += alphabet[a >> 2]
+    output += alphabet[((a & 3) << 4) | ((b ?? 0) >> 4)]
+    output += b === undefined ? "=" : alphabet[((b & 15) << 2) | ((c ?? 0) >> 6)]
+    output += c === undefined ? "=" : alphabet[c & 63]
+  }
+  return output
+}
+
+function outputSuccess(state: OutputOrderState, decodedChunk?: Uint8Array): OutputOrderResult {
+  return decodedChunk ? { ok: true, state, decodedChunk } : { ok: true, state }
 }
 
 function withinPageLimits(limits: DocumentRuntimeLimits.Requested | undefined, event: typeof PageReadyEvent.Type) {
