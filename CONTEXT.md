@@ -442,6 +442,49 @@ Document confinement Phase 3 verification completed on 2026-09-20:
   SRT account/WFP evidence, and stock SRT `0.0.76` does not expose conclusive ACL
   reset evidence.
 
+Document-runtime confinement Phase 4 is implemented as an inactive standalone
+one-job proxy entrypoint. It independently repeats manifest, target, canonical
+root, runtime asset, SRT asset, dependency, and effective-policy checks before
+spawning the fixed Phase 3 bootstrap descriptor with `shell: false` and bounded
+standard streams. The proxy strictly decodes and re-encodes both protocols,
+enforces document order, accepts one launch and one cancellation, withholds the
+terminal worker event until observed leader exit, a separately verified full-
+tree or Job Object sweep, and bounded SRT cleanup/reset, applies curated
+teardown-failure precedence, emits one `closed`, and releases its listeners,
+timers, queues, and transport. Cancellation is latched across every startup
+stage and aborts an active SRT wrap; non-clean spontaneous leader exits and any
+post-terminal malformed, overflowing, unterminated, or errored transport replace
+provisional success. A PID-less asynchronous spawn error is treated as confirmed
+process absence and still runs SRT cleanup/reset. It is not connected to the
+production document coordinator; that atomic cutover remains Phase 5. The
+existing generic sandbox policy and runtime were not changed.
+
+The final Phase 4 containment review separates leader exit from tree emptiness.
+POSIX teardown sends `SIGTERM`, polls process-group liveness with signal zero,
+treats `EPERM` as still alive, escalates to `SIGKILL`, and accepts containment
+only after `ESRCH` and observed leader exit within one shared deadline. Windows
+teardown runs the fixed tree killer, observes leader exit, and then requires an
+explicit bounded tree-empty or owned-Job-Object evidence callback. The stock
+production dependency supplies no such Windows evidence and therefore returns
+`windows-tree-evidence-required`; the proxy withholds SRT cleanup/reset and any
+provisional terminal event when containment is not confirmed.
+
+Document confinement Phase 4 verification completed on 2026-09-20:
+
+- The injected proxy lifecycle suite and real bounded-NDJSON fixture process:
+  54 passed with 224 assertions.
+- OpenCode document and generic sandbox regression suites: 160 passed with 507
+  assertions across 7 files.
+- Koala document protocol, limit, and transport suite: 188 passed with 386
+  assertions across 7 files.
+- Document Runtime suite: 82 passed with 192 assertions; 2 existing symlink
+  capability tests skipped on this Windows host.
+- Koala, Document Runtime, and OpenCode typechecks passed.
+- Document Runtime and OpenCode Node builds passed.
+- Native SRT confinement was not exercised or claimed; production document
+  execution remains inactive pending the Phase 5 coordinator cutover and later
+  native release gates.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.

@@ -5,7 +5,7 @@ import {
 } from "@anthropic-ai/sandbox-runtime"
 import { DocumentRuntimeManifest } from "@koala-ai/core/document-runtime/manifest"
 import { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
-import { runtimeNativeBinary, runtimeNativePackage } from "@koala-ai/document-runtime"
+import { runtimeNativeBinary, runtimeNativePackage } from "@koala-ai/document-runtime/runtime"
 import { constants } from "node:fs"
 import { access, lstat, realpath } from "node:fs/promises"
 import os from "node:os"

@@ -17,12 +17,14 @@ export interface ObservedExit {
 
 export type ExitResult =
   | { readonly status: "exited"; readonly exit: ObservedExit }
+  | { readonly status: "evidence-required"; readonly code: "windows-tree-evidence-required" }
   | {
       readonly status: "unavailable"
       readonly code:
         | "invalid-timeout"
         | "missing-pid"
         | "tree-termination-failed"
+        | "tree-containment-unconfirmed"
         | "helper-exit-not-observed"
         | "exit-not-observed"
     }
@@ -30,12 +32,16 @@ export type ExitResult =
 export type SpawnTreeKiller = (executable: string, args: ReadonlyArray<string>, options: SpawnOptions) => ProcessHandle
 
 export interface TerminationDependencies {
-  readonly killProcessGroup: (pid: number) => void
+  readonly signalProcessGroup: (pid: number, signal: "SIGTERM" | "SIGKILL") => void
+  readonly probeProcessGroup: (pid: number) => void
   readonly spawnTreeKiller: SpawnTreeKiller
+  readonly now?: () => number
+  readonly sleep?: (milliseconds: number) => Promise<void>
 }
 
 const defaultDependencies: TerminationDependencies = {
-  killProcessGroup: (pid) => process.kill(-pid, "SIGKILL"),
+  signalProcessGroup: (pid, signal) => process.kill(-pid, signal),
+  probeProcessGroup: (pid) => process.kill(-pid, 0),
   spawnTreeKiller: (executable, args, options) => spawn(executable, args, options),
 }
 
@@ -46,28 +52,22 @@ export async function terminateProcessTree(
     readonly systemRoot?: string
     readonly timeoutMs: number
     readonly dependencies?: TerminationDependencies
+    readonly verifyWindowsTreeEmpty?: (pid: number) => Promise<boolean>
   },
 ): Promise<ExitResult> {
   if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1) {
     return { status: "unavailable", code: "invalid-timeout" }
   }
   const observed = observedExit(child)
-  if (observed) return { status: "exited", exit: observed }
   if (!child.pid) return { status: "unavailable", code: "missing-pid" }
 
   const dependencies = options.dependencies ?? defaultDependencies
-  const deadline = Date.now() + options.timeoutMs
+  const now = dependencies.now ?? Date.now
+  const sleep =
+    dependencies.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
+  const deadline = now() + options.timeoutMs
   if ((options.platform ?? process.platform) !== "win32") {
-    try {
-      dependencies.killProcessGroup(child.pid)
-    } catch {
-      tryKill(child)
-      await observeBefore(child, deadline)
-      return { status: "unavailable", code: "tree-termination-failed" }
-    }
-    const result = await observeBefore(child, deadline)
-    if (result.status !== "exited") tryKill(child)
-    return result
+    return sweepPosixProcessGroup(child, child.pid, observed, deadline, dependencies, now, sleep)
   }
 
   if (!options.systemRoot || !validSystemRoot(options.systemRoot)) {
@@ -113,7 +113,75 @@ export async function terminateProcessTree(
   }
   const result = await observeBefore(child, deadline)
   if (result.status !== "exited") tryKill(child)
-  return result
+  if (result.status !== "exited") return result
+  if (!options.verifyWindowsTreeEmpty) {
+    return { status: "evidence-required", code: "windows-tree-evidence-required" }
+  }
+  const empty = await settleBefore(options.verifyWindowsTreeEmpty(child.pid), remaining(deadline)).catch(
+    () => undefined,
+  )
+  return empty === true ? result : { status: "unavailable", code: "tree-containment-unconfirmed" }
+}
+
+async function sweepPosixProcessGroup(
+  child: ProcessHandle,
+  pid: number,
+  initialExit: ObservedExit | undefined,
+  deadline: number,
+  dependencies: TerminationDependencies,
+  now: () => number,
+  sleep: (milliseconds: number) => Promise<void>,
+): Promise<ExitResult> {
+  const killAt = now() + Math.max(1, Math.floor((deadline - now()) / 2))
+  signalGroup(dependencies, pid, "SIGTERM")
+  let killed = false
+  while (true) {
+    let group: "alive" | "absent" = "alive"
+    try {
+      dependencies.probeProcessGroup(pid)
+    } catch (error) {
+      if (processMissing(error)) group = "absent"
+      else if (!permissionDenied(error)) return { status: "unavailable", code: "tree-termination-failed" }
+    }
+    const exit = observedExit(child) ?? initialExit
+    if (group === "absent" && exit) return { status: "exited", exit }
+    const current = now()
+    if (!killed && current >= killAt) {
+      signalGroup(dependencies, pid, "SIGKILL")
+      killed = true
+      continue
+    }
+    if (current >= deadline) {
+      return {
+        status: "unavailable",
+        code: group === "absent" ? "exit-not-observed" : "tree-containment-unconfirmed",
+      }
+    }
+    await sleep(Math.min(10, Math.max(1, deadline - current)))
+  }
+}
+
+function signalGroup(dependencies: TerminationDependencies, pid: number, signal: "SIGTERM" | "SIGKILL") {
+  try {
+    dependencies.signalProcessGroup(pid, signal)
+  } catch (error) {
+    if (!processMissing(error)) return false
+  }
+  return true
+}
+
+function settleBefore<A>(promise: Promise<A>, timeoutMs: number) {
+  return new Promise<A | undefined>((resolve) => {
+    let settled = false
+    const complete = (value: A | undefined) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    const timer = setTimeout(() => complete(undefined), Math.max(1, timeoutMs))
+    void promise.then(complete, () => complete(undefined))
+  })
 }
 
 export function waitForObservedExit(child: ProcessHandle, timeoutMs: number): Promise<ExitResult> {
@@ -195,6 +263,14 @@ function tryKill(child: ProcessHandle) {
   } catch {
     return false
   }
+}
+
+function processMissing(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH"
+}
+
+function permissionDenied(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EPERM"
 }
 
 function remaining(deadline: number) {

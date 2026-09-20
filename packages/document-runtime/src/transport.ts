@@ -14,7 +14,7 @@ export class TransportError extends Error {
 
 export interface NodeStreamTransport {
   readonly onMessage: (listener: (input: unknown) => void) => void
-  readonly onDisconnect: (listener: () => void) => void
+  readonly onDisconnect: (listener: (error?: TransportError) => void) => void
   readonly send: (value: unknown) => Promise<void>
   readonly close: () => void
 }
@@ -31,7 +31,7 @@ export function createNodeStreamTransport(input: Readable, output: Writable): No
   const pendingMessages: unknown[] = []
   const writes: PendingWrite[] = []
   let messageListener: ((input: unknown) => void) | undefined
-  let disconnectListener: (() => void) | undefined
+  let disconnectListener: ((error?: TransportError) => void) | undefined
   let failure: TransportError | undefined
   let disconnected = false
   let writing = false
@@ -42,7 +42,7 @@ export function createNodeStreamTransport(input: Readable, output: Writable): No
     if (disconnected) return
     disconnected = true
     try {
-      disconnectListener?.()
+      disconnectListener?.(failure)
     } catch {
       // The transport is already terminal; caller exceptions cannot restart it.
     }
@@ -120,7 +120,12 @@ export function createNodeStreamTransport(input: Readable, output: Writable): No
       fail("input-failed")
       return
     }
-    fail("input-failed")
+    closing = true
+    pendingMessages.length = 0
+    messageListener = undefined
+    stopInput()
+    disconnect()
+    drainWrites()
   }
   function onInputError() {
     fail("input-failed")

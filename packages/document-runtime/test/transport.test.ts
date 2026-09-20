@@ -22,6 +22,20 @@ describe("document runtime Node stream transport", () => {
     await expect(transport.send({ late: true })).rejects.toThrow("input-failed")
   })
 
+  test("reports a fully framed EOF as a clean disconnect", async () => {
+    const input = new PassThrough()
+    const output = new PassThrough()
+    output.resume()
+    const transport = createNodeStreamTransport(input, output)
+    const disconnected = Promise.withResolvers<Error | undefined>()
+    transport.onMessage(() => undefined)
+    transport.onDisconnect((error) => disconnected.resolve(error))
+
+    input.end("{}\n")
+    expect(await disconnected.promise).toBeUndefined()
+    await expect(transport.send({ late: true })).rejects.toEqual(expect.objectContaining({ code: "closed" }))
+  })
+
   test("fails once on malformed UTF-8 and stream errors", async () => {
     const input = new PassThrough()
     const output = new PassThrough()
@@ -120,7 +134,9 @@ describe("document runtime Node stream transport", () => {
       transport.send({ frame }).catch((error) => error),
     )
 
-    await expect(transport.send({ overflow: true })).rejects.toEqual(expect.objectContaining({ code: "queue-overflow" }))
+    await expect(transport.send({ overflow: true })).rejects.toEqual(
+      expect.objectContaining({ code: "queue-overflow" }),
+    )
     expect(await Promise.all(pending)).toEqual(
       Array.from({ length: DocumentRuntimeLimits.MaxNdjsonPendingWrites }, () =>
         expect.objectContaining({ code: "queue-overflow" }),
