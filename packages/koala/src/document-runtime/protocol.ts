@@ -73,24 +73,28 @@ export const RenderRequest = Schema.Struct({
   ),
 )
 
-const ImageSource = Schema.Struct({
+export const ImageSource = Schema.Struct({
   kind: Schema.Literal("image"),
   inputPath: DocumentRuntimeManifest.RelativePath,
   inputBytes: ImageInputBytes,
   dimensions: DocumentRuntimeLimits.RasterDimensions,
 })
 
-const RenderedPageSource = Schema.Struct({
+export const RenderedPageSource = Schema.Struct({
   kind: Schema.Literal("rendered-page"),
 })
 
-export const OcrRequest = Schema.Struct({
+const CommonOcrRequest = {
   ...CommonRequest,
   type: Schema.Literal("ocr"),
   page: DocumentRuntimeLimits.PageNumber,
   pageID: PageID,
-  source: Schema.Union([ImageSource, RenderedPageSource]),
   limits: DocumentRuntimeLimits.Requested,
+}
+
+export const OcrRequest = Schema.Struct({
+  ...CommonOcrRequest,
+  source: Schema.Union([ImageSource, RenderedPageSource]),
 }).check(
   Schema.makeFilter((request) =>
     request.source.kind !== "image" || request.source.inputBytes <= request.limits.imageInputBytes
@@ -107,6 +111,29 @@ export const OcrRequest = Schema.Struct({
   ),
 )
 
+export const ImageOcrRequest = Schema.Struct({
+  ...CommonOcrRequest,
+  source: ImageSource,
+}).check(
+  Schema.makeFilter((request) =>
+    request.source.inputBytes <= request.limits.imageInputBytes
+      ? undefined
+      : "Image input exceeds the requested limit",
+  ),
+  Schema.makeFilter((request) =>
+    request.source.dimensions.width <= request.limits.rasterSidePixels &&
+      request.source.dimensions.height <= request.limits.rasterSidePixels &&
+      request.source.dimensions.width * request.source.dimensions.height <= request.limits.rasterAreaPixels
+      ? undefined
+      : "Image dimensions exceed the requested raster limit",
+  ),
+)
+
+export const RenderedPageOcrRequest = Schema.Struct({
+  ...CommonOcrRequest,
+  source: RenderedPageSource,
+})
+
 export const ReleasePageRequest = Schema.Struct({
   ...CommonRequest,
   type: Schema.Literal("release-page"),
@@ -119,6 +146,20 @@ export const CancelRequest = Schema.Struct({
   type: Schema.Literal("cancel"),
 })
 
+export const InitialRequest = Schema.Union([ProbeRequest, RenderRequest, ImageOcrRequest]).annotate({
+  discriminator: "type",
+  identifier: "DocumentRuntimeProtocol.InitialRequest",
+})
+export type InitialRequest = typeof InitialRequest.Type
+
+export type StartRequest = typeof ProbeRequest.Type | typeof RenderRequest.Type | typeof OcrRequest.Type
+
+export const ContinuationRequest = Schema.Union([RenderedPageOcrRequest, ReleasePageRequest]).annotate({
+  discriminator: "type",
+  identifier: "DocumentRuntimeProtocol.ContinuationRequest",
+})
+export type ContinuationRequest = typeof ContinuationRequest.Type
+
 export const WorkerRequest = Schema.Union([
   ProbeRequest,
   RenderRequest,
@@ -127,6 +168,15 @@ export const WorkerRequest = Schema.Union([
   CancelRequest,
 ]).annotate({ discriminator: "type", identifier: "DocumentRuntimeProtocol.WorkerRequest" })
 export type WorkerRequest = typeof WorkerRequest.Type
+
+const strictDecodeOptions = { onExcessProperty: "error" } as const
+const decodeInitial = Schema.decodeUnknownSync(InitialRequest, strictDecodeOptions)
+const decodeContinuation = Schema.decodeUnknownSync(ContinuationRequest, strictDecodeOptions)
+const decodeRequest = Schema.decodeUnknownSync(WorkerRequest, strictDecodeOptions)
+
+export const decodeInitialRequest = (input: unknown) => decodeInitial(input)
+export const decodeContinuationRequest = (input: unknown) => decodeContinuation(input)
+export const decodeWorkerRequest = (input: unknown) => decodeRequest(input)
 
 export const Operation = Schema.Literals(["probe", "render", "ocr"])
 export type Operation = typeof Operation.Type
@@ -222,8 +272,8 @@ export const WorkerEvent = Schema.Union([
   FailureEvent,
 ]).annotate({ discriminator: "type", identifier: "DocumentRuntimeProtocol.WorkerEvent" })
 export type WorkerEvent = typeof WorkerEvent.Type
-
-export type StartRequest = typeof ProbeRequest.Type | typeof RenderRequest.Type | typeof OcrRequest.Type
+const decodeEvent = Schema.decodeUnknownSync(WorkerEvent, strictDecodeOptions)
+export const decodeWorkerEvent = (input: unknown) => decodeEvent(input)
 export type OrderPhase =
   | "awaiting-started"
   | "awaiting-page"
@@ -310,7 +360,8 @@ export function advanceOrder(state: OrderState, message: WorkerRequest | WorkerE
       state.phase !== "page-ready" ||
       message.source.kind !== "rendered-page" ||
       message.page !== state.currentPage ||
-      message.pageID !== state.currentPageID
+      message.pageID !== state.currentPageID ||
+      !sameLimits(state.limits, message.limits)
     ) {
       return { ok: false, code: "invalid-order" }
     }
@@ -384,6 +435,25 @@ function withinOcrLimits(limits: DocumentRuntimeLimits.Requested | undefined, ev
 
 function withinTemporaryLimit(limits: DocumentRuntimeLimits.Requested | undefined, temporaryBytes: number) {
   return limits === undefined || temporaryBytes <= limits.temporaryBytes
+}
+
+function sameLimits(left: DocumentRuntimeLimits.Requested | undefined, right: DocumentRuntimeLimits.Requested) {
+  return (
+    left !== undefined &&
+    left.dpi === right.dpi &&
+    left.pdfInputBytes === right.pdfInputBytes &&
+    left.imageInputBytes === right.imageInputBytes &&
+    left.pages === right.pages &&
+    left.rasterSidePixels === right.rasterSidePixels &&
+    left.rasterAreaPixels === right.rasterAreaPixels &&
+    left.pngBytesPerPage === right.pngBytesPerPage &&
+    left.temporaryBytes === right.temporaryBytes &&
+    left.tsvBytesPerPage === right.tsvBytesPerPage &&
+    left.nativeStderrBytes === right.nativeStderrBytes &&
+    left.renderDeadlineMsPerPage === right.renderDeadlineMsPerPage &&
+    left.ocrDeadlineMsPerPage === right.ocrDeadlineMsPerPage &&
+    left.jobDeadlineMs === right.jobDeadlineMs
+  )
 }
 
 function success(state: OrderState): OrderResult {

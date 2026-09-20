@@ -349,6 +349,21 @@ Phase 9B runtime-review remediation details:
   native notices/signatures, a selected Koala license, and a real native-
   confinement launcher.
 
+Document-runtime confinement Phase 1 is implemented. Koala now exposes strict
+version-1 parent/proxy schemas, separate initial and continuation worker
+requests, exact outer IPC and inner NDJSON transport ceilings, and a pure outer
+lifecycle machine that delegates document page ordering to the existing runtime
+protocol. Excess nested fields, job and target substitution, invalid lifecycle
+sequences, and requested-limit violations are covered without changing the
+Node, OpenCode, or document-runtime implementations.
+
+Document confinement Phase 1 verification completed on 2026-09-20:
+
+- Koala document-runtime suite: 177 passed with 222 assertions across 6 files.
+- `packages/koala`: `bun typecheck` passed.
+- `packages/document-runtime`: `bun typecheck` passed.
+- `packages/opencode`: `bun typecheck` passed.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.

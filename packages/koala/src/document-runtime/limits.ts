@@ -17,6 +17,13 @@ export const MaxOcrDeadlineMsPerPage = 120_000
 export const MaxJobDeadlineMs = 10 * 60_000
 export const MaxCancellationGraceMs = 2_000
 export const MaxConcurrentJobs = 2
+export const MaxOuterIpcMessageBytes = 65_536
+export const MaxOuterPendingMessages = 32
+export const MaxNdjsonLineBytes = 16_384
+export const MaxNdjsonUnterminatedBytes = 16_384
+export const MaxNdjsonFramesPerDirection = 512
+export const MaxNdjsonBytesPerDirection = 1_048_576
+export const MaxInnerStderrBytes = 65_536
 
 export const Hard = Schema.Struct({
   dpi: Schema.Literal(FixedDpi),

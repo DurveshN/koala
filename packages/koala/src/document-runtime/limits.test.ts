@@ -23,6 +23,26 @@ describe("DocumentRuntimeLimits", () => {
     })
   })
 
+  test("exposes the exact outer and inner transport ceilings", () => {
+    expect({
+      outerIpcMessageBytes: DocumentRuntimeLimits.MaxOuterIpcMessageBytes,
+      outerPendingMessages: DocumentRuntimeLimits.MaxOuterPendingMessages,
+      ndjsonLineBytes: DocumentRuntimeLimits.MaxNdjsonLineBytes,
+      ndjsonUnterminatedBytes: DocumentRuntimeLimits.MaxNdjsonUnterminatedBytes,
+      ndjsonFramesPerDirection: DocumentRuntimeLimits.MaxNdjsonFramesPerDirection,
+      ndjsonBytesPerDirection: DocumentRuntimeLimits.MaxNdjsonBytesPerDirection,
+      innerStderrBytes: DocumentRuntimeLimits.MaxInnerStderrBytes,
+    }).toEqual({
+      outerIpcMessageBytes: 65_536,
+      outerPendingMessages: 32,
+      ndjsonLineBytes: 16_384,
+      ndjsonUnterminatedBytes: 16_384,
+      ndjsonFramesPerDirection: 512,
+      ndjsonBytesPerDirection: 1_048_576,
+      innerStderrBytes: 65_536,
+    })
+  })
+
   test("round trips lower caller-requested limits", () => {
     const limits = {
       ...DocumentRuntimeLimits.requestedHard,

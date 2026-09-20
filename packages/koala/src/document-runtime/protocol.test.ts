@@ -9,6 +9,29 @@ const pageID = "page_123e4567-e89b-42d3-a456-426614174000"
 const resultID = "ocr_123e4567-e89b-42d3-a456-426614174000"
 const hash = "0123456789abcdef".repeat(4)
 const limits = DocumentRuntimeLimits.requestedHard
+const expectEqual = (actual: unknown, expected: unknown) => expect(actual).toEqual(expected)
+const configurableLimitKeys: Array<Exclude<keyof DocumentRuntimeLimits.Requested, "dpi">> = [
+  "pdfInputBytes",
+  "imageInputBytes",
+  "pages",
+  "rasterSidePixels",
+  "rasterAreaPixels",
+  "pngBytesPerPage",
+  "temporaryBytes",
+  "tsvBytesPerPage",
+  "nativeStderrBytes",
+  "renderDeadlineMsPerPage",
+  "ocrDeadlineMsPerPage",
+  "jobDeadlineMs",
+]
+
+const probe = () => ({
+  protocolVersion: 1 as const,
+  type: "probe" as const,
+  jobID,
+  target: "x86_64-unknown-linux-gnu" as const,
+  manifestSha256: hash,
+})
 
 const render = () => ({
   protocolVersion: 1 as const,
@@ -31,6 +54,21 @@ const ocr = () => ({
   limits,
 })
 
+const imageOcr = () => ({
+  protocolVersion: 1 as const,
+  type: "ocr" as const,
+  jobID,
+  page: 1,
+  pageID,
+  source: {
+    kind: "image" as const,
+    inputPath: "input/scan.png",
+    inputBytes: 1024,
+    dimensions: { width: 100, height: 100 },
+  },
+  limits,
+})
+
 const pageReady = () => ({
   protocolVersion: 1 as const,
   type: "page-ready" as const,
@@ -44,28 +82,48 @@ const pageReady = () => ({
 })
 
 describe("DocumentRuntimeProtocol schemas", () => {
-  const decodeRequest = Schema.decodeUnknownSync(DocumentRuntimeProtocol.WorkerRequest)
+  const decodeRequest = DocumentRuntimeProtocol.decodeWorkerRequest
   const encodeRequest = Schema.encodeSync(DocumentRuntimeProtocol.WorkerRequest)
-  const decodeEvent = Schema.decodeUnknownSync(DocumentRuntimeProtocol.WorkerEvent)
+  const decodeEvent = DocumentRuntimeProtocol.decodeWorkerEvent
   const encodeEvent = Schema.encodeSync(DocumentRuntimeProtocol.WorkerEvent)
 
   test.each([
-    { protocolVersion: 1, type: "probe", jobID, target: "x86_64-unknown-linux-gnu", manifestSha256: hash },
+    probe(),
     render(),
     ocr(),
-    {
-      protocolVersion: 1,
-      type: "ocr",
-      jobID,
-      page: 1,
-      pageID,
-      source: { kind: "image", inputPath: "input/scan.png", inputBytes: 1024, dimensions: { width: 100, height: 100 } },
-      limits,
-    },
+    imageOcr(),
     { protocolVersion: 1, type: "release-page", jobID, page: 1, pageID },
     { protocolVersion: 1, type: "cancel", jobID },
   ] as const)("round trips the $type request", (request) => {
     expect(encodeRequest(decodeRequest(request))).toEqual(request)
+  })
+
+  test("separates initial requests from continuation requests", () => {
+    expectEqual(DocumentRuntimeProtocol.decodeInitialRequest(probe()), probe())
+    expectEqual(DocumentRuntimeProtocol.decodeInitialRequest(render()), render())
+    expectEqual(DocumentRuntimeProtocol.decodeInitialRequest(imageOcr()), imageOcr())
+    expect(() => DocumentRuntimeProtocol.decodeInitialRequest(ocr())).toThrow()
+
+    expectEqual(DocumentRuntimeProtocol.decodeContinuationRequest(ocr()), ocr())
+    expectEqual(
+      DocumentRuntimeProtocol.decodeContinuationRequest({
+        protocolVersion: 1,
+        type: "release-page",
+        jobID,
+        page: 1,
+        pageID,
+      }),
+      { protocolVersion: 1, type: "release-page", jobID, page: 1, pageID },
+    )
+    expect(() => DocumentRuntimeProtocol.decodeContinuationRequest(imageOcr())).toThrow()
+    expect(() => DocumentRuntimeProtocol.decodeContinuationRequest(render())).toThrow()
+  })
+
+  test("preserves rendered-page OCR in the legacy StartRequest type", () => {
+    const request: DocumentRuntimeProtocol.StartRequest = Schema.decodeUnknownSync(DocumentRuntimeProtocol.OcrRequest)(
+      ocr(),
+    )
+    expect(request.source.kind).toBe("rendered-page")
   })
 
   test.each([
@@ -151,8 +209,23 @@ describe("DocumentRuntimeProtocol schemas", () => {
     expect(() => decodeEvent(event)).toThrow()
   })
 
-  test("strips raw failure causes and paths", () => {
-    const failure = decodeEvent({
+  test.each([
+    { ...render(), excess: true },
+    { ...render(), limits: { ...limits, excess: true } },
+    { ...imageOcr(), source: { ...imageOcr().source, excess: true } },
+    {
+      ...imageOcr(),
+      source: { ...imageOcr().source, dimensions: { ...imageOcr().source.dimensions, excess: true } },
+    },
+    { ...ocr(), source: { kind: "rendered-page", excess: true } },
+  ])("rejects excess request fields %#", (request) => {
+    expect(() => decodeRequest(request)).toThrow()
+  })
+
+  test.each([
+    { ...pageReady(), excess: true },
+    { ...pageReady(), dimensions: { ...pageReady().dimensions, excess: true } },
+    {
       protocolVersion: 1,
       type: "failure",
       jobID,
@@ -160,27 +233,16 @@ describe("DocumentRuntimeProtocol schemas", () => {
       stage: "worker",
       retryable: false,
       cause: { secret: "credential-canary" },
-      path: "C:\\private\\source.pdf",
-      stderr: "native-canary",
-    })
-    const encoded = encodeEvent(failure)
-    expect(encoded).toEqual({
-      protocolVersion: 1,
-      type: "failure",
-      jobID,
-      code: "worker-failed",
-      stage: "worker",
-      retryable: false,
-    })
-    expect(JSON.stringify(encoded)).not.toContain("canary")
-    expect(JSON.stringify(encoded)).not.toContain("private")
+    },
+  ])("rejects excess event fields %#", (event) => {
+    expect(() => decodeEvent(event)).toThrow()
   })
 })
 
 describe("DocumentRuntimeProtocol ordering", () => {
   const request = Schema.decodeUnknownSync(DocumentRuntimeProtocol.RenderRequest)(render())
-  const event = Schema.decodeUnknownSync(DocumentRuntimeProtocol.WorkerEvent)
-  const command = Schema.decodeUnknownSync(DocumentRuntimeProtocol.WorkerRequest)
+  const event = DocumentRuntimeProtocol.decodeWorkerEvent
+  const command = DocumentRuntimeProtocol.decodeWorkerRequest
 
   test("accepts one-page render, OCR, release, and terminal order", () => {
     const messages = [
@@ -208,12 +270,16 @@ describe("DocumentRuntimeProtocol ordering", () => {
         temporaryBytes: 0,
       }),
     ]
-    const final = messages.reduce(
+    const initial: DocumentRuntimeProtocol.OrderResult = {
+      ok: true,
+      state: DocumentRuntimeProtocol.beginOrder(request),
+    }
+    const final = messages.reduce<DocumentRuntimeProtocol.OrderResult>(
       (result, message) => {
         if (!result.ok) return result
         return DocumentRuntimeProtocol.advanceOrder(result.state, message)
       },
-      { ok: true, state: DocumentRuntimeProtocol.beginOrder(request) } as DocumentRuntimeProtocol.OrderResult,
+      initial,
     )
 
     expect(final).toEqual({
@@ -274,6 +340,46 @@ describe("DocumentRuntimeProtocol ordering", () => {
     expect(terminal).toEqual({ ok: true, state: expect.objectContaining({ phase: "terminal" }) })
     if (!terminal.ok) throw new Error(terminal.code)
     expect(DocumentRuntimeProtocol.advanceOrder(terminal.state, cancelled)).toEqual({
+      ok: false,
+      code: "invalid-order",
+    })
+  })
+
+  test.each(configurableLimitKeys)("rejects a rendered-page continuation with substituted %s", (field) => {
+    const initial = DocumentRuntimeProtocol.beginOrder(request)
+    const started = DocumentRuntimeProtocol.advanceOrder(
+      initial,
+      event({ protocolVersion: 1, type: "started", jobID, operation: "render" }),
+    )
+    if (!started.ok) throw new Error(started.code)
+    const ready = DocumentRuntimeProtocol.advanceOrder(started.state, event(pageReady()))
+    if (!ready.ok) throw new Error(ready.code)
+
+    expect(
+      DocumentRuntimeProtocol.advanceOrder(
+        ready.state,
+        command({
+          ...ocr(),
+          limits: { ...limits, [field]: limits[field] - 1 },
+        }),
+      ),
+    ).toEqual({ ok: false, code: "invalid-order" })
+  })
+
+  test("rejects a rendered-page continuation that raises a retained launch limit", () => {
+    const lowerLimits = { ...limits, pages: limits.pages - 1 }
+    const initial = DocumentRuntimeProtocol.beginOrder(
+      Schema.decodeUnknownSync(DocumentRuntimeProtocol.RenderRequest)({ ...render(), limits: lowerLimits }),
+    )
+    const started = DocumentRuntimeProtocol.advanceOrder(
+      initial,
+      event({ protocolVersion: 1, type: "started", jobID, operation: "render" }),
+    )
+    if (!started.ok) throw new Error(started.code)
+    const ready = DocumentRuntimeProtocol.advanceOrder(started.state, event(pageReady()))
+    if (!ready.ok) throw new Error(ready.code)
+
+    expect(DocumentRuntimeProtocol.advanceOrder(ready.state, command(ocr()))).toEqual({
       ok: false,
       code: "invalid-order",
     })
