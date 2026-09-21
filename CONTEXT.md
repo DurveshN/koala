@@ -26,8 +26,8 @@ industrial work. It is based on an independent import of OpenCode Desktop
   private sole-writable job root; production has no direct worker fallback, and
   native enforcement remains unverified pending the release matrix in
   `docs/superpowers/specs/2026-09-20-document-runtime-confinement-design.md`.
-- Add local document, OCR, vision, Office generation, calculation, knowledge,
-  artifact, audit, and network-activity capabilities.
+- Add local document, OCR, vision, Office generation and reading, calculation,
+  knowledge, artifact, audit, and network-activity capabilities.
 - Brand the product Koala with a professional geometric and friendly mascot
   identity, eucalyptus green and charcoal palette, and system Light/Dark theme.
 - Keep Koala's top-level license separate while retaining required third-party
@@ -977,6 +977,37 @@ Before stabilizing the client API:
 
 > **Dev:** "The date changed while the session was active. Should the **Mid-Conversation System Message** say what the old date was?"
 > **Domain expert:** "No. Emit the newly effective date so the agent can act on the current **System Context**."
+
+## Office Reader Tools (2026-09-21)
+
+The first slice of Koala Office reader tools is implemented:
+
+- Worker protocol adds the `read-office` operation for `.docx`, `.pptx`, and `.xlsx`.
+- Office bounds are defined in `packages/koala/src/document-runtime/limits.ts`.
+- Parsers live under `packages/document-runtime/src/office/` using `mammoth`,
+  `xlsx`, `jszip`, and `fast-xml-parser`, bundled into the worker.
+- The OpenCode document coordinator exposes `DocumentRuntime.readOffice` and the
+  `docx_read`, `pptx_read`, and `spreadsheet_read` tools in `ToolRegistry`.
+- Output is emitted as `office-text` JSON through the existing proxy NDJSON
+  transfer and surfaced to the model as Markdown-like structured text.
+- `THIRD_PARTY_NOTICES.md`, `infra.md`, and `learning.md` are updated with the
+  new Office dependencies and operation.
+
+Verification:
+
+- `packages/document-runtime`: `bun test` passed (86 tests, 2 symlink-capability
+  skips on this Windows host); `bun typecheck` and `bun run build` succeeded
+  and the staged manifest includes the office component and dependency inventory
+  with pinned license files.
+- `packages/koala`: `bun test` passed (576 tests); `bun typecheck` passed.
+- `packages/opencode`: `bun test test/document` passed (179 tests, 1 native
+  capability skip); `bun test test/document/proxy.test.ts` and
+  `test/document/runtime.test.ts` passed (73 tests); `bun typecheck` and
+  `bun run script/build-node.ts` passed.
+- `packages/desktop`: `bun typecheck` and `bun run build` passed.
+- The proxy output receiver now rewrites `office-ready` events to the verified
+  pending-root path and digest, matching the existing `page-ready`/`ocr-result`
+  handoff and preventing the parent from opening a sandbox-writable path.
 
 ## Flagged ambiguities
 

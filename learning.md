@@ -283,6 +283,9 @@ work. It is not a substitute for the implementation plan or audit logs.
 - PDF.js plus `@napi-rs/canvas` provides a permissively licensed local 300-DPI
   renderer. Pages are allocated and released sequentially; fixed pixel, byte,
   page, temporary-storage, and deadline limits apply before publication.
+- Office parsing uses `mammoth` (docx), `xlsx` (xlsx), and `jszip` + `fast-xml-parser`
+  (pptx), bundled as JS inside the worker, with the same input/output/temporary
+  bounds as other document runtime operations.
 - Tesseract output is TSV streamed through a bounded file. The selected command
   uses English recognition with OSD-enabled page segmentation, one thread, a
   reduced environment, shell-free execution, and process-tree cancellation.
@@ -388,3 +391,20 @@ On 2026-09-17, after the first sovereignty slice:
   differing `C:\Users\...` and `E:\users\...` views of temporary directories.
   The failing source and test files were not changed in the `sandbox_test`
   implementation.
+
+## Office Readers
+
+- Pure-JS Office readers for `.docx`, `.pptx`, and `.xlsx` can be bundled into the
+  existing document worker without adding native dependencies, but they still
+  require the same fail-closed confinement boundary as PDF/OCR operations.
+- The inner protocol's output transfer is format-agnostic: the proxy creates a
+  pending-root file for every completed `output-start`/`output-chunk`/
+  `output-end` sequence and must rewrite the following worker event's path to
+  that pending-relative file. Forgetting to rewrite `office-ready` would expose a
+  sandbox-writable path to the trusted parent.
+- It is safer to place office parser output under the job root, stream it
+  through the proxy, and let the parent read only from the verified pending
+  sibling. Deleting the job-root copy after streaming keeps per-job storage
+  bounded.
+- Parser-specific warnings (e.g. Mammoth conversion messages) are not size
+  signals; enforce limits with file-size checks and bounded output encoding.

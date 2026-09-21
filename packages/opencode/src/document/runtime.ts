@@ -87,6 +87,23 @@ export interface RenderResult {
   readonly pagesProcessed: number
 }
 
+export interface ReadOfficeInput {
+  readonly inputPath: string
+  readonly format: "docx" | "pptx" | "xlsx"
+}
+
+export interface OfficeSection {
+  readonly type: "paragraph" | "table" | "slide" | "sheet"
+  readonly heading?: string
+  readonly body: string
+}
+
+export interface ReadOfficeResult {
+  readonly title?: string
+  readonly author?: string
+  readonly sections: ReadonlyArray<OfficeSection>
+}
+
 export class RuntimeError extends Schema.TaggedErrorClass<RuntimeError>()("DocumentRuntimeError", {
   code: DocumentRuntimeProtocol.FailureCode,
   stage: DocumentRuntimeProtocol.FailureStage,
@@ -101,6 +118,7 @@ export interface Interface {
   readonly availability: () => Effect.Effect<Availability>
   readonly probe: () => Effect.Effect<Available, RuntimeError>
   readonly ocr: (input: OcrInput) => Effect.Effect<OcrResult, RuntimeError>
+  readonly readOffice: (input: ReadOfficeInput) => Effect.Effect<ReadOfficeResult, RuntimeError>
   readonly renderAndOcr: <A, E, R>(
     input: RenderInput,
     callback: (page: ScopedPage) => Effect.Effect<A, E, R>,
@@ -194,6 +212,33 @@ export function layer(config: Config | undefined) {
     ),
   )
 
+  const readOffice: Interface["readOffice"] = Effect.fn("DocumentRuntime.readOffice")((input) =>
+    limited(
+      Effect.gen(function* () {
+        const runtime = yield* verifiedRuntime(health, policy)
+        return yield* withJob(health, (job) =>
+          Effect.gen(function* () {
+            const staged = yield* stageInput(
+              job.path,
+              input.inputPath,
+              `input/document.${input.format}`,
+              DocumentRuntimeLimits.MaxOfficeInputBytes,
+            )
+            const request = yield* decodeInput(DocumentRuntimeProtocol.ReadOfficeRequest, {
+              protocolVersion: 1,
+              type: "read-office",
+              jobID: jobID(),
+              format: input.format,
+              inputPath: DocumentRuntimeManifest.RelativePath.make(`input/document.${input.format}`),
+              inputBytes: staged.bytes,
+            })
+            return yield* runProxy(health, runtime, job, request, (session) => officeWorker(session, input.format))
+          }),
+        )
+      }),
+    ),
+  )
+
   return Layer.succeed(
     Service,
     Service.of({
@@ -204,6 +249,7 @@ export function layer(config: Config | undefined) {
         ),
       probe,
       ocr,
+      readOffice,
       renderAndOcr,
     }),
   )
@@ -454,7 +500,10 @@ function runProxy<A, E, R>(
         Effect.andThen(expectAccepted(session), use(session, request)),
       ).pipe(
         Effect.timeoutOrElse({
-          duration: request.type === "probe" ? DocumentRuntimeLimits.MaxJobDeadlineMs : request.limits.jobDeadlineMs,
+          duration:
+            request.type === "probe" || request.type === "read-office"
+              ? DocumentRuntimeLimits.MaxJobDeadlineMs
+              : request.limits.jobDeadlineMs,
           orElse: () => failure("job-deadline-exceeded", "worker", true),
         }),
       ),
@@ -674,6 +723,40 @@ function renderWorker<A, E, R>(
   })
 }
 
+function officeWorker(
+  session: Session,
+  format: "docx" | "pptx" | "xlsx",
+): Effect.Effect<ReadOfficeResult, RuntimeError> {
+  return Effect.gen(function* () {
+    yield* expectType(session, "started", (event) => event.operation === "read-office")
+    const ready = yield* expectType(session, "office-ready", (event) => event.format === format)
+    const output = yield* resolveOutput(
+      session.health,
+      pendingEvidence(session.job),
+      ready.outputPath,
+      ready.outputBytes,
+      ready.outputSha256,
+    )
+    const bytes = yield* pendingAttempt(session.health, () => DocumentPendingOutput.read(output))
+    yield* pendingAttempt(session.health, () => DocumentPendingOutput.remove(output))
+    const parsed = yield* decodeOfficeOutput(bytes)
+    yield* expectType(
+      session,
+      "completed",
+      (event) => event.operation === "read-office" && event.pagesProcessed === 0,
+    )
+    yield* cleanExit(session)
+    return parsed
+  })
+}
+
+function decodeOfficeOutput(bytes: Uint8Array) {
+  return Effect.try({
+    try: () => JSON.parse(Buffer.from(bytes).toString("utf8")) as ReadOfficeResult,
+    catch: () => failure("invalid-order", "worker"),
+  })
+}
+
 function expectType<Type extends DocumentRuntimeProtocol.WorkerEvent["type"]>(
   session: Session,
   type: Type,
@@ -694,8 +777,8 @@ function nextEvent(session: Session): Effect.Effect<DocumentRuntimeProtocol.Work
     if (message.type === "failure") return yield* proxyFailure(message)
     if (message.type !== "event") return yield* closureFailure()
     const event = message.event
-    if (event.type === "page-ready" || event.type === "ocr-result") {
-      const extension = event.type === "page-ready" ? ".png" : ".tsv"
+    if (event.type === "page-ready" || event.type === "ocr-result" || event.type === "office-ready") {
+      const extension = event.type === "page-ready" ? ".png" : event.type === "office-ready" ? ".json" : ".tsv"
       if (
         !event.outputPath.endsWith(extension) ||
         session.outputIDs.has(event.outputID) ||

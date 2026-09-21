@@ -54,10 +54,17 @@ const pdfRoot = packageRoot("pdfjs-dist")
 const canvasRoot = packageRoot("@napi-rs/canvas")
 const nativePackage = nativePackages[target]
 const nativeRoot = packageRoot(nativePackage)
+const officePackages = [
+  { name: "mammoth", version: "1.9.0", licenseFile: "LICENSE" },
+  { name: "xlsx", version: "0.18.5", licenseFile: "LICENSE" },
+  { name: "jszip", version: "3.10.1", licenseFile: "LICENSE.markdown" },
+  { name: "fast-xml-parser", version: "4.5.0", licenseFile: "LICENSE" },
+] as const
 await Promise.all([
   verifyPackageLock("pdfjs-dist", pdfRoot),
   verifyPackageLock("@napi-rs/canvas", canvasRoot),
   verifyPackageLock(nativePackage, nativeRoot),
+  ...officePackages.map((pkg) => verifyPackageLock(pkg.name, packageRoot(pkg.name))),
 ])
 await copyEntries(pdfRoot, path.join(output, "node_modules", "pdfjs-dist"), [
   "LICENSE",
@@ -88,6 +95,16 @@ await cp(
   path.join(workspaceRoot, "THIRD_PARTY_NOTICES.md"),
   path.join(output, "licenses", "THIRD_PARTY_NOTICES.md"),
 )
+const officeLicensePaths = await Promise.all(
+  officePackages.map(async (pkg) => {
+    const destination = `licenses/${pkg.name}-${pkg.licenseFile}`
+    await cp(
+      path.join(packageRoot(pkg.name), pkg.licenseFile),
+      path.join(output, ...destination.split("/")),
+    )
+    return { name: pkg.name, path: destination }
+  }),
+)
 
 const filePaths = await listFiles(output)
 const files: DocumentRuntimeManifest.File[] = []
@@ -112,6 +129,23 @@ for (let offset = 0; offset < filePaths.length; offset += HashConcurrency) {
 }
 const runtimeSourceHash = await hashSources(path.join(root, "src"))
 const pdfLicenses = files.filter((file) => file.path.startsWith("node_modules/pdfjs-dist/") && isLicense(file.path))
+const officeComponents = officePackages.map((pkg) => ({
+  name: pkg.name,
+  version: pkg.version,
+  sourceRevision: `npm-${pkg.version}`,
+  sourceSha256: DocumentRuntimeManifest.Digest.make(componentHash(files, pkg.name)),
+  licenseFiles: [officeLicensePaths.find((item) => item.name === pkg.name)!.path],
+}))
+const officeDependencies = officePackages.map((pkg) => {
+  const licensePath = officeLicensePaths.find((item) => item.name === pkg.name)!.path
+  return {
+    name: pkg.name,
+    version: pkg.version,
+    component: "document-runtime",
+    linkage: "javascript" as const,
+    licenseFiles: [licensePath],
+  }
+})
 const manifest = Schema.decodeUnknownSync(DocumentRuntimeManifest.Manifest)({
   manifestVersion: 1,
   protocolVersion: 1,
@@ -148,6 +182,7 @@ const manifest = Schema.decodeUnknownSync(DocumentRuntimeManifest.Manifest)({
       sourceSha256: DocumentRuntimeManifest.Digest.make(componentHash(files, nativePackage)),
       licenseFiles: [],
     },
+    ...officeComponents,
   ],
   files,
   dependencies: [
@@ -172,6 +207,7 @@ const manifest = Schema.decodeUnknownSync(DocumentRuntimeManifest.Manifest)({
       linkage: "dynamic",
       licenseFiles: [],
     },
+    ...officeDependencies,
   ],
 })
 await writeFile(path.join(output, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, {
@@ -268,6 +304,9 @@ function component(file: string, nativePackage: string) {
   if (file.startsWith("node_modules/pdfjs-dist/")) return "pdfjs-dist"
   if (file.startsWith(`node_modules/${nativePackage}/`)) return nativePackage
   if (file.startsWith("node_modules/@napi-rs/canvas/")) return "@napi-rs/canvas"
+  for (const pkg of officePackages) {
+    if (file === `licenses/${pkg.name}-${pkg.licenseFile}`) return pkg.name
+  }
   return "document-runtime"
 }
 

@@ -70,6 +70,15 @@ const imageOcr = () => ({
   limits,
 })
 
+const readOffice = (format: "docx" | "pptx" | "xlsx") => ({
+  protocolVersion: 1 as const,
+  type: "read-office" as const,
+  jobID,
+  format,
+  inputPath: "input/document.json",
+  inputBytes: 1024,
+})
+
 const pageReady = () => ({
   protocolVersion: 1 as const,
   type: "page-ready" as const,
@@ -95,6 +104,9 @@ describe("DocumentRuntimeProtocol schemas", () => {
     render(),
     ocr(),
     imageOcr(),
+    readOffice("docx"),
+    readOffice("pptx"),
+    readOffice("xlsx"),
     { protocolVersion: 1, type: "release-page", jobID, page: 1, pageID },
     { protocolVersion: 1, type: "cancel", jobID },
   ] as const)("round trips the $type request", (request) => {
@@ -105,6 +117,7 @@ describe("DocumentRuntimeProtocol schemas", () => {
     expectEqual(DocumentRuntimeProtocol.decodeInitialRequest(probe()), probe())
     expectEqual(DocumentRuntimeProtocol.decodeInitialRequest(render()), render())
     expectEqual(DocumentRuntimeProtocol.decodeInitialRequest(imageOcr()), imageOcr())
+    expectEqual(DocumentRuntimeProtocol.decodeInitialRequest(readOffice("docx")), readOffice("docx"))
     expect(() => DocumentRuntimeProtocol.decodeInitialRequest(ocr())).toThrow()
 
     expectEqual(DocumentRuntimeProtocol.decodeContinuationRequest(ocr()), ocr())
@@ -148,6 +161,17 @@ describe("DocumentRuntimeProtocol schemas", () => {
     { protocolVersion: 1, type: "completed", jobID, operation: "render", pagesProcessed: 1, temporaryBytes: 0 },
     { protocolVersion: 1, type: "cancelled", jobID },
     { protocolVersion: 1, type: "failure", jobID, code: "render-failed", stage: "render", retryable: false },
+    {
+      protocolVersion: 1,
+      type: "office-ready",
+      jobID,
+      format: "docx",
+      outputPath: "office/output.json",
+      outputID,
+      outputSha256: hash,
+      outputBytes: 100,
+      sectionCount: 3,
+    },
   ] as const)("round trips the $type event", (event) => {
     expect(encodeEvent(decodeEvent(event))).toEqual(event)
   })
@@ -160,6 +184,8 @@ describe("DocumentRuntimeProtocol schemas", () => {
     { ...render(), inputPath: "../source.pdf" },
     { ...render(), inputBytes: DocumentRuntimeLimits.MaxPdfInputBytes + 1 },
     { ...render(), limits: { ...limits, pages: 1 }, pageCount: 2 },
+    { ...readOffice("docx"), inputBytes: DocumentRuntimeLimits.MaxOfficeInputBytes + 1 },
+    { ...readOffice("docx"), inputPath: "../document.docx" },
     {
       ...ocr(),
       source: {
@@ -209,6 +235,17 @@ describe("DocumentRuntimeProtocol schemas", () => {
       resultID,
       tsvBytes: 1,
       temporaryBytes: 1,
+    },
+    {
+      protocolVersion: 1,
+      type: "office-ready",
+      jobID,
+      format: "docx",
+      outputPath: "office/output.json",
+      outputID,
+      outputSha256: hash,
+      outputBytes: DocumentRuntimeLimits.MaxOfficeOutputBytes + 1,
+      sectionCount: 1,
     },
   ])("rejects invalid event %#", (event) => {
     expect(() => decodeEvent(event)).toThrow()
@@ -387,6 +424,69 @@ describe("DocumentRuntimeProtocol ordering", () => {
       ok: false,
       code: "invalid-order",
     })
+  })
+})
+
+describe("DocumentRuntimeProtocol read-office order", () => {
+  const decodeEvent = DocumentRuntimeProtocol.decodeWorkerEvent
+  const request = Schema.decodeUnknownSync(DocumentRuntimeProtocol.ReadOfficeRequest)(readOffice("docx"))
+  const outputID = DocumentRuntimeProtocol.OutputID.make("output_123e4567-e89b-42d3-a456-426614174000")
+  const hash = "0123456789abcdef".repeat(4)
+
+  test("accepts a single office-text transfer then office-ready and completion", () => {
+    const start = DocumentRuntimeProtocol.decodeOutputFrame({
+      protocolVersion: 1,
+      type: "output-start",
+      jobID,
+      outputID,
+      kind: "office-text",
+      page: 1,
+      pageID,
+      sourcePath: "office/output.json",
+      declaredBytes: 100,
+    })
+    const chunk = DocumentRuntimeProtocol.decodeOutputFrame({
+      protocolVersion: 1,
+      type: "output-chunk",
+      jobID,
+      outputID,
+      sequence: 0,
+      data: DocumentRuntimeProtocol.encodeCanonicalBase64(new Uint8Array(100)),
+    })
+    const end = DocumentRuntimeProtocol.decodeOutputFrame({
+      protocolVersion: 1,
+      type: "output-end",
+      jobID,
+      outputID,
+      chunks: 1,
+      actualBytes: 100,
+      sha256: hash,
+    })
+    const messages = [
+      decodeEvent({ protocolVersion: 1, type: "started", jobID, operation: "read-office" }),
+      start,
+      chunk,
+      end,
+      decodeEvent({
+        protocolVersion: 1,
+        type: "office-ready",
+        jobID,
+        format: "docx",
+        outputPath: "office/output.json",
+        outputID,
+        outputSha256: hash,
+        outputBytes: 100,
+        sectionCount: 3,
+      }),
+      decodeEvent({ protocolVersion: 1, type: "completed", jobID, operation: "read-office", pagesProcessed: 0, temporaryBytes: 0 }),
+    ]
+    const final = messages.reduce<DocumentRuntimeProtocol.OutputOrderResult>(
+      (result, message) => (result.ok ? DocumentRuntimeProtocol.advanceOutputOrder(result.state, message) : result),
+      { ok: true, state: DocumentRuntimeProtocol.beginOutputOrder(request) },
+    )
+    expect(final.ok).toBe(true)
+    if (!final.ok) return
+    expect(final.state).toEqual(expect.objectContaining({ terminal: true }))
   })
 })
 

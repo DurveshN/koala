@@ -5,11 +5,12 @@ import { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
 import { Schema } from "effect"
 import { createHash, randomUUID } from "node:crypto"
 import { constants } from "node:fs"
-import { access, lstat, open, rm } from "node:fs/promises"
+import { access, lstat, open, rm, writeFile } from "node:fs/promises"
 import type { FileHandle } from "node:fs/promises"
 import path from "node:path"
 import { RuntimeFailure, runtimeFailure } from "./error"
 import { validateOcrImage } from "./image"
+import { readDocx, readPptx, readXlsx } from "./office"
 import { loadAndVerifyManifest } from "./manifest"
 import { makePrivateDirectory, resolveInRoot, validateInputFile, validatePrivateJobRoot } from "./path"
 import { openPdf, probeRenderer, readPdfBytes, renderPdfPage } from "./render"
@@ -179,9 +180,15 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport, de
       request = message
       order = DocumentRuntimeProtocol.beginOrder(message)
       outputOrder = DocumentRuntimeProtocol.beginOutputOrder(message)
+      const jobDeadlineMs =
+        message.type === "probe"
+          ? 10 * 60_000
+          : message.type === "read-office"
+            ? DocumentRuntimeLimits.MaxJobDeadlineMs
+            : message.limits.jobDeadlineMs
       const jobDeadline = setTimeout(
         () => interrupt(new RuntimeFailure("job-deadline-exceeded", "worker", true)),
-        message.type === "probe" ? 10 * 60_000 : message.limits.jobDeadlineMs,
+        jobDeadlineMs,
       )
       void execute(message, config, abort.signal, generated, cleanup, send, nextCommand, openOutput)
         .then(
@@ -314,6 +321,10 @@ async function execute(
   }
   if (request.type === "ocr") {
     await executeOcr(request, paths, root, signal, generated, send, openOutput)
+    return
+  }
+  if (request.type === "read-office") {
+    await executeOffice(request, root, signal, generated, send, openOutput)
     return
   }
   await executeRender(request, paths, root, signal, generated, cleanup, send, nextCommand, openOutput)
@@ -468,6 +479,83 @@ async function executeRender(
   }
 }
 
+async function executeOffice(
+  request: typeof DocumentRuntimeProtocol.ReadOfficeRequest.Type,
+  jobRoot: string,
+  signal: AbortSignal,
+  generated: Set<string>,
+  send: (event: DocumentRuntimeProtocol.WorkerOutput) => Promise<void>,
+  openOutput: (value: string) => Promise<OutputHandle>,
+) {
+  const input = resolveInRoot(jobRoot, request.inputPath)
+  await validateInputFile(jobRoot, input, request.inputBytes)
+  signal.throwIfAborted()
+  await makePrivateDirectory(jobRoot, "office")
+  const sourcePath = DocumentRuntimeProtocol.OutputSourcePath.make("office/output.json")
+  const output = resolveInRoot(jobRoot, sourcePath)
+  generated.add(output)
+  const bytes = await (async () => {
+    if (request.format === "docx") return readDocx(input, request.inputBytes)
+    if (request.format === "xlsx") return readXlsx(input, request.inputBytes)
+    return readPptx(input, request.inputBytes)
+  })().catch((error) => {
+    if (error instanceof RuntimeFailure) throw error
+    throw new RuntimeFailure("invalid-request", "input")
+  })
+  await writeFileAtomic(output, bytes)
+  const pageID = DocumentRuntimeProtocol.PageID.make(`page_${randomUUID()}`)
+  const transfer = await streamOutput({
+    jobID: request.jobID,
+    kind: "office-text",
+    page: 1,
+    pageID,
+    sourcePath,
+    path: output,
+    declaredBytes: bytes.byteLength,
+    send,
+    signal,
+    openOutput,
+  })
+  const sectionCount = Math.min(
+    estimateSectionCount(bytes),
+    DocumentRuntimeLimits.MaxOfficeSections,
+  )
+  await send({
+    protocolVersion: 1,
+    type: "office-ready",
+    jobID: request.jobID,
+    format: request.format,
+    outputPath: sourcePath,
+    outputID: transfer.outputID,
+    outputSha256: transfer.sha256,
+    outputBytes: bytes.byteLength,
+    sectionCount,
+  })
+  await rm(output)
+  generated.delete(output)
+  await send({
+    protocolVersion: 1,
+    type: "completed",
+    jobID: request.jobID,
+    operation: "read-office",
+    pagesProcessed: 0,
+    temporaryBytes: 0,
+  })
+}
+
+async function writeFileAtomic(file: string, bytes: Uint8Array) {
+  await writeFile(file, bytes, { flag: "wx", mode: 0o600 })
+}
+
+function estimateSectionCount(bytes: Uint8Array): number {
+  try {
+    const parsed = JSON.parse(Buffer.from(bytes).toString("utf8"))
+    return Array.isArray(parsed?.sections) ? parsed.sections.length : 0
+  } catch {
+    return 0
+  }
+}
+
 async function executeOcr(
   request: typeof DocumentRuntimeProtocol.OcrRequest.Type,
   runtime: ReturnType<typeof runtimePaths>,
@@ -535,7 +623,7 @@ async function executeOcr(
 
 async function streamOutput(input: {
   readonly jobID: DocumentRuntimeProtocol.JobID
-  readonly kind: "page-png" | "ocr-tsv"
+  readonly kind: "page-png" | "ocr-tsv" | "office-text"
   readonly page: number
   readonly pageID: DocumentRuntimeProtocol.PageID
   readonly resultID?: DocumentRuntimeProtocol.ResultID
@@ -608,7 +696,7 @@ export async function readLogicalChunk(handle: OutputHandle, buffer: Uint8Array)
 function makeOutputStart(
   input: {
     readonly jobID: DocumentRuntimeProtocol.JobID
-    readonly kind: "page-png" | "ocr-tsv"
+    readonly kind: "page-png" | "ocr-tsv" | "office-text"
     readonly page: number
     readonly pageID: DocumentRuntimeProtocol.PageID
     readonly resultID?: DocumentRuntimeProtocol.ResultID
@@ -628,6 +716,7 @@ function makeOutputStart(
     declaredBytes: input.declaredBytes,
   }
   if (input.kind === "page-png") return { ...common, kind: input.kind }
+  if (input.kind === "office-text") return { ...common, kind: input.kind }
   if (!input.resultID) throw new RuntimeFailure("worker-failed", "worker")
   return { ...common, kind: input.kind, resultID: input.resultID }
 }

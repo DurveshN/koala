@@ -29,13 +29,13 @@ export const OutputID = Schema.String.check(
 export type OutputID = typeof OutputID.Type
 
 export const OutputSourcePath = DocumentRuntimeManifest.RelativePath.check(
-  Schema.makeFilter((value) =>
-    ((value.startsWith("pages/") && value.endsWith(".png")) || (value.startsWith("ocr/") && value.endsWith(".tsv"))) &&
-    !value.includes("\\") &&
-    !value.includes(":")
-      ? undefined
-      : "Expected a canonical document output path",
-  ),
+  Schema.makeFilter((value) => {
+    const validDocument =
+      (value.startsWith("pages/") && value.endsWith(".png")) || (value.startsWith("ocr/") && value.endsWith(".tsv"))
+    const validOffice = value.startsWith("office/") && value.endsWith(".json")
+    if ((validDocument || validOffice) && !value.includes("\\") && !value.includes(":")) return undefined
+    return "Expected a canonical document output path"
+  }),
 ).pipe(Schema.brand("DocumentRuntimeProtocol.OutputSourcePath"))
 export type OutputSourcePath = typeof OutputSourcePath.Type
 
@@ -46,6 +46,10 @@ const PdfInputBytes = Schema.Int.check(
 const ImageInputBytes = Schema.Int.check(
   Schema.isGreaterThan(0),
   Schema.isLessThanOrEqualTo(DocumentRuntimeLimits.MaxImageInputBytes),
+)
+const OfficeInputBytes = Schema.Int.check(
+  Schema.isGreaterThan(0),
+  Schema.isLessThanOrEqualTo(DocumentRuntimeLimits.MaxOfficeInputBytes),
 )
 const PngBytes = Schema.Int.check(
   Schema.isGreaterThan(0),
@@ -148,6 +152,17 @@ export const RenderedPageOcrRequest = Schema.Struct({
   source: RenderedPageSource,
 })
 
+export const OfficeFormat = Schema.Literals(["docx", "pptx", "xlsx"])
+export type OfficeFormat = typeof OfficeFormat.Type
+
+export const ReadOfficeRequest = Schema.Struct({
+  ...CommonRequest,
+  type: Schema.Literal("read-office"),
+  format: OfficeFormat,
+  inputPath: DocumentRuntimeManifest.RelativePath,
+  inputBytes: OfficeInputBytes,
+})
+
 export const ReleasePageRequest = Schema.Struct({
   ...CommonRequest,
   type: Schema.Literal("release-page"),
@@ -160,13 +175,17 @@ export const CancelRequest = Schema.Struct({
   type: Schema.Literal("cancel"),
 })
 
-export const InitialRequest = Schema.Union([ProbeRequest, RenderRequest, ImageOcrRequest]).annotate({
+export const InitialRequest = Schema.Union([ProbeRequest, RenderRequest, ImageOcrRequest, ReadOfficeRequest]).annotate({
   discriminator: "type",
   identifier: "DocumentRuntimeProtocol.InitialRequest",
 })
 export type InitialRequest = typeof InitialRequest.Type
 
-export type StartRequest = typeof ProbeRequest.Type | typeof RenderRequest.Type | typeof OcrRequest.Type
+export type StartRequest =
+  | typeof ProbeRequest.Type
+  | typeof RenderRequest.Type
+  | typeof OcrRequest.Type
+  | typeof ReadOfficeRequest.Type
 
 export const ContinuationRequest = Schema.Union([RenderedPageOcrRequest, ReleasePageRequest]).annotate({
   discriminator: "type",
@@ -178,6 +197,7 @@ export const WorkerRequest = Schema.Union([
   ProbeRequest,
   RenderRequest,
   OcrRequest,
+  ReadOfficeRequest,
   ReleasePageRequest,
   CancelRequest,
 ]).annotate({ discriminator: "type", identifier: "DocumentRuntimeProtocol.WorkerRequest" })
@@ -192,7 +212,7 @@ export const decodeInitialRequest = (input: unknown) => decodeInitial(input)
 export const decodeContinuationRequest = (input: unknown) => decodeContinuation(input)
 export const decodeWorkerRequest = (input: unknown) => decodeRequest(input)
 
-export const Operation = Schema.Literals(["probe", "render", "ocr"])
+export const Operation = Schema.Literals(["probe", "render", "ocr", "read-office"])
 export type Operation = typeof Operation.Type
 
 const CommonEvent = {
@@ -232,6 +252,20 @@ export const OcrResultEvent = Schema.Struct({
   temporaryBytes: TemporaryBytes,
 })
 
+export const OfficeReadyEvent = Schema.Struct({
+  ...CommonEvent,
+  type: Schema.Literal("office-ready"),
+  format: OfficeFormat,
+  outputPath: DocumentRuntimeManifest.RelativePath,
+  outputID: OutputID,
+  outputSha256: DocumentRuntimeManifest.Digest,
+  outputBytes: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(DocumentRuntimeLimits.MaxOfficeOutputBytes)),
+  sectionCount: Schema.Int.check(
+    Schema.isGreaterThanOrEqualTo(0),
+    Schema.isLessThanOrEqualTo(DocumentRuntimeLimits.MaxOfficeSections),
+  ),
+})
+
 export const CompletedEvent = Schema.Struct({
   ...CommonEvent,
   type: Schema.Literal("completed"),
@@ -266,6 +300,8 @@ export const FailureCode = Schema.Literals([
   "job-deadline-exceeded",
   "render-failed",
   "ocr-failed",
+  "office-limit-exceeded",
+  "office-output-limit-exceeded",
   "worker-failed",
 ])
 export type FailureCode = typeof FailureCode.Type
@@ -285,6 +321,7 @@ export const WorkerEvent = Schema.Union([
   StartedEvent,
   PageReadyEvent,
   OcrResultEvent,
+  OfficeReadyEvent,
   CompletedEvent,
   CancelledEvent,
   FailureEvent,
@@ -321,7 +358,16 @@ export const OcrOutputStart = Schema.Struct({
   ),
 )
 
-export const OutputStart = Schema.Union([PageOutputStart, OcrOutputStart]).annotate({
+export const OfficeOutputStart = Schema.Struct({
+  ...OutputStartCommon,
+  kind: Schema.Literal("office-text"),
+}).check(
+  Schema.makeFilter((value) =>
+    value.declaredBytes <= DocumentRuntimeLimits.MaxOfficeOutputBytes ? undefined : "Office output exceeds hard limit",
+  ),
+)
+
+export const OutputStart = Schema.Union([PageOutputStart, OcrOutputStart, OfficeOutputStart]).annotate({
   discriminator: "kind",
   identifier: "DocumentRuntimeProtocol.OutputStart",
 })
@@ -374,6 +420,8 @@ export type OrderPhase =
   | "page-ready"
   | "awaiting-ocr-result"
   | "ocr-ready"
+  | "awaiting-office"
+  | "office-ready"
   | "awaiting-completed"
   | "cancelling"
   | "terminal"
@@ -416,6 +464,9 @@ export function beginOrder(request: StartRequest): OrderState {
       currentPageID: request.pageID,
     }
   }
+  if (request.type === "read-office") {
+    return { jobID: request.jobID, operation: request.type, phase: "awaiting-started" }
+  }
   return { jobID: request.jobID, operation: request.type, phase: "awaiting-started" }
 }
 
@@ -435,6 +486,7 @@ export function advanceOrder(state: OrderState, message: WorkerRequest | WorkerE
     }
     if (state.operation === "render") return success({ ...state, phase: "awaiting-page" })
     if (state.operation === "ocr") return success({ ...state, phase: "awaiting-ocr-result" })
+    if (state.operation === "read-office") return success({ ...state, phase: "awaiting-office" })
     return success({ ...state, phase: "awaiting-completed" })
   }
   if (message.type === "page-ready") {
@@ -472,6 +524,10 @@ export function advanceOrder(state: OrderState, message: WorkerRequest | WorkerE
     if (!withinOcrLimits(state.limits, message)) return { ok: false, code: "limit-exceeded" }
     return success({ ...state, phase: state.operation === "ocr" ? "awaiting-completed" : "ocr-ready" })
   }
+  if (message.type === "office-ready") {
+    if (state.phase !== "awaiting-office") return { ok: false, code: "invalid-order" }
+    return success({ ...state, phase: "office-ready" })
+  }
   if (message.type === "release-page") {
     if (
       (state.phase !== "page-ready" && state.phase !== "ocr-ready") ||
@@ -499,7 +555,8 @@ export function advanceOrder(state: OrderState, message: WorkerRequest | WorkerE
         ? { ok: false, code: "limit-exceeded" }
         : { ok: false, code: "invalid-order" }
     }
-    const expectedPages = state.operation === "probe" ? 0 : state.operation === "ocr" ? 1 : state.pageCount
+    const expectedPages =
+      state.operation === "probe" ? 0 : state.operation === "ocr" ? 1 : state.operation === "read-office" ? 0 : state.pageCount
     if (expectedPages === undefined) return { ok: false, code: "invalid-order" }
     return message.pagesProcessed === expectedPages
       ? success({ ...state, phase: "terminal" })
@@ -525,10 +582,10 @@ export interface OutputOrderState {
   }
   readonly published: ReadonlyArray<{
     readonly outputID: OutputID
-    readonly page: number
-    readonly pageID: PageID
+    readonly page?: number
+    readonly pageID?: PageID
     readonly bytes: number
-    readonly kind: "page-png" | "ocr-tsv"
+    readonly kind: "page-png" | "ocr-tsv" | "office-text"
   }>
   readonly cumulativeBytes: number
   readonly liveBytes: number
@@ -569,7 +626,9 @@ export function advanceOutputOrder(
   if (message.type === "output-start") return startOutput(state, message)
   if (message.type === "output-chunk") return chunkOutput(state, message)
   if (message.type === "output-end") return endOutput(state, message)
-  if (message.type === "page-ready" || message.type === "ocr-result") return publishOutput(state, message)
+  if (message.type === "page-ready" || message.type === "ocr-result" || message.type === "office-ready") {
+    return publishOutput(state, message)
+  }
   if (message.type === "release-page") {
     if (state.active || state.completed) return { ok: false, code: "invalid-output-order" }
     const released = state.published.filter(
@@ -595,19 +654,12 @@ function startOutput(state: OutputOrderState, start: OutputStart): OutputOrderRe
     return { ok: false, code: "invalid-output-order" }
   }
   if (!matchesExpectedOutput(state, start)) return { ok: false, code: "invalid-output-order" }
-  const perOutputLimit =
-    start.kind === "page-png"
-      ? state.request.type === "render"
-        ? state.request.limits.pngBytesPerPage
-        : 0
-      : state.request.type === "probe"
-        ? 0
-        : state.request.limits.tsvBytesPerPage
+  const perOutputLimit = outputLimitForStart(state.request, start)
   if (start.declaredBytes > perOutputLimit) return { ok: false, code: "output-limit-exceeded" }
   if (state.cumulativeBytes + start.declaredBytes > cumulativePayloadLimit(state.request)) {
     return { ok: false, code: "output-limit-exceeded" }
   }
-  const temporaryLimit = state.request.type === "probe" ? 0 : state.request.limits.temporaryBytes
+  const temporaryLimit = temporaryLimitForRequest(state.request)
   if (state.liveBytes + start.declaredBytes > temporaryLimit) {
     return { ok: false, code: "output-limit-exceeded" }
   }
@@ -677,27 +729,50 @@ function endOutput(state: OutputOrderState, end: OutputEnd): OutputOrderResult {
 
 function publishOutput(
   state: OutputOrderState,
-  event: typeof PageReadyEvent.Type | typeof OcrResultEvent.Type,
+  event: typeof PageReadyEvent.Type | typeof OcrResultEvent.Type | typeof OfficeReadyEvent.Type,
 ): OutputOrderResult {
   const completed = state.completed
   if (!completed) return { ok: false, code: "invalid-output-order" }
   const start = completed.start
-  const matches =
-    start.outputID === event.outputID &&
-    start.page === event.page &&
-    start.pageID === event.pageID &&
-    start.sourcePath === event.outputPath &&
-    completed.sha256 === event.outputSha256 &&
+  if (start.kind === "office-text") {
+    if (event.type !== "office-ready" || start.outputID !== event.outputID || completed.sha256 !== event.outputSha256) {
+      return { ok: false, code: "invalid-output-order" }
+    }
+    return outputSuccess({
+      ...state,
+      completed: undefined,
+      published: [...state.published, { outputID: event.outputID, bytes: completed.bytes, kind: "office-text" }],
+    })
+  }
+  if (event.type !== "page-ready" && event.type !== "ocr-result") {
+    return { ok: false, code: "invalid-output-order" }
+  }
+  if (
+    start.outputID !== event.outputID ||
+    start.page !== event.page ||
+    start.pageID !== event.pageID ||
+    start.sourcePath !== event.outputPath ||
+    completed.sha256 !== event.outputSha256 ||
     (event.type === "page-ready"
-      ? start.kind === "page-png" && start.declaredBytes === event.pngBytes
-      : start.kind === "ocr-tsv" && start.resultID === event.resultID && start.declaredBytes === event.tsvBytes)
-  if (!matches) return { ok: false, code: "invalid-output-order" }
+      ? start.kind !== "page-png" || start.declaredBytes !== event.pngBytes
+      : start.kind !== "ocr-tsv" ||
+        start.resultID !== event.resultID ||
+        start.declaredBytes !== event.tsvBytes)
+  ) {
+    return { ok: false, code: "invalid-output-order" }
+  }
   return outputSuccess({
     ...state,
     completed: undefined,
     published: [
       ...state.published,
-      { outputID: event.outputID, page: event.page, pageID: event.pageID, bytes: completed.bytes, kind: start.kind },
+      {
+        outputID: event.outputID,
+        page: event.page,
+        pageID: event.pageID,
+        bytes: completed.bytes,
+        kind: start.kind,
+      },
     ],
   })
 }
@@ -705,6 +780,9 @@ function publishOutput(
 function matchesExpectedOutput(state: OutputOrderState, start: OutputStart) {
   const request = state.request
   if (request.type === "probe") return false
+  if (start.kind === "office-text") {
+    return request.type === "read-office" && start.sourcePath.startsWith("office/")
+  }
   if (start.kind === "page-png") {
     return (
       request.type === "render" &&
@@ -728,7 +806,21 @@ function matchesExpectedOutput(state: OutputOrderState, start: OutputStart) {
 function cumulativePayloadLimit(request: StartRequest) {
   if (request.type === "probe") return 0
   if (request.type === "ocr") return request.limits.tsvBytesPerPage
+  if (request.type === "read-office") return DocumentRuntimeLimits.MaxOfficeOutputBytes
   return request.pageCount * (request.limits.pngBytesPerPage + request.limits.tsvBytesPerPage)
+}
+
+function outputLimitForStart(request: StartRequest, start: OutputStart): number {
+  if (start.kind === "office-text") return DocumentRuntimeLimits.MaxOfficeOutputBytes
+  if (request.type === "render") return start.kind === "page-png" ? request.limits.pngBytesPerPage : request.limits.tsvBytesPerPage
+  if (request.type === "ocr") return start.kind === "page-png" ? 0 : request.limits.tsvBytesPerPage
+  return 0
+}
+
+function temporaryLimitForRequest(request: StartRequest): number {
+  if (request.type === "read-office") return DocumentRuntimeLimits.MaxOfficeOutputBytes
+  if (request.type === "probe") return 0
+  return request.limits.temporaryBytes
 }
 
 export function decodeCanonicalBase64(value: string) {

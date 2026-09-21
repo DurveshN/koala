@@ -1,5 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
+import { DocumentRuntime } from "@/document/runtime"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { PlanExitTool } from "./plan"
 import { Session } from "@/session/session"
@@ -12,6 +13,7 @@ import { EditTool } from "./edit"
 import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
+import { DocxReadTool, PptxReadTool, SpreadsheetReadTool } from "./office"
 import { TaskTool } from "./task"
 import { Database } from "@opencode-ai/core/database/database"
 import { TodoWriteTool } from "./todo"
@@ -123,6 +125,9 @@ const layer = Layer.effect(
     const edit = yield* EditTool
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
+    const docxRead = yield* DocxReadTool
+    const pptxRead = yield* PptxReadTool
+    const spreadsheetRead = yield* SpreadsheetReadTool
     const skilltool = yield* SkillTool
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
@@ -233,6 +238,9 @@ const layer = Layer.effect(
           search: Tool.init(websearch),
           skill: Tool.init(skilltool),
           patch: Tool.init(patchtool),
+          docxRead: Tool.init(docxRead),
+          pptxRead: Tool.init(pptxRead),
+          spreadsheetRead: Tool.init(spreadsheetRead),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
@@ -254,6 +262,9 @@ const layer = Layer.effect(
             tool.grep,
             tool.edit,
             tool.write,
+            tool.docxRead,
+            tool.pptxRead,
+            tool.spreadsheetRead,
             tool.task,
             tool.fetch,
             tool.todo,
@@ -473,6 +484,7 @@ export const node = LayerNode.make({
     IndustrialAuditLive.node,
     IndustrialExecution.node,
     SandboxRuntime.node,
+    DocumentRuntime.node,
   ],
 })
 

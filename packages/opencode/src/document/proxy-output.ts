@@ -104,7 +104,8 @@ export function create(
 
       if (message.type === "output-start") {
         if (active) throw new Error("interleaved-output")
-        const extension = message.kind === "page-png" ? ".png" : ".tsv"
+        const extension =
+          message.kind === "page-png" ? ".png" : message.kind === "office-text" ? ".json" : ".tsv"
         const relativePath = DocumentRuntimeManifest.RelativePath.make(`output-${randomUUID()}${extension}`)
         await dependencies.verifyRoot(root)
         const absolutePath = path.join(root.pendingRoot, relativePath)
@@ -214,6 +215,15 @@ export function create(
         return
       }
 
+      if (message.type === "office-ready") {
+        const output = stable.get(message.outputID)
+        if (!output || output.bytes !== message.outputBytes) throw new Error("missing-stable-output")
+        return {
+          ...message,
+          outputPath: output.relativePath,
+          outputSha256: output.sha256,
+        }
+      }
       if (message.type !== "page-ready" && message.type !== "ocr-result") return message
       const output = stable.get(message.outputID)
       if (!output || output.bytes !== (message.type === "page-ready" ? message.pngBytes : message.tsvBytes)) {

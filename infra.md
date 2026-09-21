@@ -202,10 +202,12 @@ Desktop trusted resolver
             -> native-confined document worker
             +-- PDF.js + target canvas: sequential 300-DPI pages
             +-- bundled Tesseract: bounded English TSV OCR
+            +-- office parsers: .docx, .pptx, .xlsx structured text
 ```
 
 The worker protocol supports probe, direct image OCR, sequential PDF rendering,
-OCR for every rendered page, page release, cancellation, and curated failures.
+OCR for every rendered page, read-office, page release, cancellation, and
+curated failures.
 Manifests bind target, architecture, components, every file hash/mode, dependency
 inventory, and licenses. A detached attestation outside the runtime tree pins
 the manifest digest and exact source/dependency inventory. Packaged startup and

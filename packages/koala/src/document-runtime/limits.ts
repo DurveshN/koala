@@ -27,6 +27,11 @@ export const MaxNdjsonPendingWrites = 32
 export const MaxInnerStderrBytes = 65_536
 export const MaxOutputChunkBytes = 10_240
 export const MaxOutputChunkBase64Characters = 13_656
+export const MaxOfficeInputBytes = 100 * 1024 * 1024
+export const MaxOfficeOutputBytes = 50 * 1024 * 1024
+export const MaxOfficeSections = 10_000
+export const MaxOfficeBodyLength = 100_000
+export const MaxOfficeTotalCharacters = 5_000_000
 
 export const Hard = Schema.Struct({
   dpi: Schema.Literal(FixedDpi),
