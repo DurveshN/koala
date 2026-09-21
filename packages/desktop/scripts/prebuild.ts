@@ -12,6 +12,6 @@ await $`cd ../opencode && bun script/build-node.ts`
 if (channel === "dev") {
   await buildDevelopmentDocumentRuntime()
   await downloadCliToResources()
-} else {
+} else if (process.env.KOALA_DOCUMENT_CONFINEMENT_CANDIDATE !== "1") {
   await prepareOrVerifyReleaseDocumentRuntime()
 }

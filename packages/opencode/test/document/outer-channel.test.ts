@@ -21,6 +21,7 @@ const launch = {
   jobRootIdentity: { dev: "1", ino: "2" },
   pendingRoot: "/jobs/pending",
   pendingRootIdentity: { dev: "1", ino: "3" },
+  receiptNonce: "a".repeat(64),
   start: {
     protocolVersion: 1,
     type: "render",
@@ -40,7 +41,7 @@ describe("document outer channel", () => {
     const pending = DocumentOuterChannel.send(channel, port, launch)
     expect(channel.state.phase).toBe("awaiting-accepted")
 
-    DocumentOuterChannel.receive(channel, { protocolVersion: 1, type: "accepted", jobID })
+    DocumentOuterChannel.receive(channel, { protocolVersion: 1, type: "accepted", jobID, innerProcessID: 1234 })
     expect(channel.state.phase).toBe("active")
     await port.ready()
     port.complete()
@@ -127,7 +128,7 @@ describe("document outer channel", () => {
       jobID,
       event: { protocolVersion: 1, type: "cancelled", jobID },
     })
-    DocumentOuterChannel.receive(channel, { protocolVersion: 1, type: "closed", jobID })
+    DocumentOuterChannel.receive(channel, closed())
     await port.ready()
     port.complete()
     await pending
@@ -155,8 +156,25 @@ function activeChannel() {
     },
   }
   void DocumentOuterChannel.send(channel, port, launch)
-  DocumentOuterChannel.receive(channel, { protocolVersion: 1, type: "accepted", jobID })
+  DocumentOuterChannel.receive(channel, { protocolVersion: 1, type: "accepted", jobID, innerProcessID: 1234 })
   return channel
+}
+
+function closed() {
+  return {
+    protocolVersion: 1 as const,
+    type: "closed" as const,
+    jobID,
+    receiptNonce: "a".repeat(64),
+    receiptSha256: digest,
+    terminalCategory: "cancelled" as const,
+    treeContained: true,
+    managerInitialized: true,
+    cleanupCalls: 1 as const,
+    cleanupCompleted: true,
+    resetCalls: 1 as const,
+    resetCompleted: true,
+  }
 }
 
 function delayedPort() {

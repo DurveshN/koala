@@ -252,6 +252,14 @@ describe("document confinement proxy lifecycle", () => {
 
     expect(types(harness)).toEqual(["failure", "closed"])
     expect(failureOf(harness)).toMatchObject({ code, jobID: null })
+    expect(closedOf(harness)).toMatchObject({
+      treeContained: true,
+      managerInitialized: false,
+      cleanupCalls: 0,
+      cleanupCompleted: false,
+      resetCalls: 0,
+      resetCompleted: false,
+    })
     expect(harness.spawnCalls).toHaveLength(0)
   })
 
@@ -438,6 +446,11 @@ describe("document confinement proxy failure boundaries", () => {
     expect(output).not.toContain("/jobs")
     expect(harness.manager.cleanupCalls).toBe(initialized ? 1 : 0)
     expect(harness.manager.resetCalls).toBe(initialized ? 1 : 0)
+    expect(closedOf(harness)).toMatchObject(
+      initialized
+        ? { managerInitialized: true, cleanupCalls: 1, resetCalls: 1 }
+        : { managerInitialized: false, cleanupCalls: 0, resetCalls: 0 },
+    )
   })
 
   test.each([
@@ -591,12 +604,10 @@ describe("document confinement proxy failure boundaries", () => {
     expect(harness.terminations).toBe(1)
   })
 
-  test("treats an async spawn error without a PID as confirmed absence and still resets SRT", async () => {
+  test("treats a spawned process without a PID as confirmed absence and still resets SRT", async () => {
     const harness = makeHarness({ missingPid: true })
     const pending = DocumentProxy.startProxy(harness.dependencies)
     harness.parent.emit(launch())
-    await harness.parent.waitFor("accepted")
-    harness.child.emitter.emit("error", new Error("spawn-path-canary"))
     await pending
 
     expect(failureOf(harness)).toMatchObject({ code: "spawn-failed", stage: "spawn" })
@@ -645,6 +656,13 @@ describe("document confinement proxy teardown precedence", () => {
     expect(failureOf(harness)).toMatchObject({ code: "command-cleanup-failed", stage: "command-cleanup" })
     expect(harness.manager.cleanupCalls).toBe(1)
     expect(harness.manager.resetCalls).toBe(1)
+    expect(closedOf(harness)).toMatchObject({
+      managerInitialized: true,
+      cleanupCalls: 1,
+      cleanupCompleted: false,
+      resetCalls: 1,
+      resetCompleted: true,
+    })
   })
 
   test("reset failure has precedence over command cleanup failure", async () => {
@@ -655,6 +673,13 @@ describe("document confinement proxy teardown precedence", () => {
     expect(failureOf(harness)).toMatchObject({ code: "reset-failed", stage: "reset" })
     expect(harness.manager.cleanupCalls).toBe(1)
     expect(harness.manager.resetCalls).toBe(1)
+    expect(closedOf(harness)).toMatchObject({
+      managerInitialized: true,
+      cleanupCalls: 1,
+      cleanupCompleted: false,
+      resetCalls: 1,
+      resetCompleted: false,
+    })
   })
 
   test("unconfirmed hard termination has highest precedence and does not reset around a live child", async () => {
@@ -888,6 +913,7 @@ function makeHarness(options: HarnessOptions = {}) {
       release: async () => true,
       cleanup: async () => undefined,
     }),
+    writeReceipt: async (_evidence, payload) => ({ ...payload, receiptSha256: digest }),
     sweepProcessTree: async () => {
       terminations++
       calls.push("sweep")
@@ -1089,6 +1115,7 @@ function launch(overrides: Record<string, unknown> = {}) {
     jobRootIdentity: { dev: "1", ino: "2" },
     pendingRoot: pathForTest(jobRoot).join(pathForTest(jobRoot).dirname(jobRoot), "pending"),
     pendingRootIdentity: { dev: "1", ino: "3" },
+    receiptNonce: "b".repeat(64),
     start: {
       protocolVersion: 1,
       type: "probe",
@@ -1270,6 +1297,12 @@ function failureOf(harness: ReturnType<typeof makeHarness>) {
 
 function failureMessages(harness: ReturnType<typeof makeHarness>) {
   return harness.parent.messages.filter((message) => message.type === "failure")
+}
+
+function closedOf(harness: ReturnType<typeof makeHarness>) {
+  const closed = harness.parent.messages.find((message) => message.type === "closed")
+  if (!closed || closed.type !== "closed") throw new Error("missing closure")
+  return closed
 }
 
 function frameAtSize(value: unknown, bytes: number) {

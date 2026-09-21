@@ -6,9 +6,23 @@ import {
   runtimeNativePackage,
 } from "@koala-ai/document-runtime"
 import { Schema } from "effect"
-import { createHash } from "node:crypto"
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises"
+import { createHash, generateKeyPairSync, sign } from "node:crypto"
+import { chmod, lstat, mkdir, opendir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
+import {
+  DependencyReportName,
+  EvidenceDirectoryName,
+  EvidenceEnvelopeName,
+  IssuerPublicKeyName,
+  NativeTestReportName,
+  PackagedSmokeReportName,
+  ReleaseIdentityName,
+  SignedFileInventoryName,
+  SigningReportName,
+  requiredDependencyPaths,
+  requiredSigningPaths,
+  type ReleaseIdentity,
+} from "../../src/main/document-confinement"
 
 const TessdataRevision = "87416418657359cb625c412a48b6e1d6d41c29bd"
 
@@ -18,10 +32,6 @@ export async function productionRuntimeFixture(
   attestationPath: string,
   releaseReady = true,
   smokeEvidence = false,
-  confinementEvidence?: {
-    readonly proxySha256: string
-    readonly sandboxRuntimeManifestSha256: string
-  },
 ) {
   const nativePackage = runtimeNativePackage(target)
   const components = [
@@ -136,27 +146,135 @@ export async function productionRuntimeFixture(
           },
         }
       : {}),
-    ...(confinementEvidence
-      ? {
-          confinementEvidence: {
-            evidenceVersion: 1,
-            target,
-            runtimeManifestSha256: createHash("sha256").update(body).digest("hex"),
-            proxySha256: confinementEvidence.proxySha256,
-            sandboxRuntimeManifestSha256: confinementEvidence.sandboxRuntimeManifestSha256,
-            srtVersion: "0.0.76",
-            policyVersion: 1,
-            nativeTestReportSha256: "1234567890abcdef".repeat(4),
-            packagedSmokeReportSha256: "fedcba0987654321".repeat(4),
-            signingReportSha256: "0123456789abcdef".repeat(4),
-            signedFileInventorySha256: "abcdef0123456789".repeat(4),
-            dependencyReportSha256: "13579bdf02468ace".repeat(4),
-          },
-        }
-      : {}),
   })
   await writeFile(attestationPath, `${JSON.stringify(attestation, null, 2)}\n`)
   return attestation
+}
+
+export async function confinementEvidenceFixture(
+  resourcesRoot: string,
+  target: DocumentRuntimeTarget.Target,
+  sandboxRuntime: {
+    readonly documentProxySha256: string
+    readonly manifestSha256: string
+  },
+  release: ReleaseIdentity = { version: "1.2.3", sourceCommit: "a".repeat(40), buildID: "test-build-1" },
+) {
+  const evidenceRoot = path.join(resourcesRoot, EvidenceDirectoryName)
+  await mkdir(evidenceRoot, { recursive: true })
+  const keys = generateKeyPairSync("ed25519")
+  const publicKey = keys.publicKey.export({ format: "der", type: "spki" })
+  await writeFile(path.join(evidenceRoot, IssuerPublicKeyName), publicKey)
+  await writeFile(path.join(evidenceRoot, ReleaseIdentityName), `${JSON.stringify(release)}\n`)
+  const attestationBytes = await readFile(path.join(resourcesRoot, "document-runtime.attestation.json"))
+  const runtimeManifestSha256 = JSON.parse(attestationBytes.toString("utf8")).manifestSha256 as string
+  const bindings = {
+    reportVersion: 1 as const,
+    target,
+    runtimeManifestSha256,
+    runtimeAttestationSha256: sha256(attestationBytes),
+    proxySha256: sandboxRuntime.documentProxySha256,
+    sandboxRuntimeManifestSha256: sandboxRuntime.manifestSha256,
+    policyVersion: 1 as const,
+    release,
+  }
+  const inventory = Schema.decodeUnknownSync(DocumentRuntimeAttestation.SignedFileInventoryReport)({
+    ...bindings,
+    status: "passed",
+    files: await inventoryFiles(resourcesRoot),
+  })
+  const inventoryBody = `${JSON.stringify(inventory)}\n`
+  await writeFile(path.join(evidenceRoot, SignedFileInventoryName), inventoryBody)
+  const reportBindings = { ...bindings, signedFileInventorySha256: sha256(Buffer.from(inventoryBody)), status: "passed" as const }
+  const native = Schema.decodeUnknownSync(DocumentRuntimeAttestation.NativeTestReport)({
+    ...reportBindings,
+    checks: {
+      allowedRuntimeAndJobOperations: "passed",
+      deniedFilesystemReadsAndWrites: "passed",
+      deniedDnsTcpUdpLoopbackBindAndSockets: "passed",
+      childAndGrandchildReaping: "passed",
+      cleanupAndResetCompletion: "passed",
+      proxyNonreuse: "passed",
+      replacementAndLinkAttacks: "passed",
+      outputSubstitution: "passed",
+      workerCrash: "passed",
+      innerDisconnect: "passed",
+      proxyCrashContained: "passed",
+      heldOpenCleanup: "passed",
+      parentDisconnectReconciled: "passed",
+      systemTesseractUnused: "passed",
+      jobPendingAndParentRootAbsence: "passed",
+      authenticPdfRenderAndTesseractOcr: "passed",
+    },
+  })
+  const smoke = Schema.decodeUnknownSync(DocumentRuntimeAttestation.PackagedSmokeReport)({
+    ...reportBindings,
+    installedRuntimeAttestationSha256: bindings.runtimeAttestationSha256,
+    operations: {
+      proxyProbe: "passed",
+      pdfRender: "passed",
+      tesseractOcr: "passed",
+      release: "passed",
+      cancellation: "passed",
+      rootCleanup: "passed",
+      systemTesseractUnused: "passed",
+      installedLayout: "passed",
+    },
+  })
+  const byPath = new Map(inventory.files.map((file) => [file.path, file]))
+  const signingPaths = requiredSigningPaths(inventory.files, target)
+  const dependencyPaths = requiredDependencyPaths(inventory.files, target)
+  const signingFiles = signingPaths.map((file) => byPath.get(file)).filter((file) => file !== undefined)
+  const dependencyFiles = dependencyPaths.map((file) => byPath.get(file)).filter((file) => file !== undefined)
+  if (signingFiles.length !== signingPaths.length || dependencyFiles.length !== dependencyPaths.length) {
+    throw new Error("Fixture inventory is incomplete")
+  }
+  const signing = Schema.decodeUnknownSync(DocumentRuntimeAttestation.SigningReport)({
+    ...reportBindings,
+    files: signingFiles.map((file) => ({ path: file.path, sha256: file.sha256, signature: "passed" })),
+  })
+  const dependencies = Schema.decodeUnknownSync(DocumentRuntimeAttestation.DependencyReport)({
+    ...reportBindings,
+    entries: dependencyFiles.map((file) => ({
+        path: file.path,
+        sha256: file.sha256,
+        architecture: target.startsWith("x86_64-") ? "x86_64" : "aarch64",
+        closure: "passed",
+      })),
+  })
+  const reports = [
+    [NativeTestReportName, native],
+    [PackagedSmokeReportName, smoke],
+    [SigningReportName, signing],
+    [DependencyReportName, dependencies],
+  ] as const
+  for (const [name, report] of reports) await writeFile(path.join(evidenceRoot, name), `${JSON.stringify(report)}\n`)
+  const subject = Schema.decodeUnknownSync(DocumentRuntimeAttestation.ConfinementEvidenceSubject)({
+    evidenceVersion: 3,
+    target,
+    runtimeManifestSha256,
+    runtimeAttestationSha256: bindings.runtimeAttestationSha256,
+    proxySha256: sandboxRuntime.documentProxySha256,
+    sandboxRuntimeManifestSha256: sandboxRuntime.manifestSha256,
+    srtVersion: "0.0.76",
+    policyVersion: 1,
+    release,
+    nativeTestReportSha256: sha256(Buffer.from(`${JSON.stringify(native)}\n`)),
+    packagedSmokeReportSha256: sha256(Buffer.from(`${JSON.stringify(smoke)}\n`)),
+    signingReportSha256: sha256(Buffer.from(`${JSON.stringify(signing)}\n`)),
+    signedFileInventorySha256: reportBindings.signedFileInventorySha256,
+    dependencyReportSha256: sha256(Buffer.from(`${JSON.stringify(dependencies)}\n`)),
+    issuerKeyID: sha256(publicKey),
+  })
+  const envelope = Schema.decodeUnknownSync(DocumentRuntimeAttestation.ConfinementEvidenceEnvelope)({
+    envelopeVersion: 1,
+    algorithm: "Ed25519",
+    keyID: subject.issuerKeyID,
+    subject,
+    signature: sign(null, Buffer.from(DocumentRuntimeAttestation.confinementEvidenceSubject(subject)), keys.privateKey).toString("base64"),
+  })
+  await writeFile(path.join(evidenceRoot, EvidenceEnvelopeName), `${JSON.stringify(envelope)}\n`)
+  return { release, keyID: subject.issuerKeyID, envelope }
 }
 
 function component(name: string, version: string, sourceRevision: string) {
@@ -195,4 +313,38 @@ function binaryHeader(target: DocumentRuntimeTarget.Target) {
   Buffer.from([0xcf, 0xfa, 0xed, 0xfe]).copy(bytes)
   bytes.writeUInt32LE(target.startsWith("x86_64-") ? 0x01000007 : 0x0100000c, 4)
   return bytes
+}
+
+async function inventoryFiles(root: string) {
+  const directories = ["document-runtime", "sandbox-runtime"]
+  const files: string[] = []
+  while (directories.length > 0) {
+    const relative = directories.pop() ?? ""
+    const directory = await opendir(path.join(root, ...relative.split("/")))
+    for await (const entry of directory) {
+      if (entry.isDirectory()) directories.push(`${relative}/${entry.name}`)
+      else files.push(`${relative}/${entry.name}`)
+    }
+  }
+  files.push(
+    `${EvidenceDirectoryName}/${IssuerPublicKeyName}`,
+    `${EvidenceDirectoryName}/${ReleaseIdentityName}`,
+  )
+  return Promise.all(
+    files.sort().map(async (file) => {
+      const absolute = path.join(root, ...file.split("/"))
+      const body = await readFile(absolute)
+      const info = await lstat(absolute)
+      return {
+        path: file,
+        sha256: sha256(body),
+        bytes: body.byteLength,
+        mode: process.platform === "win32" ? (file.toLowerCase().endsWith(".exe") ? 0o755 : 0o644) : info.mode & 0o777,
+      }
+    }),
+  )
+}
+
+function sha256(bytes: Uint8Array) {
+  return createHash("sha256").update(bytes).digest("hex")
 }

@@ -129,7 +129,17 @@ describe.serial("document proxy build", () => {
         stage: "launch",
         retryable: false,
       },
-      { protocolVersion: 1, type: "closed", jobID: null },
+      {
+        protocolVersion: 1,
+        type: "closed",
+        jobID: null,
+        treeContained: true,
+        managerInitialized: false,
+        cleanupCalls: 0,
+        cleanupCompleted: false,
+        resetCalls: 0,
+        resetCompleted: false,
+      },
     ])
   })
 })

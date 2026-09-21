@@ -123,6 +123,34 @@ export async function terminateProcessTree(
   return empty === true ? result : { status: "unavailable", code: "tree-containment-unconfirmed" }
 }
 
+export async function terminateProcessGroup(pid: number, timeoutMs: number) {
+  if (process.platform === "win32" || !Number.isSafeInteger(pid) || pid < 1 || timeoutMs < 1) return false
+  const deadline = Date.now() + timeoutMs
+  try {
+    process.kill(-pid, "SIGTERM")
+  } catch (error) {
+    if (processMissing(error)) return true
+    return false
+  }
+  while (Date.now() < deadline) {
+    try {
+      process.kill(-pid, 0)
+    } catch (error) {
+      if (processMissing(error)) return true
+      if (!permissionDenied(error)) return false
+    }
+    if (deadline - Date.now() < 250) {
+      try {
+        process.kill(-pid, "SIGKILL")
+      } catch (error) {
+        if (processMissing(error)) return true
+      }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10))
+  }
+  return false
+}
+
 async function sweepPosixProcessGroup(
   child: ProcessHandle,
   pid: number,

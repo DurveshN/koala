@@ -237,36 +237,69 @@ jobs:
             target: x86_64-apple-darwin
             platform_flag: --mac --x64
             bun_install_flags: --os=darwin --cpu=x64
+            runtime_root_var: KOALA_DOCUMENT_RUNTIME_MACOS_X64_ROOT
+            base_attestation_var: KOALA_DOCUMENT_RUNTIME_MACOS_X64_ATTESTATION
           - host: macos-26
             target: aarch64-apple-darwin
             platform_flag: --mac --arm64
             bun_install_flags: --os=darwin --cpu=arm64
-          # github-hosted: blacksmith lacks ARM64 MSVC cross-compilation toolchain
-          - host: "windows-2025"
+            runtime_root_var: KOALA_DOCUMENT_RUNTIME_MACOS_ARM64_ROOT
+            base_attestation_var: KOALA_DOCUMENT_RUNTIME_MACOS_ARM64_ATTESTATION
+          - host: [self-hosted, Windows, ARM64, koala-document-confinement]
             target: aarch64-pc-windows-msvc
             platform_flag: --win --arm64
+            runtime_root_var: KOALA_DOCUMENT_RUNTIME_WINDOWS_ARM64_ROOT
+            base_attestation_var: KOALA_DOCUMENT_RUNTIME_WINDOWS_ARM64_ATTESTATION
           - host: "blacksmith-4vcpu-windows-2025"
             target: x86_64-pc-windows-msvc
             platform_flag: --win
+            runtime_root_var: KOALA_DOCUMENT_RUNTIME_WINDOWS_X64_ROOT
+            base_attestation_var: KOALA_DOCUMENT_RUNTIME_WINDOWS_X64_ATTESTATION
           - host: "blacksmith-4vcpu-ubuntu-2404"
             target: x86_64-unknown-linux-gnu
             platform_flag: --linux
+            runtime_root_var: KOALA_DOCUMENT_RUNTIME_LINUX_X64_ROOT
+            base_attestation_var: KOALA_DOCUMENT_RUNTIME_LINUX_X64_ATTESTATION
           - host: "blacksmith-4vcpu-ubuntu-2404-arm"
             target: aarch64-unknown-linux-gnu
             platform_flag: --linux --arm64
+            runtime_root_var: KOALA_DOCUMENT_RUNTIME_LINUX_ARM64_ROOT
+            base_attestation_var: KOALA_DOCUMENT_RUNTIME_LINUX_ARM64_ATTESTATION
     runs-on: ${{ matrix.settings.host }}
+    env:
+      RUST_TARGET: ${{ matrix.settings.target }}
+      KOALA_REQUIRE_DOCUMENT_CONFINEMENT: "1"
+      OPENCODE_VERSION: ${{ needs.version.outputs.version }}
+      GITHUB_SHA: ${{ github.sha }}
+      KOALA_DOCUMENT_CONFINEMENT_BUILD_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.settings.target }}
+      KOALA_DOCUMENT_RUNTIME_RELEASE_ROOT: ${{ vars[matrix.settings.runtime_root_var] }}
+      KOALA_DOCUMENT_RUNTIME_BASE_ATTESTATION: ${{ vars[matrix.settings.base_attestation_var] }}
+      KOALA_DOCUMENT_RUNTIME_PROXY_ASSETS_ROOT: ${{ github.workspace }}/packages/opencode/dist/node/sandbox-runtime
+      KOALA_DOCUMENT_CONFINEMENT_STAGING_PARENT: ${{ runner.temp }}
+      KOALA_DOCUMENT_CONFINEMENT_RESOURCES_ROOT: ${{ runner.temp }}/koala-document-confinement-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+      KOALA_DOCUMENT_RUNTIME_STAGING_PARENT: ${{ runner.temp }}/koala-document-final-parent-${{ github.run_id }}-${{ github.run_attempt }}
+      KOALA_DOCUMENT_RUNTIME_STAGING_ROOT: ${{ runner.temp }}/koala-document-final-parent-${{ github.run_id }}-${{ github.run_attempt }}/resources
+      KOALA_DOCUMENT_CONFINEMENT_NATIVE_REPORT: ${{ runner.temp }}/koala-document-confinement-candidate-${{ github.run_id }}-${{ github.run_attempt }}/document-confinement-evidence/native-report.json
+      KOALA_DOCUMENT_CONFINEMENT_SMOKE_REPORT: ${{ runner.temp }}/koala-document-confinement-candidate-${{ github.run_id }}-${{ github.run_attempt }}/document-confinement-evidence/smoke-report.json
+      KOALA_DOCUMENT_CONFINEMENT_INVENTORY: ${{ runner.temp }}/koala-document-confinement-candidate-${{ github.run_id }}-${{ github.run_attempt }}/document-confinement-evidence/signed-file-inventory.json
+      KOALA_DOCUMENT_CONFINEMENT_REQUEST: ${{ runner.temp }}/koala-document-confinement/issuance-request.json
+      KOALA_DOCUMENT_CONFINEMENT_ISSUER: ${{ vars.KOALA_DOCUMENT_CONFINEMENT_ISSUER }}
+      KOALA_DOCUMENT_CONFINEMENT_ISSUER_PUBLIC_KEY: ${{ vars.KOALA_DOCUMENT_CONFINEMENT_ISSUER_PUBLIC_KEY }}
+      KOALA_DOCUMENT_CONFINEMENT_SIGNING_REPORTER: ${{ vars.KOALA_DOCUMENT_CONFINEMENT_SIGNING_REPORTER }}
+      KOALA_DOCUMENT_CONFINEMENT_DEPENDENCY_REPORTER: ${{ vars.KOALA_DOCUMENT_CONFINEMENT_DEPENDENCY_REPORTER }}
+      KOALA_DOCUMENT_CONFINEMENT_INSTALLER_VERIFIER: ${{ vars.KOALA_DOCUMENT_CONFINEMENT_INSTALLER_VERIFIER }}
     steps:
       - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
 
       - uses: apple-actions/import-codesign-certs@8f3fb608891dd2244cdab3d69cd68c0d37a7fe93 # v2.0.0
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && needs.version.outputs.release != ''
         with:
           keychain: build
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
       - name: Setup Apple API Key
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && needs.version.outputs.release != ''
         run: echo "${{ secrets.APPLE_API_KEY_PATH }}" > $RUNNER_TEMP/apple-api-key.p8
 
       - uses: ./.github/actions/setup-bun
@@ -274,7 +307,7 @@ jobs:
           install-flags: ${{ matrix.settings.bun_install_flags }}
 
       - name: Azure login
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && needs.version.outputs.release != ''
         uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
         with:
           client-id: ${{ env.AZURE_CLIENT_ID }}
@@ -299,7 +332,7 @@ jobs:
         run: |
           mkdir -p ~/apt-cache && chmod -R a+rw ~/apt-cache
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends -o dir::cache::archives="$HOME/apt-cache" rpm
+          sudo apt-get install -y --no-install-recommends -o dir::cache::archives="$HOME/apt-cache" rpm bubblewrap socat ripgrep
           sudo chmod -R a+rw ~/apt-cache
 
       - name: Setup git committer
@@ -309,12 +342,100 @@ jobs:
           opencode-app-id: ${{ vars.OPENCODE_APP_ID }}
           opencode-app-secret: ${{ secrets.OPENCODE_APP_SECRET }}
 
-      - name: Prepare
-        run: bun ./scripts/prepare.ts
+      - name: Require target-native document confinement host
+        if: needs.version.outputs.release != ''
+        working-directory: packages/desktop
+        run: bun ./scripts/document-runtime-evidence.ts check-host
+
+      - name: Build target sandbox proxy and assets
+        if: needs.version.outputs.release != ''
+        working-directory: packages/opencode
+        run: bun run script/build-node.ts
+
+      - name: Stage fresh candidate document resources
+        if: needs.version.outputs.release != ''
+        working-directory: packages/desktop
+        run: bun ./scripts/document-runtime-evidence.ts stage
+
+      - name: Generate candidate signed-file inventory
+        if: needs.version.outputs.release != ''
+        working-directory: packages/desktop
+        run: bun ./scripts/document-runtime-evidence.ts inventory
+
+      - name: Run required native document confinement suite
+        if: needs.version.outputs.release != ''
+        working-directory: packages/opencode
+        run: bun test test/document/confinement-native.test.ts --timeout 120000
+
+      - name: Generate candidate signing and dependency reports
+        if: needs.version.outputs.release != ''
+        working-directory: packages/desktop
+        run: bun ./scripts/document-runtime-evidence.ts external-reports
+
+      - name: Build candidate Desktop application
+        if: needs.version.outputs.release != ''
+        working-directory: packages/desktop
+        run: bun run build
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          OPENCODE_CHANNEL: ${{ (github.ref_name == 'beta' && 'beta') || 'prod' }}
+          KOALA_DOCUMENT_CONFINEMENT_CANDIDATE: "1"
+
+      - name: Package non-publishable confinement candidate
+        if: needs.version.outputs.release != ''
+        working-directory: packages/desktop
+        timeout-minutes: 60
+        run: npx electron-builder ${{ matrix.settings.platform_flag }} --publish never --config electron-builder.config.ts
+        env:
+          OPENCODE_CHANNEL: ${{ (github.ref_name == 'beta' && 'beta') || 'prod' }}
+          KOALA_DOCUMENT_CONFINEMENT_CANDIDATE: "1"
+          GH_TOKEN: ${{ steps.committer.outputs.token }}
+          CSC_KEYCHAIN: build.keychain
+          APPLE_API_KEY: ${{ runner.temp }}/apple-api-key.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+
+      - name: Run installed candidate document smoke
+        if: needs.version.outputs.release != ''
+        working-directory: packages/desktop
+        env:
+          KOALA_DOCUMENT_CONFINEMENT_PACKAGE_DIR: ${{ github.workspace }}/packages/desktop/dist-candidate
+        run: bun ./scripts/document-runtime-smoke.ts
+
+      - name: Build deterministic confinement issuance request
+        if: needs.version.outputs.release != ''
+        working-directory: packages/desktop
+        run: bun ./scripts/document-runtime-evidence.ts request
+
+      - name: Issue confinement evidence through trusted external issuer
+        if: needs.version.outputs.release != ''
+        working-directory: packages/desktop
+        run: bun ./scripts/document-runtime-evidence.ts issue
+
+      - name: Verify independently issued confinement evidence
+        if: needs.version.outputs.release != ''
+        working-directory: packages/desktop
+        run: bun ./scripts/document-runtime-evidence.ts verify
+
+      - name: Prepare release resources
+        if: needs.version.outputs.release != ''
+        run: |
+          bun -e "const { mkdir } = await import('node:fs/promises'); await mkdir(process.env.KOALA_DOCUMENT_RUNTIME_STAGING_PARENT)"
+          bun ./scripts/prepare.ts
         working-directory: packages/desktop
         env:
           OPENCODE_VERSION: ${{ needs.version.outputs.version }}
           OPENCODE_CHANNEL: ${{ (github.ref_name == 'beta' && 'beta') || 'prod' }}
+          OPENCODE_RELEASE: ${{ needs.version.outputs.release }}
+          RUST_TARGET: ${{ matrix.settings.target }}
+
+      - name: Prepare non-release fail-closed build
+        if: needs.version.outputs.release == ''
+        run: bun ./scripts/prepare.ts
+        working-directory: packages/desktop
+        env:
+          OPENCODE_VERSION: ${{ needs.version.outputs.version }}
+          OPENCODE_CHANNEL: dev
           RUST_TARGET: ${{ matrix.settings.target }}
 
       - name: Build
@@ -323,7 +444,7 @@ jobs:
         env:
           NODE_OPTIONS: --max-old-space-size=4096
           OPENCODE_VERSION: ${{ needs.version.outputs.version }}
-          OPENCODE_CHANNEL: ${{ (github.ref_name == 'beta' && 'beta') || 'prod' }}
+          OPENCODE_CHANNEL: ${{ (needs.version.outputs.release != '' && github.ref_name == 'beta' && 'beta') || (needs.version.outputs.release != '' && 'prod') || 'dev' }}
           RUST_TARGET: ${{ matrix.settings.target }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ vars.SENTRY_ORG }}
@@ -340,6 +461,7 @@ jobs:
         timeout-minutes: 60
         env:
           OPENCODE_CHANNEL: ${{ (github.ref_name == 'beta' && 'beta') || 'prod' }}
+          OPENCODE_RELEASE: ${{ needs.version.outputs.release }}
           RUST_TARGET: ${{ matrix.settings.target }}
           GH_TOKEN: ${{ steps.committer.outputs.token }}
           CSC_KEYCHAIN: build.keychain
@@ -353,8 +475,26 @@ jobs:
         working-directory: packages/desktop
         timeout-minutes: 60
         env:
-          OPENCODE_CHANNEL: ${{ (github.ref_name == 'beta' && 'beta') || 'prod' }}
+          OPENCODE_CHANNEL: dev
           RUST_TARGET: ${{ matrix.settings.target }}
+
+      - name: Install, inspect, and smoke final release artifact
+        if: needs.version.outputs.release != ''
+        working-directory: packages/desktop
+        env:
+          KOALA_DOCUMENT_CONFINEMENT_PACKAGE_DIR: ${{ github.workspace }}/packages/desktop/dist
+          KOALA_DOCUMENT_CONFINEMENT_SMOKE_REPORT: ${{ runner.temp }}/koala-document-confinement/final-smoke-report.json
+          KOALA_DOCUMENT_CONFINEMENT_VERIFY_INSTALLED: "1"
+        run: bun ./scripts/document-runtime-smoke.ts
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: needs.version.outputs.release != ''
+        with:
+          name: document-confinement-evidence-${{ matrix.settings.target }}
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/koala-document-confinement/*.json
+            ${{ runner.temp }}/koala-document-confinement-candidate-${{ github.run_id }}-${{ github.run_attempt }}/document-confinement-evidence/*
 
       - name: Create macOS .app.tar.gz
         if: runner.os == 'macOS' && needs.version.outputs.release
@@ -378,7 +518,7 @@ jobs:
           tar -czf "$OUT_NAME" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
 
       - name: Verify signed Windows Electron artifacts
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && needs.version.outputs.release != ''
         shell: pwsh
         run: |
           $files = @()

@@ -1,16 +1,13 @@
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import { cp, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import {
-  prepareReleaseDocumentRuntime,
-  verifyPreparedReleaseDocumentRuntime,
-  verifyPreparedSandboxRuntime,
-} from "./document-runtime"
-import { productionRuntimeFixture } from "../test/fixture/document-runtime"
+import { prepareReleaseDocumentRuntime, verifyPreparedReleaseDocumentRuntime, verifyPreparedSandboxRuntime } from "./document-runtime"
+import { confinementEvidenceFixture, productionRuntimeFixture } from "../test/fixture/document-runtime"
 
 const roots: string[] = []
 const target = "x86_64-pc-windows-msvc" as const
+const release = { version: "1.2.3", sourceCommit: "a".repeat(40), buildID: "test-build-1" } as const
 const sandboxRuntime = await verifyPreparedSandboxRuntime({ RUST_TARGET: target })
 
 afterAll(async () => {
@@ -18,256 +15,121 @@ afterAll(async () => {
 })
 
 describe("release document runtime staging", () => {
-  test("stages and re-verifies a release-ready runtime", async () => {
+  test("copies a verified resource tree into one fresh owned staging child and re-verifies it", async () => {
     const root = await temporaryDirectory()
-    const source = path.join(root, "source")
-    const destination = path.join(root, "staged")
-    const attestation = path.join(root, "runtime.verified.json")
-    const trustedAttestation = path.join(root, "trusted-attestation.json")
-    await trustedRuntimeFixture(source, trustedAttestation)
-
+    const source = await sourceResources(root)
+    const parent = await canonicalChild(root, "staging-parent")
+    const destination = path.join(parent, "release-resources")
     const prepared = await prepareReleaseDocumentRuntime({
-      source,
-      trustedAttestation,
-      destination,
-      attestation,
+      sourceResourcesRoot: source,
+      stagingParent: parent,
+      stagingRoot: destination,
       environment: { RUST_TARGET: target },
-      probe: async () => ({ performed: true }),
+      release,
     })
-    expect(prepared).toEqual({
-      root: await realpath(destination),
-      manifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
-      target,
-      probe: { performed: true },
-    })
+    expect(prepared.resourcesRoot).toBe(await realpath(destination))
+    expect(prepared.root).toBe(path.join(prepared.resourcesRoot, "document-runtime"))
+    expect(prepared.evidenceRoot).toBe(path.join(prepared.resourcesRoot, "document-confinement-evidence"))
     await expect(
-      verifyPreparedReleaseDocumentRuntime({ root: destination, attestation, environment: { RUST_TARGET: target } }),
-    ).resolves.toEqual({ root: prepared.root, manifestSha256: prepared.manifestSha256, target })
-    await expect(
-      verifyPreparedReleaseDocumentRuntime({
-        root: destination,
-        attestation,
-        environment: { RUST_TARGET: "aarch64-pc-windows-msvc" },
-      }),
-    ).rejects.toThrow("Prepared document runtime target does not match RUST_TARGET")
-
-    await writeFile(path.join(destination, "worker", "worker.js"), "changed")
-    await expect(
-      verifyPreparedReleaseDocumentRuntime({ root: destination, attestation, environment: { RUST_TARGET: target } }),
-    ).rejects.toEqual(expect.objectContaining({ code: "file-mismatch" }))
+      verifyPreparedReleaseDocumentRuntime({ stagingRoot: destination, environment: { RUST_TARGET: target }, release }),
+    ).resolves.toEqual(prepared)
   })
 
-  test("does not stage an incomplete release runtime", async () => {
+  test("rejects an existing destination without deleting it", async () => {
     const root = await temporaryDirectory()
-    const source = path.join(root, "source")
-    const destination = path.join(root, "staged")
-    const attestation = path.join(root, "runtime.verified.json")
-    const trustedAttestation = path.join(root, "trusted-attestation.json")
-    await trustedRuntimeFixture(source, trustedAttestation, false)
-
+    const source = await sourceResources(root)
+    const parent = await canonicalChild(root, "staging-parent")
+    const destination = path.join(parent, "existing")
+    await mkdir(destination)
+    await writeFile(path.join(destination, "canary"), "owned elsewhere")
     await expect(
       prepareReleaseDocumentRuntime({
-        source,
-        trustedAttestation,
-        destination,
-        attestation,
+        sourceResourcesRoot: source,
+        stagingParent: parent,
+        stagingRoot: destination,
         environment: { RUST_TARGET: target },
-        probe: async () => ({ performed: true }),
+        release,
       }),
-    ).rejects.toEqual(expect.objectContaining({ code: "release-incomplete" }))
-    expect(await Bun.file(attestation).exists()).toBe(false)
+    ).rejects.toThrow("must be fresh")
+    expect(await Bun.file(path.join(destination, "canary")).text()).toBe("owned elsewhere")
   })
 
-  test("requires explicit RUST_TARGET and rejects stale target attestations", async () => {
+  test("rejects non-child and overlapping staging roots before deletion or creation", async () => {
     const root = await temporaryDirectory()
-    const source = path.join(root, "source")
-    const trustedAttestation = path.join(root, "trusted-attestation.json")
-    await trustedRuntimeFixture(source, trustedAttestation)
+    const source = await sourceResources(root)
+    const parent = await canonicalChild(root, "staging-parent")
     await expect(
       prepareReleaseDocumentRuntime({
-        source,
-        trustedAttestation,
-        destination: path.join(root, "staged"),
-        attestation: path.join(root, "staged-attestation.json"),
-        environment: {},
-        probe: async () => ({ performed: true }),
+        sourceResourcesRoot: source,
+        stagingParent: parent,
+        stagingRoot: path.join(root, "not-a-child"),
+        environment: { RUST_TARGET: target },
+        release,
       }),
-    ).rejects.toThrow("RUST_TARGET must identify a supported document runtime target")
+    ).rejects.toThrow("direct child")
     await expect(
       prepareReleaseDocumentRuntime({
-        source,
-        trustedAttestation,
-        destination: path.join(root, "staged"),
-        attestation: path.join(root, "staged-attestation.json"),
-        environment: { RUST_TARGET: "aarch64-pc-windows-msvc" },
-        probe: async () => ({ performed: true }),
+        sourceResourcesRoot: source,
+        stagingParent: source,
+        stagingRoot: path.join(source, "nested"),
+        environment: { RUST_TARGET: target },
+        release,
       }),
-    ).rejects.toThrow("Document runtime attestation target does not match RUST_TARGET")
+    ).rejects.toThrow("overlap")
+    expect(await Bun.file(path.join(source, "document-runtime", "manifest.json")).exists()).toBe(true)
   })
 
-  test("cleans stale staged runtime, attestation, and temporary outputs before validation", async () => {
+  test("rejects modified signed evidence before creating staging", async () => {
     const root = await temporaryDirectory()
-    const source = path.join(root, "source")
-    const destination = path.join(root, "staged")
-    const attestation = path.join(root, "staged-attestation.json")
-    const trustedAttestation = path.join(root, "trusted-attestation.json")
-    await trustedRuntimeFixture(source, trustedAttestation)
-    await mkdir(path.join(destination, "worker"), { recursive: true })
-    await writeFile(path.join(destination, "worker", "bootstrap.js"), "stale")
-    await writeFile(attestation, "stale-digest")
-    await mkdir(`${destination}.tmp-stale`, { recursive: true })
-    await writeFile(`${attestation}.tmp-stale`, "stale-attestation")
-
+    const source = await sourceResources(root)
+    const parent = await canonicalChild(root, "staging-parent")
+    const evidence = path.join(source, "document-confinement-evidence", "evidence.json")
+    const value = await Bun.file(evidence).json()
+    value.signature = Buffer.alloc(64, 9).toString("base64")
+    await writeFile(evidence, JSON.stringify(value))
+    const destination = path.join(parent, "release-resources")
     await expect(
       prepareReleaseDocumentRuntime({
-        source,
-        trustedAttestation,
-        destination,
-        attestation,
-        environment: { RUST_TARGET: "aarch64-pc-windows-msvc" },
-        probe: async () => ({ performed: true }),
+        sourceResourcesRoot: source,
+        stagingParent: parent,
+        stagingRoot: destination,
+        environment: { RUST_TARGET: target },
+        release,
       }),
-    ).rejects.toThrow("Document runtime attestation target does not match RUST_TARGET")
+    ).rejects.toThrow("signature")
     expect(await Bun.file(destination).exists()).toBe(false)
-    expect(await Bun.file(attestation).exists()).toBe(false)
-    expect(await Bun.file(`${destination}.tmp-stale`).exists()).toBe(false)
-    expect(await Bun.file(`${attestation}.tmp-stale`).exists()).toBe(false)
   })
 
-  test("rejects overlapping source and staging roots without deleting the source", async () => {
+  test("rejects a staging root without its ownership marker", async () => {
     const root = await temporaryDirectory()
-    const source = path.join(root, "source")
-    const trustedAttestation = path.join(root, "trusted-attestation.json")
-    await productionRuntimeFixture(source, target, trustedAttestation)
-
+    const destination = await canonicalChild(root, "unowned")
     await expect(
-      prepareReleaseDocumentRuntime({
-        source,
-        trustedAttestation,
-        destination: source,
-        attestation: path.join(root, "staged-attestation.json"),
-        environment: { RUST_TARGET: target },
-        probe: async () => ({ performed: true }),
-      }),
-    ).rejects.toThrow("Source and staged document runtimes must not overlap")
-    expect(await Bun.file(path.join(source, "manifest.json")).exists()).toBe(true)
-  })
-
-  test("requires the trust input outside the runtime and publishes nothing when the offline probe fails", async () => {
-    const root = await temporaryDirectory()
-    const source = path.join(root, "source")
-    const nestedAttestation = path.join(source, "trusted-attestation.json")
-    await trustedRuntimeFixture(source, nestedAttestation)
-    await expect(
-      prepareReleaseDocumentRuntime({
-        source,
-        trustedAttestation: nestedAttestation,
-        destination: path.join(root, "staged"),
-        attestation: path.join(root, "staged-attestation.json"),
-        environment: { RUST_TARGET: target },
-        probe: async () => ({ performed: true }),
-      }),
-    ).rejects.toThrow("Trusted document runtime attestation must be outside the runtime root")
-
-    await rm(nestedAttestation)
-    const trustedAttestation = path.join(root, "trusted-attestation.json")
-    await trustedRuntimeFixture(source, trustedAttestation)
-    const stagedAttestation = path.join(root, "staged-attestation.json")
-    await expect(
-      prepareReleaseDocumentRuntime({
-        source,
-        trustedAttestation,
-        destination: path.join(root, "staged"),
-        attestation: stagedAttestation,
-        environment: { RUST_TARGET: target },
-        probe: async () => {
-          throw new Error("offline probe failed")
-        },
-      }),
-    ).rejects.toThrow("offline probe failed")
-    expect(await Bun.file(stagedAttestation).exists()).toBe(false)
-  })
-
-  test("requires digest-bound target-native smoke evidence when a local cross-target probe cannot run", async () => {
-    const root = await temporaryDirectory()
-    const source = path.join(root, "source")
-    const trustedAttestation = path.join(root, "trusted-attestation.json")
-    const destination = path.join(root, "staged")
-    const stagedAttestation = path.join(root, "staged-attestation.json")
-    await trustedRuntimeFixture(source, trustedAttestation)
-
-    await expect(
-      prepareReleaseDocumentRuntime({
-        source,
-        trustedAttestation,
-        destination,
-        attestation: stagedAttestation,
-        environment: { RUST_TARGET: target },
-        probe: async () => ({ performed: false, reason: "cross-target" }),
-      }),
-    ).rejects.toThrow("Cross-target document runtime staging requires attested target-native smoke evidence")
-
-    await trustedRuntimeFixture(source, trustedAttestation, true, true)
-    await expect(
-      prepareReleaseDocumentRuntime({
-        source,
-        trustedAttestation,
-        destination,
-        attestation: stagedAttestation,
-        environment: { RUST_TARGET: target },
-        probe: async () => ({ performed: false, reason: "cross-target" }),
-      }),
-    ).resolves.toEqual(expect.objectContaining({ probe: { performed: false, reason: "cross-target" } }))
-  })
-
-  test("rejects missing or mismatched confinement evidence before staging", async () => {
-    const root = await temporaryDirectory()
-    const source = path.join(root, "source")
-    const trustedAttestation = path.join(root, "trusted-attestation.json")
-    const destination = path.join(root, "staged")
-    const attestation = path.join(root, "staged-attestation.json")
-    await productionRuntimeFixture(source, target, trustedAttestation)
-    await expect(
-      prepareReleaseDocumentRuntime({
-        source,
-        trustedAttestation,
-        destination,
-        attestation,
-        environment: { RUST_TARGET: target },
-        sandboxRuntime,
-        probe: async () => ({ performed: true }),
-      }),
-    ).rejects.toThrow("Document confinement evidence is missing or does not match packaged resources")
-    expect(await Bun.file(destination).exists()).toBe(false)
-
-    await trustedRuntimeFixture(source, trustedAttestation)
-    const evidence = await Bun.file(trustedAttestation).json()
-    evidence.confinementEvidence.sandboxRuntimeManifestSha256 = "0".repeat(64)
-    await writeFile(trustedAttestation, JSON.stringify(evidence))
-    await expect(
-      prepareReleaseDocumentRuntime({
-        source,
-        trustedAttestation,
-        destination,
-        attestation,
-        environment: { RUST_TARGET: target },
-        sandboxRuntime,
-        probe: async () => ({ performed: true }),
-      }),
-    ).rejects.toThrow("Document confinement evidence is missing or does not match packaged resources")
-    expect(await Bun.file(attestation).exists()).toBe(false)
+      verifyPreparedReleaseDocumentRuntime({ stagingRoot: destination, environment: { RUST_TARGET: target }, release }),
+    ).rejects.toThrow()
   })
 })
+
+async function sourceResources(root: string) {
+  const resources = path.join(root, "candidate")
+  await mkdir(resources)
+  await cp(sandboxRuntime.root, path.join(resources, "sandbox-runtime"), { recursive: true })
+  await productionRuntimeFixture(
+    path.join(resources, "document-runtime"),
+    target,
+    path.join(resources, "document-runtime.attestation.json"),
+  )
+  await confinementEvidenceFixture(resources, target, sandboxRuntime, release)
+  return realpath(resources)
+}
+
+async function canonicalChild(root: string, name: string) {
+  const child = path.join(root, name)
+  await mkdir(child)
+  return realpath(child)
+}
 
 async function temporaryDirectory() {
   const root = await mkdtemp(path.join(os.tmpdir(), "desktop-release-runtime-"))
   roots.push(root)
-  return root
-}
-
-function trustedRuntimeFixture(root: string, attestation: string, releaseReady = true, smokeEvidence = false) {
-  return productionRuntimeFixture(root, target, attestation, releaseReady, smokeEvidence, {
-    proxySha256: sandboxRuntime.documentProxySha256,
-    sandboxRuntimeManifestSha256: sandboxRuntime.manifestSha256,
-  })
+  return realpath(root)
 }

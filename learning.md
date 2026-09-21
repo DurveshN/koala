@@ -305,6 +305,32 @@ work. It is not a substitute for the implementation plan or audit logs.
 - Final native-process and confinement-launcher reaping must be time-bounded.
   Missing exit confirmation is an explicit cleanup/runtime failure rather than
   an unbounded wait.
+- Native security tests need two explicit modes: an ordinary-development skip
+  and a release-required mode in which missing capability is a failure. An
+  environment Boolean can select the mode, but it is not evidence of a pass.
+- Hostile policy probes can replace only the bootstrap in a copied test runtime
+  with a newly hashed manifest. Real PDF rendering and bundled Tesseract OCR must
+  still run separately against the authentic attested runtime before a native
+  report is written.
+- Report digests are meaningful only across an issuer/verifier boundary. The
+  repository may deterministically construct an issuance subject and verify an
+  independently returned signed envelope; it must not manufacture production
+  evidence when signing infrastructure is absent.
+- A digest list is not an attestation. Evidence needs a canonical signed subject,
+  a pinned packaged public key identified from its DER bytes, strict typed report
+  decoding, and byte-for-byte verification of both the detached runtime
+  attestation and inventoried package resources.
+- Release smoke must begin with the distributable artifact. Direct access to an
+  unpacked build tree can test runtime behavior but cannot establish installer,
+  mount, extraction, package-signature, or final resource-layout properties.
+- Release staging should never recursively remove a caller-selected destination.
+  Create one absent direct child under an explicit canonical parent, record its
+  filesystem identity, and remove it on failure only while that identity still
+  matches.
+- Cross-compilation cannot satisfy a native confinement gate. In particular, a
+  Windows x64 host building ARM64 artifacts remains a target mismatch until an
+  ARM64 runner executes the policy, descendant, cleanup, and packaged smoke
+  probes.
 
 ## Verification Record
 

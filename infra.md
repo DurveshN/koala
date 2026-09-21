@@ -196,10 +196,10 @@ as JavaScript or delegating it to a shell or sandbox.
 
 ```text
 Desktop trusted resolver
-    -> detached release attestation + strict target profile
+    -> independently issued detached attestation + strict target profile
     -> OpenCode process-global coordinator (fixed max 2 jobs)
-        -> required native-confinement launcher
-            -> short-lived document worker
+        -> one short-lived document proxy and SRT singleton per job
+            -> native-confined document worker
             +-- PDF.js + target canvas: sequential 300-DPI pages
             +-- bundled Tesseract: bounded English TSV OCR
 ```
@@ -228,6 +228,36 @@ attestation must instead carry target-native render/OCR evidence bound to the
 same target and manifest digest. Process-tree and confinement-launcher shutdown
 have finite reap deadlines; failure to observe termination is a runtime cleanup
 failure.
+
+The Phase 7 release boundary uses a canonical version-3 subject inside a
+version-1 Ed25519 envelope. It binds the target, runtime manifest, exact detached
+attestation bytes, document proxy, sandbox-runtime manifest, SRT/policy versions,
+release version, source commit, build identity, native hostile-process report,
+installed smoke report, signing report, exact signed-file inventory, dependency
+report, and the SHA-256 key ID derived from the issuer SPKI DER key. The public
+key, release identity, reports, inventory, and envelope are signed package
+resources. Repository code verifies signatures but contains no private key or
+production issuer.
+
+The signed-file inventory covers the document runtime, sandbox runtime, issuer
+public key, and release-identity file. Reports and the envelope remain outside
+that inventory to avoid recursive digests, while their exact bytes are bound by
+the signed subject. The subject separately binds the complete detached runtime-
+attestation bytes.
+
+The publish matrix checks host operating system and architecture before native
+work. Windows ARM64 uses an ARM64 self-hosted runner label rather than the
+existing x64 cross-build host. Release jobs create a non-publishable candidate,
+install or mount it, run native and document smoke checks, obtain independently
+signed evidence, and only then create the final package. Final verification
+starts from the installer, DMG, or AppImage and has no checkout or unpacked-tree
+fallback. Non-release packages take a separate development path without release
+evidence and keep document execution unavailable.
+
+No target is enabled by this code. Windows remains closed because the code-owned
+loader inventory is empty and stock SRT `0.0.76` does not provide the required
+Job Object and ACL-reset evidence. The current development host also lacks the
+provisioned sandbox account/WFP state required to execute the Windows gate.
 
 ## Implemented Sandbox Infrastructure
 

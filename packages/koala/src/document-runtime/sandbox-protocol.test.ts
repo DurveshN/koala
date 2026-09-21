@@ -73,6 +73,7 @@ const launch = () => ({
   jobRootIdentity: { dev: "1", ino: "2" },
   pendingRoot: "/tmp/koala/pending-1",
   pendingRootIdentity: { dev: "1", ino: "3" },
+  receiptNonce: "a".repeat(64),
   start: render(),
 })
 
@@ -97,7 +98,7 @@ const outerEvent = (event: object) => ({
   event,
 })
 
-const accepted = () => ({ protocolVersion: 1 as const, type: "accepted" as const, jobID })
+const accepted = () => ({ protocolVersion: 1 as const, type: "accepted" as const, jobID, innerProcessID: 1234 })
 const cancel = () => ({ protocolVersion: 1 as const, type: "cancel" as const, jobID })
 const failure = (failureJobID: string | null = jobID) => ({
   protocolVersion: 1 as const,
@@ -107,10 +108,23 @@ const failure = (failureJobID: string | null = jobID) => ({
   stage: "sandbox" as const,
   retryable: false,
 })
-const closed = (closedJobID: string | null = jobID) => ({
+const closed = (
+  closedJobID: string | null = jobID,
+  initialized = true,
+  terminalCategory: "completed" | "cancelled" | "failure" | null = "completed",
+) => ({
   protocolVersion: 1 as const,
   type: "closed" as const,
   jobID: closedJobID,
+  receiptNonce: closedJobID === null ? null : "a".repeat(64),
+  receiptSha256: closedJobID === null ? null : manifestSha256,
+  terminalCategory: closedJobID === null ? null : terminalCategory,
+  treeContained: true,
+  managerInitialized: initialized,
+  cleanupCalls: initialized ? (1 as const) : (0 as const),
+  cleanupCompleted: initialized,
+  resetCalls: initialized ? (1 as const) : (0 as const),
+  resetCompleted: initialized,
 })
 
 describe("DocumentSandboxProtocol schemas", () => {
@@ -249,8 +263,43 @@ describe("DocumentSandboxProtocol schemas", () => {
     { ...failure(), stage: "cleanup" },
     { ...failure(), cause: "native stderr" },
     { ...closed(), path: "/private/job" },
+    { ...closed(), cleanupCalls: 0 },
+    { ...closed(), managerInitialized: false },
   ])("rejects invalid or open proxy event %#", (event) => {
     expect(() => DocumentSandboxProtocol.decodeProxyEvent(event)).toThrow()
+  })
+
+  test("distinguishes completed teardown from a valid pre-initialization closure", () => {
+    const completed = DocumentSandboxProtocol.decodeProxyEvent(closed())
+    const preInit = DocumentSandboxProtocol.decodeProxyEvent(closed(null, false))
+    if (completed.type !== "closed" || preInit.type !== "closed") throw new Error("missing closure")
+    expect(DocumentSandboxProtocol.teardownCompleted(completed)).toBe(true)
+    expect(DocumentSandboxProtocol.teardownCompleted(preInit)).toBe(false)
+    expect(
+      DocumentSandboxProtocol.decodeProxyEvent({
+        ...closed(),
+        treeContained: false,
+        cleanupCalls: 0,
+        cleanupCompleted: false,
+        resetCalls: 0,
+        resetCompleted: false,
+      }),
+    ).toEqual(expect.objectContaining({ treeContained: false, managerInitialized: true }))
+  })
+
+  test("requires every closure teardown property", () => {
+    for (const key of [
+      "treeContained",
+      "managerInitialized",
+      "cleanupCalls",
+      "cleanupCompleted",
+      "resetCalls",
+      "resetCompleted",
+    ]) {
+      const input = { ...closed() } as Record<string, unknown>
+      delete input[key]
+      expect(() => DocumentSandboxProtocol.decodeProxyEvent(input)).toThrow()
+    }
   })
 })
 
@@ -378,7 +427,7 @@ describe("DocumentSandboxProtocol lifecycle", () => {
     (failureJobID) => {
       const terminal = advance(launched(), proxy(failure(failureJobID)))
       expect(terminal.phase).toBe("terminal")
-      expect(advance(terminal, proxy(closed(failureJobID))).phase).toBe("closed")
+      expect(advance(terminal, proxy(closed(failureJobID, false, "failure"))).phase).toBe("closed")
     },
   )
 
@@ -387,19 +436,19 @@ describe("DocumentSandboxProtocol lifecycle", () => {
     expect(cancelling.order?.phase).toBe("cancelling")
     const acceptedState = advance(cancelling, proxy(accepted()))
     const terminal = advance(acceptedState, proxy(outerEvent({ protocolVersion: 1, type: "cancelled", jobID })))
-    expect(advance(terminal, proxy(closed())).phase).toBe("closed")
+    expect(advance(terminal, proxy(closed(jobID, true, "cancelled"))).phase).toBe("closed")
   })
 
   test("accepts cancellation after acceptance", () => {
     const cancelling = advance(active(), parent(cancel()))
     expect(cancelling.order?.phase).toBe("cancelling")
     const terminal = advance(cancelling, proxy(outerEvent({ protocolVersion: 1, type: "cancelled", jobID })))
-    expect(advance(terminal, proxy(closed())).phase).toBe("closed")
+    expect(advance(terminal, proxy(closed(jobID, true, "cancelled"))).phase).toBe("closed")
   })
 
   test("accepts a proxy failure after acceptance only with the launch job", () => {
     const terminal = advance(active(), proxy(failure()))
-    expect(advance(terminal, proxy(closed())).phase).toBe("closed")
+    expect(advance(terminal, proxy(closed(jobID, true, "failure"))).phase).toBe("closed")
     expect(DocumentSandboxProtocol.advanceLifecycle(active(), proxy(failure(null)))).toEqual({
       ok: false,
       code: "job-mismatch",
@@ -465,7 +514,7 @@ describe("DocumentSandboxProtocol lifecycle", () => {
       code: "invalid-order",
     })
 
-    const finished = advance(terminal, proxy(closed()))
+    const finished = advance(terminal, proxy(closed(jobID, true, "failure")))
     expect(DocumentSandboxProtocol.advanceLifecycle(finished, proxy(closed()))).toEqual({
       ok: false,
       code: "invalid-order",

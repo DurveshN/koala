@@ -74,6 +74,7 @@ export async function spawnLocalServer(
     resourcesPath: process.resourcesPath,
     moduleURL: import.meta.url,
     sandboxRuntime,
+    releaseVersion: app.isPackaged ? app.getVersion() : undefined,
   })
   const child = utilityProcess.fork(sidecar, [], {
     cwd: process.cwd(),

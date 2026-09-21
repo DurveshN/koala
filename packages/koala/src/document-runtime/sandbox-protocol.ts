@@ -30,6 +30,10 @@ export const FilesystemIdentity = Schema.Struct({
   ino: FilesystemIdentityComponent,
 })
 export type FilesystemIdentity = typeof FilesystemIdentity.Type
+export const ReceiptNonce = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)).pipe(
+  Schema.brand("DocumentSandboxProtocol.ReceiptNonce"),
+)
+export type ReceiptNonce = typeof ReceiptNonce.Type
 
 export const LaunchRequest = Schema.Struct({
   protocolVersion: ProtocolVersion,
@@ -45,6 +49,7 @@ export const LaunchRequest = Schema.Struct({
   jobRootIdentity: FilesystemIdentity,
   pendingRoot: AbsolutePath,
   pendingRootIdentity: FilesystemIdentity,
+  receiptNonce: ReceiptNonce,
   start: DocumentRuntimeProtocol.InitialRequest,
 }).check(
   Schema.makeFilter((request) =>
@@ -94,6 +99,7 @@ export const AcceptedEvent = Schema.Struct({
   protocolVersion: ProtocolVersion,
   type: Schema.Literal("accepted"),
   jobID: DocumentRuntimeProtocol.JobID,
+  innerProcessID: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(4_294_967_295)),
 })
 
 export const WorkerEvent = Schema.Struct({
@@ -145,11 +151,94 @@ export const FailureEvent = Schema.Struct({
   retryable: Schema.Boolean,
 })
 
+const teardownFields = {
+  treeContained: Schema.Boolean,
+  managerInitialized: Schema.Boolean,
+  cleanupCalls: Schema.Literals([0, 1]),
+  cleanupCompleted: Schema.Boolean,
+  resetCalls: Schema.Literals([0, 1]),
+  resetCompleted: Schema.Boolean,
+} as const
+
+export const TeardownReceiptPayload = Schema.Struct({
+  protocolVersion: ProtocolVersion,
+  type: Schema.Literal("teardown-receipt"),
+  jobID: DocumentRuntimeProtocol.JobID,
+  receiptNonce: ReceiptNonce,
+  terminalCategory: Schema.Literals(["completed", "cancelled", "failure"]),
+  ...teardownFields,
+})
+export type TeardownReceiptPayload = typeof TeardownReceiptPayload.Type
+
+export const TeardownReceipt = Schema.Struct({
+  ...TeardownReceiptPayload.fields,
+  receiptSha256: DocumentRuntimeManifest.Digest,
+})
+export type TeardownReceipt = typeof TeardownReceipt.Type
+
 export const ClosedEvent = Schema.Struct({
   protocolVersion: ProtocolVersion,
   type: Schema.Literal("closed"),
   jobID: Schema.NullOr(DocumentRuntimeProtocol.JobID),
-})
+  receiptNonce: Schema.NullOr(ReceiptNonce),
+  receiptSha256: Schema.NullOr(DocumentRuntimeManifest.Digest),
+  terminalCategory: Schema.NullOr(Schema.Literals(["completed", "cancelled", "failure"])),
+  ...teardownFields,
+}).check(
+  Schema.makeFilter((event) =>
+    event.jobID === null
+      ? event.receiptNonce === null && event.receiptSha256 === null && event.terminalCategory === null
+        ? undefined
+        : "Undecodable launches cannot publish a teardown receipt"
+      : event.receiptNonce !== null && event.receiptSha256 !== null && event.terminalCategory !== null
+        ? undefined
+        : "Decoded launches require a teardown receipt",
+  ),
+  Schema.makeFilter((event) =>
+    event.managerInitialized && event.treeContained
+      ? event.cleanupCalls === 1 && event.resetCalls === 1
+        ? undefined
+        : "Initialized sandbox closure requires exactly one cleanup and reset call"
+      : event.cleanupCalls === 0 &&
+          event.resetCalls === 0 &&
+          !event.cleanupCompleted &&
+          !event.resetCompleted
+        ? undefined
+        : "Closure without safe manager teardown requires zero cleanup and reset calls",
+  ),
+  Schema.makeFilter((event) =>
+    (!event.cleanupCompleted || event.cleanupCalls === 1) && (!event.resetCompleted || event.resetCalls === 1)
+      ? undefined
+      : "Completed teardown requires a matching call",
+  ),
+)
+
+export function teardownCompleted(event: typeof ClosedEvent.Type) {
+  return (
+    event.treeContained &&
+    event.managerInitialized &&
+    event.cleanupCalls === 1 &&
+    event.cleanupCompleted &&
+    event.resetCalls === 1 &&
+    event.resetCompleted
+  )
+}
+
+export function teardownReceiptPayload(input: TeardownReceiptPayload) {
+  return `${JSON.stringify({
+    protocolVersion: input.protocolVersion,
+    type: input.type,
+    jobID: input.jobID,
+    receiptNonce: input.receiptNonce,
+    terminalCategory: input.terminalCategory,
+    treeContained: input.treeContained,
+    managerInitialized: input.managerInitialized,
+    cleanupCalls: input.cleanupCalls,
+    cleanupCompleted: input.cleanupCompleted,
+    resetCalls: input.resetCalls,
+    resetCompleted: input.resetCompleted,
+  })}\n`
+}
 
 export const ProxyEvent = Schema.Union([AcceptedEvent, WorkerEvent, FailureEvent, ClosedEvent]).annotate({
   discriminator: "type",
@@ -171,6 +260,8 @@ export interface LifecycleState {
   readonly jobID?: DocumentRuntimeProtocol.JobID
   readonly order?: DocumentRuntimeProtocol.OrderState
   readonly terminalJobID?: DocumentRuntimeProtocol.JobID | null
+  readonly terminalCategory?: "completed" | "cancelled" | "failure"
+  readonly receiptNonce?: ReceiptNonce
   readonly cancelSent: boolean
 }
 
@@ -189,6 +280,7 @@ export function advanceLifecycle(state: LifecycleState, message: ParentRequest |
       phase: "awaiting-accepted",
       jobID: message.jobID,
       order: DocumentRuntimeProtocol.beginOrder(message.start),
+      receiptNonce: message.receiptNonce,
       cancelSent: false,
     })
   }
@@ -227,7 +319,13 @@ export function advanceLifecycle(state: LifecycleState, message: ParentRequest |
     if (!next.ok) return next
     return lifecycleSuccess(
       next.state.phase === "terminal"
-        ? { ...state, phase: "terminal", order: next.state, terminalJobID: state.jobID }
+        ? {
+            ...state,
+            phase: "terminal",
+            order: next.state,
+            terminalJobID: state.jobID,
+            terminalCategory: message.event.type === "completed" ? "completed" : message.event.type === "cancelled" ? "cancelled" : "failure",
+          }
         : { ...state, order: next.state },
     )
   }
@@ -237,11 +335,19 @@ export function advanceLifecycle(state: LifecycleState, message: ParentRequest |
       return { ok: false, code: "invalid-order" }
     }
     if (state.phase === "active" && message.jobID === null) return { ok: false, code: "job-mismatch" }
-    return lifecycleSuccess({ ...state, phase: "terminal", terminalJobID: message.jobID })
+    return lifecycleSuccess({ ...state, phase: "terminal", terminalJobID: message.jobID, terminalCategory: "failure" })
   }
 
   if (state.phase !== "terminal") return { ok: false, code: "invalid-order" }
   if (message.jobID !== state.terminalJobID) return { ok: false, code: "job-mismatch" }
+  if (
+    (state.terminalJobID === null
+      ? message.receiptNonce !== null || message.receiptSha256 !== null
+      : message.receiptNonce !== state.receiptNonce || message.receiptSha256 === null) ||
+    (state.terminalJobID !== null && message.terminalCategory !== state.terminalCategory)
+  ) {
+    return { ok: false, code: "invalid-order" }
+  }
   return lifecycleSuccess({ ...state, phase: "closed" })
 }
 

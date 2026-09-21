@@ -275,8 +275,8 @@ describe("document runtime proxy coordinator", () => {
     expect(await Bun.file(page.tsvPath).exists()).toBe(false)
   })
 
-  test("latches the process unhealthy after pending-root identity failure", async () => {
-    const identityFailure = await makeRuntime("root-identity-failure", true)
+  test("latches the process unhealthy after an incomplete proxy teardown receipt", async () => {
+    const identityFailure = await makeRuntime("incomplete-teardown", true)
     const error = await run(
       identityFailure.config,
       Effect.gen(function* () {

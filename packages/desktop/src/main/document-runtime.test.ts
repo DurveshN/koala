@@ -1,12 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test"
-import { createHash } from "node:crypto"
+import { createHash, generateKeyPairSync } from "node:crypto"
 import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { resolveDocumentRuntime } from "./document-runtime"
 import { resolveSandboxRuntime } from "./sandbox-runtime"
-import { productionRuntimeFixture } from "../../test/fixture/document-runtime"
+import { confinementEvidenceFixture, productionRuntimeFixture } from "../../test/fixture/document-runtime"
 
 const target = "x86_64-pc-windows-msvc" as const
 const roots: string[] = []
@@ -20,20 +20,17 @@ describe("document runtime resolution", () => {
     const resourcesPath = await temporaryDirectory()
     const runtime = path.join(resourcesPath, "document-runtime")
     const sandboxRuntime = await packagedSandboxFixture(resourcesPath)
-    await productionRuntimeFixture(
-      runtime,
-      target,
-      path.join(resourcesPath, "document-runtime.attestation.json"),
-      true,
-      false,
-      {
-        proxySha256: sandboxRuntime.documentProxySha256,
-        sandboxRuntimeManifestSha256: sandboxRuntime.manifestSha256,
-      },
+    await productionRuntimeFixture(runtime, target, path.join(resourcesPath, "document-runtime.attestation.json"))
+    const confinement = await confinementEvidenceFixture(resourcesPath, target, sandboxRuntime)
+    expect(confinement.keyID).toBe(
+      createHash("sha256")
+        .update(await Bun.file(path.join(resourcesPath, "document-confinement-evidence", "issuer-public-key.spki.der")).bytes())
+        .digest("hex"),
     )
 
     const resolved = await resolveDocumentRuntime({
       packaged: true,
+      releaseVersion: "1.2.3",
       resourcesPath,
       moduleURL: pathToFileURL(path.resolve("out/main/index.js")).href,
       environment: { KOALA_DOCUMENT_RUNTIME_OVERRIDE: "C:\\untrusted\\runtime" },
@@ -49,14 +46,10 @@ describe("document runtime resolution", () => {
       proxyPath: sandboxRuntime.documentProxyPath,
       proxyAssetsRoot: sandboxRuntime.root,
     })
-
-    const attestationPath = path.join(resourcesPath, "document-runtime.attestation.json")
-    const attestation = await Bun.file(attestationPath).json()
-    attestation.confinementEvidence.proxySha256 = "0".repeat(64)
-    await writeFile(attestationPath, JSON.stringify(attestation))
     expect(
       await resolveDocumentRuntime({
         packaged: true,
+        releaseVersion: "9.9.9",
         resourcesPath,
         moduleURL: pathToFileURL(path.resolve("out/main/index.js")).href,
         platform: "win32",
@@ -64,6 +57,23 @@ describe("document runtime resolution", () => {
         sandboxRuntime,
       }),
     ).toBeUndefined()
+
+    const evidencePath = path.join(resourcesPath, "document-confinement-evidence", "evidence.json")
+    const evidence = await Bun.file(evidencePath).json()
+    evidence.signature = Buffer.alloc(64, 1).toString("base64")
+    await writeFile(evidencePath, JSON.stringify(evidence))
+    expect(
+      await resolveDocumentRuntime({
+        packaged: true,
+        releaseVersion: "1.2.3",
+        resourcesPath,
+        moduleURL: pathToFileURL(path.resolve("out/main/index.js")).href,
+        platform: "win32",
+        architecture: "x64",
+        sandboxRuntime,
+      }),
+    ).toBeUndefined()
+
   })
 
   test("resolves the host-target build in development", async () => {
@@ -159,6 +169,7 @@ describe("document runtime resolution", () => {
     expect(
       await resolveDocumentRuntime({
         packaged: true,
+        releaseVersion: "1.2.3",
         resourcesPath,
         moduleURL: pathToFileURL(path.resolve("out/main/index.js")).href,
         platform: "win32",
@@ -179,6 +190,7 @@ describe("document runtime resolution", () => {
     expect(
       await resolveDocumentRuntime({
         packaged: true,
+        releaseVersion: "1.2.3",
         resourcesPath,
         moduleURL: pathToFileURL(path.resolve("out/main/index.js")).href,
         platform: "win32",
@@ -220,6 +232,7 @@ describe("document runtime resolution", () => {
     expect(
       await resolveDocumentRuntime({
         packaged: true,
+        releaseVersion: "1.2.3",
         resourcesPath,
         moduleURL: pathToFileURL(path.resolve("out/main/index.js")).href,
         platform: "win32",
@@ -229,6 +242,42 @@ describe("document runtime resolution", () => {
     ).toBeUndefined()
 
   })
+
+  test.each(["public-key", "attestation-bytes", "native-report"] as const)(
+    "rejects changed signed confinement resource %s",
+    async (mode) => {
+      const resourcesPath = await temporaryDirectory()
+      const runtime = path.join(resourcesPath, "document-runtime")
+      const attestation = path.join(resourcesPath, "document-runtime.attestation.json")
+      const sandboxRuntime = await packagedSandboxFixture(resourcesPath)
+      await productionRuntimeFixture(runtime, target, attestation)
+      await confinementEvidenceFixture(resourcesPath, target, sandboxRuntime)
+      if (mode === "public-key") {
+        await writeFile(
+          path.join(resourcesPath, "document-confinement-evidence", "issuer-public-key.spki.der"),
+          generateKeyPairSync("ed25519").publicKey.export({ format: "der", type: "spki" }),
+        )
+      }
+      if (mode === "attestation-bytes") await writeFile(attestation, `${await Bun.file(attestation).text()}\n`)
+      if (mode === "native-report") {
+        const report = path.join(resourcesPath, "document-confinement-evidence", "native-report.json")
+        const value = await Bun.file(report).json()
+        value.status = "skipped"
+        await writeFile(report, JSON.stringify(value))
+      }
+      expect(
+        await resolveDocumentRuntime({
+          packaged: true,
+          releaseVersion: "1.2.3",
+          resourcesPath,
+          moduleURL: pathToFileURL(path.resolve("out/main/index.js")).href,
+          platform: "win32",
+          architecture: "x64",
+          sandboxRuntime,
+        }),
+      ).toBeUndefined()
+    },
+  )
 })
 
 async function temporaryDirectory() {

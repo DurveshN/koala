@@ -11,7 +11,7 @@ import { DocumentSandboxProtocol } from "@koala-ai/core/document-runtime/sandbox
 import { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
 import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
 import { Context, Effect, Layer, Queue, Schema, Semaphore } from "effect"
-import { randomUUID } from "node:crypto"
+import { randomBytes, randomUUID } from "node:crypto"
 import { fork, type ChildProcess } from "node:child_process"
 import { constants } from "node:fs"
 import { lstat, mkdir, open, realpath, writeFile } from "node:fs/promises"
@@ -23,6 +23,7 @@ import { DocumentPendingOutput } from "./pending-output"
 import { DocumentPendingRoot } from "./pending-root"
 import { DocumentProcess } from "./process"
 import { DocumentSandboxPolicy } from "./sandbox-policy"
+import { DocumentTeardownReceipt } from "./teardown-receipt"
 
 const DiagnosticBytes = DocumentRuntimeLimits.MaxInnerStderrBytes
 const SignalCapacity = DocumentRuntimeLimits.MaxOuterPendingMessages
@@ -250,12 +251,15 @@ interface Session {
   diagnostics?: DocumentDiagnostics.Tracker
   cleanup?: () => void
   complete: boolean
+  accepted: boolean
+  innerProcessID?: number
   diagnosticBytes: number
   overflowed: boolean
   spawnAbsenceConfirmed: boolean
   shutdownDeadline?: number
   readonly outputIDs: Set<DocumentRuntimeProtocol.OutputID>
   readonly outputPaths: Set<DocumentRuntimeManifest.RelativePath>
+  readonly receiptNonce: DocumentSandboxProtocol.ReceiptNonce
 }
 
 type Signal =
@@ -421,6 +425,7 @@ function runProxy<A, E, R>(
           jobRootIdentity: DocumentPendingRoot.identityToWire(job.identity),
           pendingRoot: job.pending,
           pendingRootIdentity: DocumentPendingRoot.identityToWire(job.pendingIdentity),
+          receiptNonce: session.receiptNonce,
           start: request,
         }),
         Effect.andThen(expectAccepted(session), use(session, request)),
@@ -463,11 +468,13 @@ function spawnProxy(runtime: Runtime, job: DocumentJobRoot.Root, request: Docume
       job,
       channel: DocumentOuterChannel.make(),
       complete: false,
+      accepted: false,
       diagnosticBytes: 0,
       overflowed: false,
       spawnAbsenceConfirmed: false,
       outputIDs: new Set(),
       outputPaths: new Set(),
+      receiptNonce: DocumentSandboxProtocol.ReceiptNonce.make(randomBytes(32).toString("hex")),
     }
     const offer = (signal: Signal) => {
       if (Queue.offerUnsafe(queue, signal)) return
@@ -519,6 +526,8 @@ function expectAccepted(session: Session) {
     const message = yield* nextProxyMessage(session)
     if (message.type === "failure") return yield* proxyFailure(message)
     if (message.type !== "accepted") return yield* closureFailure()
+    session.accepted = true
+    session.innerProcessID = message.innerProcessID
   })
 }
 
@@ -749,10 +758,29 @@ function finishClosure(session: Session): Effect.Effect<void, RuntimeError> {
     }
     const closed = yield* nextProxyMessage(session)
     if (closed.type !== "closed") return yield* closureFailure()
+    if (
+      !closed.treeContained ||
+      (session.accepted
+        ? !DocumentSandboxProtocol.teardownCompleted(closed)
+        : closed.managerInitialized && !DocumentSandboxProtocol.teardownCompleted(closed))
+    ) {
+      unhealthy = true
+      return yield* closureFailure()
+    }
     const disconnected = yield* Queue.take(session.queue)
     if (session.overflowed || disconnected.type !== "disconnect") return yield* closureFailure()
     const exited = yield* Queue.take(session.queue)
     if (exited.type !== "exit" || exited.code !== 0 || exited.signal !== null) {
+      return yield* closureFailure()
+    }
+    const receipt = yield* pendingAttempt(() =>
+      DocumentTeardownReceipt.read(pendingEvidence(session.job), session.receiptNonce, closed.receiptSha256 ?? undefined),
+    )
+    if (
+      !DocumentTeardownReceipt.matchesClosed(receipt, closed) ||
+      receipt.terminalCategory !== session.channel.state.terminalCategory
+    ) {
+      unhealthy = true
       return yield* closureFailure()
     }
     const diagnostics = session.diagnostics
@@ -801,16 +829,37 @@ function stopProxy(session: Session, job: DocumentJobRoot.Root) {
       session.cleanup?.()
       return
     }
-    unhealthy = true
     const termination = yield* Effect.promise(() =>
       DocumentProcess.terminateProcessTree(session.child, {
         timeoutMs: Math.max(1, deadline - DeletionReserveMs - Date.now()),
         systemRoot: process.env.SystemRoot,
       }).catch(() => undefined),
     )
-    if (!session.spawnAbsenceConfirmed && termination?.status !== "exited") unsafeJobRoots.add(job.path)
+    const innerProcessID = session.innerProcessID
+    const innerContained = innerProcessID
+      ? yield* Effect.promise(() => DocumentProcess.terminateProcessGroup(innerProcessID, Math.max(1, deadline - Date.now())))
+      : session.spawnAbsenceConfirmed
+    if (!session.spawnAbsenceConfirmed && termination?.status !== "exited") {
+      unhealthy = true
+      unsafeJobRoots.add(job.path)
+      session.cleanup?.()
+      return yield* closureFailure()
+    }
+    if (!innerContained) unhealthy = true
+    const reconciled = yield* pendingAttempt(() =>
+      DocumentTeardownReceipt.read(pendingEvidence(job), session.receiptNonce),
+    ).pipe(
+      Effect.map(
+        (receipt) =>
+          receipt.jobID === session.request.jobID &&
+          receipt.terminalCategory === "failure" &&
+          DocumentSandboxProtocol.teardownCompleted(receipt),
+      ),
+      Effect.catch(() => Effect.succeed(false)),
+    )
+    if (!reconciled || !innerContained) unhealthy = true
     session.cleanup?.()
-    return yield* closureFailure()
+    if (!reconciled || !innerContained) return yield* closureFailure()
   })
 }
 

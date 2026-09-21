@@ -94,7 +94,7 @@ export async function loadTrustedAttestation(file: string) {
   const bytes = await readFile(file).catch(() => undefined)
   if (!bytes || bytes.byteLength !== info.size) throw new ManifestVerificationError("invalid-attestation")
   try {
-    return decodeAttestation(JSON.parse(bytes.toString("utf8")))
+    return decodeAttestation(JSON.parse(bytes.toString("utf8")), { onExcessProperty: "error" })
   } catch {
     throw new ManifestVerificationError("invalid-attestation")
   }

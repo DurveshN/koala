@@ -8,6 +8,7 @@ let page
 let pagePath
 let tsvPath
 let terminal = false
+let terminalCategory = "completed"
 let sending = Promise.resolve()
 
 process.on("message", (message) => {
@@ -20,7 +21,7 @@ async function handle(message) {
     launch = message
     mode = JSON.parse(await readFile(path.join(message.runtimeRoot, "manifest.json"), "utf8")).components[0]
       .sourceRevision
-    await send({ protocolVersion: 1, type: "accepted", jobID: launch.jobID })
+    await send({ protocolVersion: 1, type: "accepted", jobID: launch.jobID, innerProcessID: process.pid })
     if (mode === "reset-failure") return fail("reset-failed", "reset")
     if (mode === "root-identity-failure") return fail("root-identity-failed", "worker")
     if (mode === "parser-failure") {
@@ -76,6 +77,7 @@ async function handle(message) {
   if (message.type === "cancel") {
     await event({ protocolVersion: 1, type: "cancelled", jobID: launch.jobID })
     terminal = true
+    terminalCategory = "cancelled"
     return close()
   }
   if (message.type !== "command") return fail("protocol-mismatch", "transport")
@@ -158,12 +160,46 @@ function event(value) {
 async function fail(code, stage) {
   if (terminal) return
   terminal = true
+  terminalCategory = "failure"
   await send({ protocolVersion: 1, type: "failure", jobID: launch?.jobID ?? null, code, stage, retryable: false })
   await close()
 }
 
 async function close() {
-  await send({ protocolVersion: 1, type: "closed", jobID: launch?.jobID ?? null })
+  const teardownComplete = mode !== "incomplete-teardown"
+  const payload = {
+    protocolVersion: 1,
+    type: "teardown-receipt",
+    jobID: launch.jobID,
+    receiptNonce: launch.receiptNonce,
+    terminalCategory,
+    treeContained: true,
+    managerInitialized: true,
+    cleanupCalls: 1,
+    cleanupCompleted: teardownComplete,
+    resetCalls: 1,
+    resetCompleted: teardownComplete,
+  }
+  const receiptSha256 = createHash("sha256").update(`${JSON.stringify(payload)}\n`).digest("hex")
+  await writeFile(
+    path.join(launch.pendingRoot, `.teardown-receipt-${launch.receiptNonce}.json`),
+    `${JSON.stringify({ ...payload, receiptSha256 })}\n`,
+    { flag: "wx", mode: 0o600 },
+  )
+  await send({
+    protocolVersion: 1,
+    type: "closed",
+    jobID: launch?.jobID ?? null,
+    receiptNonce: launch.receiptNonce,
+    receiptSha256,
+    terminalCategory,
+    treeContained: true,
+    managerInitialized: true,
+    cleanupCalls: 1,
+    cleanupCompleted: teardownComplete,
+    resetCalls: 1,
+    resetCompleted: teardownComplete,
+  })
   await new Promise((resolve) => process.disconnect(resolve))
   await new Promise((resolve) => setTimeout(resolve, 10))
   process.exit(0)

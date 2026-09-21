@@ -1,52 +1,65 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import type { Configuration } from "electron-builder"
-import { mkdtemp, rm } from "node:fs/promises"
+import { cp, mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import {
-  documentRuntimeAttestation,
   prepareReleaseDocumentRuntime,
-  stagedDocumentRuntime,
   verifyPreparedSandboxRuntime,
 } from "./scripts/document-runtime"
-import { productionRuntimeFixture } from "./test/fixture/document-runtime"
+import { confinementEvidenceFixture, productionRuntimeFixture } from "./test/fixture/document-runtime"
 
 const legacyDesktopEntry = "resources/linux/opencode-desktop.desktop"
 const releaseTarget = "x86_64-pc-windows-msvc" as const
 let releaseSource: string
 let trustedAttestation: string
+let stagingRoot: string
+let prepared: Awaited<ReturnType<typeof prepareReleaseDocumentRuntime>>
 const previousRustTarget = process.env.RUST_TARGET
-const previousTrustedAttestation = process.env.KOALA_DOCUMENT_RUNTIME_ATTESTATION
+const previousStagingRoot = process.env.KOALA_DOCUMENT_RUNTIME_STAGING_ROOT
+const previousVersion = process.env.OPENCODE_VERSION
+const previousSha = process.env.GITHUB_SHA
+const previousBuildID = process.env.KOALA_DOCUMENT_CONFINEMENT_BUILD_ID
 
 beforeAll(async () => {
-  releaseSource = await mkdtemp(path.join(os.tmpdir(), "desktop-config-runtime-"))
-  trustedAttestation = `${releaseSource}.attestation.json`
+  const root = await mkdtemp(path.join(os.tmpdir(), "desktop-config-runtime-"))
+  releaseSource = path.join(root, "candidate")
+  const stagingParent = path.join(root, "staging")
+  trustedAttestation = path.join(releaseSource, "document-runtime.attestation.json")
+  await Promise.all([mkdir(releaseSource), mkdir(stagingParent)])
+  stagingRoot = path.join(await realpath(stagingParent), "release")
   process.env.RUST_TARGET = releaseTarget
-  process.env.KOALA_DOCUMENT_RUNTIME_ATTESTATION = trustedAttestation
+  process.env.KOALA_DOCUMENT_RUNTIME_STAGING_ROOT = stagingRoot
+  process.env.OPENCODE_VERSION = "1.2.3"
+  process.env.GITHUB_SHA = "a".repeat(40)
+  process.env.KOALA_DOCUMENT_CONFINEMENT_BUILD_ID = "test-build-1"
   const sandboxRuntime = await verifyPreparedSandboxRuntime({ RUST_TARGET: releaseTarget })
-  await productionRuntimeFixture(releaseSource, releaseTarget, trustedAttestation, true, false, {
-    proxySha256: sandboxRuntime.documentProxySha256,
-    sandboxRuntimeManifestSha256: sandboxRuntime.manifestSha256,
-  })
-  await prepareReleaseDocumentRuntime({
-    source: releaseSource,
-    trustedAttestation,
+  await cp(sandboxRuntime.root, path.join(releaseSource, "sandbox-runtime"), { recursive: true })
+  await productionRuntimeFixture(path.join(releaseSource, "document-runtime"), releaseTarget, trustedAttestation)
+  await confinementEvidenceFixture(releaseSource, releaseTarget, sandboxRuntime)
+  prepared = await prepareReleaseDocumentRuntime({
+    sourceResourcesRoot: await realpath(releaseSource),
+    stagingParent: await realpath(stagingParent),
+    stagingRoot,
     environment: { RUST_TARGET: releaseTarget },
-    probe: async () => ({ performed: true }),
+    release: { version: "1.2.3", sourceCommit: "a".repeat(40), buildID: "test-build-1" },
   })
 })
 
 afterAll(async () => {
   await Promise.all([
-    rm(releaseSource, { recursive: true, force: true }),
-    rm(trustedAttestation, { force: true }),
-    rm(stagedDocumentRuntime, { recursive: true, force: true }),
-    rm(documentRuntimeAttestation, { force: true }),
+    rm(path.dirname(releaseSource), { recursive: true, force: true }),
   ])
   if (previousRustTarget === undefined) delete process.env.RUST_TARGET
   else process.env.RUST_TARGET = previousRustTarget
-  if (previousTrustedAttestation === undefined) delete process.env.KOALA_DOCUMENT_RUNTIME_ATTESTATION
-  else process.env.KOALA_DOCUMENT_RUNTIME_ATTESTATION = previousTrustedAttestation
+  if (previousStagingRoot === undefined) delete process.env.KOALA_DOCUMENT_RUNTIME_STAGING_ROOT
+  else process.env.KOALA_DOCUMENT_RUNTIME_STAGING_ROOT = previousStagingRoot
+  if (previousVersion === undefined) delete process.env.OPENCODE_VERSION
+  else process.env.OPENCODE_VERSION = previousVersion
+  if (previousSha === undefined) delete process.env.GITHUB_SHA
+  else process.env.GITHUB_SHA = previousSha
+  if (previousBuildID === undefined) delete process.env.KOALA_DOCUMENT_CONFINEMENT_BUILD_ID
+  else process.env.KOALA_DOCUMENT_CONFINEMENT_BUILD_ID = previousBuildID
 })
 
 const channels = [
@@ -124,7 +137,7 @@ test("bundles the sandbox worker and native assets outside the app archive", asy
   const config = module.default as Configuration
 
   expect(config.extraResources).toContainEqual({
-    from: "../opencode/dist/node/sandbox-runtime/",
+      from: "../opencode/dist/node/sandbox-runtime/",
     to: "sandbox-runtime/",
     filter: [
       "sandbox-worker.mjs",
@@ -151,9 +164,10 @@ test("bundles the sandbox worker and native assets outside the app archive", asy
 test("verifies confinement evidence before evaluating package resources", async () => {
   const config = await Bun.file("electron-builder.config.ts").text()
   const staging = await Bun.file("scripts/document-runtime.ts").text()
-  expect(config).toContain('["./scripts/document-runtime.ts", "verify"]')
-  expect(staging).toContain("matchesConfinementEvidence")
-  expect(staging).toContain("Document confinement evidence is missing or does not match packaged resources")
+  expect(config).toContain('confinementCandidate ? "./scripts/document-runtime-evidence.ts" : "./scripts/document-runtime.ts"')
+  expect(config).toContain('confinementCandidate ? "verify-candidate" : "verify"')
+  expect(staging).toContain("verifyConfinementResources")
+  expect(staging).toContain("Document runtime staging root must be fresh")
 })
 
 for (const channel of ["beta", "prod"] as const) {
@@ -181,17 +195,34 @@ for (const channel of ["beta", "prod"] as const) {
     else process.env.OPENCODE_CHANNEL = previous
 
     expect(config.extraResources).toContainEqual({
-      from: stagedDocumentRuntime,
+      from: prepared.root,
       to: "document-runtime/",
       filter: ["**/*"],
     })
     expect(config.extraResources).toContainEqual({
-      from: documentRuntimeAttestation,
+      from: prepared.attestation,
       to: "document-runtime.attestation.json",
+    })
+    expect(config.extraResources).toContainEqual({
+      from: prepared.evidenceRoot,
+      to: "document-confinement-evidence/",
+      filter: ["**/*"],
+    })
+    expect(config.extraResources).toContainEqual({
+      from: prepared.sandboxRoot,
+      to: "sandbox-runtime/",
+      filter: [
+        "sandbox-worker.mjs",
+        "document-runtime-proxy.mjs",
+        "sandbox-runtime.manifest.json",
+        "LICENSE",
+        "vendor/**/*",
+      ],
     })
     expect(config.files).toContain("!resources/document-runtime{,/**/*}")
     expect(config.files).toContain("!resources/document-runtime.attestation.json")
-    const manifest = await Bun.file(path.join(stagedDocumentRuntime, "manifest.json")).json()
+    expect(config.files).toContain("!resources/document-confinement-evidence{,/**/*}")
+    const manifest = await Bun.file(path.join(prepared.root, "manifest.json")).json()
     expect(manifest.files.map((file: { readonly path: string }) => file.path)).toEqual(
       expect.arrayContaining(["worker/bootstrap.js", "worker/worker.js"]),
     )

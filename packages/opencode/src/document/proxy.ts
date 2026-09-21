@@ -16,6 +16,7 @@ import { pathToFileURL } from "node:url"
 import { DocumentProcess, type ObservedExit, type ProcessHandle } from "./process"
 import { DocumentProxyOutput, type Receiver as OutputReceiver } from "./proxy-output"
 import { DocumentPendingRoot } from "./pending-root"
+import { DocumentTeardownReceipt } from "./teardown-receipt"
 import {
   DocumentSandboxPolicy,
   type BootstrapCommand,
@@ -88,6 +89,7 @@ export interface ProxyDependencies {
   readonly spawnCommand: (executable: string, args: ReadonlyArray<string>, options: SpawnOptions) => ProxyChild
   readonly createTransport: (input: Readable, output: Writable) => NodeStreamTransport
   readonly createOutputReceiver: typeof DocumentProxyOutput.create
+  readonly writeReceipt: typeof DocumentTeardownReceipt.write
   readonly sweepProcessTree: typeof DocumentProcess.terminateProcessTree
   readonly verifyWindowsTreeEmpty?: (pid: number) => Promise<boolean>
   readonly timers: TimerDependencies
@@ -129,6 +131,7 @@ export function defaultDependencies(): ProxyDependencies {
     spawnCommand: (executable, args, options) => spawn(executable, args, options),
     createTransport: createNodeStreamTransport,
     createOutputReceiver: DocumentProxyOutput.create,
+    writeReceipt: DocumentTeardownReceipt.write,
     sweepProcessTree: DocumentProcess.terminateProcessTree,
     timers: {
       set: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -150,6 +153,12 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
   let terminal: DocumentRuntimeProtocol.WorkerEvent | undefined
   let selectedFailure: ProxyFailure | undefined
   let initialized = false
+  let cleanupCalls: 0 | 1 = 0
+  let cleanupCompleted = false
+  let resetCalls: 0 | 1 = 0
+  let resetCompleted = false
+  let treeContained = true
+  let receiptSha256: string | null = null
   let accepted = false
   let leaderExit: ObservedExit | undefined
   let spawnAbsenceConfirmed = false
@@ -356,7 +365,20 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       await directSend(fallback).catch(() => undefined)
     }
     if (dependencies.parent.connected()) {
-      await directSend({ protocolVersion: 1, type: "closed", jobID: launch?.jobID ?? null }).catch(() => undefined)
+      await directSend({
+        protocolVersion: 1,
+        type: "closed",
+        jobID: launch?.jobID ?? null,
+        receiptNonce: launch?.receiptNonce ?? null,
+        receiptSha256,
+        terminalCategory: launch ? terminalCategory() : null,
+        treeContained,
+        managerInitialized: initialized,
+        cleanupCalls,
+        cleanupCompleted,
+        resetCalls,
+        resetCompleted,
+      }).catch(() => undefined)
     }
   }
   const teardownManager = async () => {
@@ -367,13 +389,17 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
     const completed = await within(
       async () => {
         try {
+          cleanupCalls = 1
           dependencies.manager.cleanupAfterCommand()
+          cleanupCompleted = true
         } catch {
           cleanupFailed = true
         }
         resetStarted = true
         try {
+          resetCalls = 1
           await dependencies.manager.reset()
+          resetCompleted = true
         } catch {
           resetFailed = true
         }
@@ -391,7 +417,7 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
     cancellationTimer = undefined
     parentQueue.length = 0
 
-    let treeContained = !child || spawnAbsenceConfirmed
+    treeContained = !child || spawnAbsenceConfirmed
     if (child && !spawnAbsenceConfirmed) {
       hardTerminationStarted = leaderExit === undefined
       const systemRoot = policy?.handoffEnvironment.SystemRoot
@@ -417,6 +443,35 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
         )
       }
     }
+    if (launch && treeContained) {
+      try {
+        const receipt = await dependencies.writeReceipt(
+          {
+            parentRoot: launch.parentRoot,
+            parentIdentity: DocumentPendingRoot.identityFromWire(launch.parentIdentity),
+            parentMode: launch.parentMode,
+            pendingRoot: launch.pendingRoot,
+            pendingRootIdentity: DocumentPendingRoot.identityFromWire(launch.pendingRootIdentity),
+          },
+          {
+            protocolVersion: 1,
+            type: "teardown-receipt",
+            jobID: launch.jobID,
+            receiptNonce: launch.receiptNonce,
+            terminalCategory: terminalCategory(),
+            treeContained,
+            managerInitialized: initialized,
+            cleanupCalls,
+            cleanupCompleted,
+            resetCalls,
+            resetCompleted,
+          },
+        )
+        receiptSha256 = receipt.receiptSha256
+      } catch {
+        fail("root-identity-failed", "worker")
+      }
+    }
     streamsClosing = true
     try {
       transport?.close()
@@ -438,6 +493,11 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
     if (phase !== "closed") phase = "finishing"
     shutdownPromise ??= Promise.resolve().then(performShutdown)
     return shutdownPromise
+  }
+  const terminalCategory = (): DocumentSandboxProtocol.TeardownReceiptPayload["terminalCategory"] => {
+    if (selectedFailure || !terminal) return "failure"
+    if (terminal.type === "cancelled") return "cancelled"
+    return terminal.type === "completed" ? "completed" : "failure"
   }
   const stopStarting = () => {
     if (phase === "starting" && !cancellationSent && !selectedFailure) return false
@@ -662,7 +722,11 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
     }
     phase = "active"
     try {
-      await send({ protocolVersion: 1, type: "accepted", jobID: message.jobID })
+      if (!child.pid) {
+        fail("spawn-failed", "spawn")
+        return shutdown()
+      }
+      await send({ protocolVersion: 1, type: "accepted", jobID: message.jobID, innerProcessID: child.pid })
       accepted = true
       await transport.send(DocumentRuntimeProtocol.decodeInitialRequest(message.start))
     } catch {

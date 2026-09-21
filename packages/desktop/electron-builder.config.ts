@@ -4,8 +4,6 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import type { Configuration } from "electron-builder"
-import { documentRuntimeAttestation } from "./scripts/document-runtime"
-
 const execFileAsync = promisify(execFile)
 const packageDir = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.resolve(packageDir, "../..")
@@ -22,6 +20,7 @@ const metainfoFpm = (appId: string) =>
 async function signWindows(configuration: { path: string }) {
   if (process.platform !== "win32") return
   if (process.env.GITHUB_ACTIONS !== "true") return
+  if (!confinementCandidate && !process.env.OPENCODE_RELEASE) return
 
   await execFileAsync(
     "pwsh",
@@ -35,6 +34,7 @@ const channel = (() => {
   if (raw === "dev" || raw === "beta" || raw === "prod") return raw
   return "dev"
 })()
+const confinementCandidate = process.env.KOALA_DOCUMENT_CONFINEMENT_CANDIDATE === "1"
 
 const APP_IDS = {
   dev: "ai.opencode.desktop.dev",
@@ -42,20 +42,28 @@ const APP_IDS = {
   prod: "ai.opencode.desktop",
 } as const
 
-const documentRuntimeResources: Array<{ from: string; to: string; filter: string[] }> =
+const prepared =
   channel === "dev"
-    ? []
-    : [
-        {
-          from: execFileSync("bun", ["./scripts/document-runtime.ts", "verify"], {
+    ? undefined
+    : (JSON.parse(
+        execFileSync(
+          "bun",
+          [
+            confinementCandidate ? "./scripts/document-runtime-evidence.ts" : "./scripts/document-runtime.ts",
+            confinementCandidate ? "verify-candidate" : "verify",
+          ],
+          {
             cwd: packageDir,
             encoding: "utf8",
             env: process.env,
-          }).trim(),
-          to: "document-runtime/",
-          filter: ["**/*"],
-        },
-      ]
+          },
+        ).trim(),
+      ) as {
+        readonly root: string
+        readonly attestation: string
+        readonly evidenceRoot: string
+        readonly sandboxRoot: string
+      })
 
 execFileSync("bun", ["./scripts/document-runtime.ts", "verify-sandbox"], {
   cwd: packageDir,
@@ -66,7 +74,7 @@ execFileSync("bun", ["./scripts/document-runtime.ts", "verify-sandbox"], {
 const getBase = (appId: string): Configuration => ({
   artifactName: "opencode-desktop-${os}-${arch}.${ext}",
   directories: {
-    output: "dist",
+    output: confinementCandidate ? "dist-candidate" : "dist",
     buildResources: "resources",
   },
   // Linux launchers are .desktop files, so this is the desktop file name,
@@ -83,6 +91,7 @@ const getBase = (appId: string): Configuration => ({
     "!resources/opencode-cli*",
     "!resources/document-runtime{,/**/*}",
     "!resources/document-runtime.attestation.json",
+    "!resources/document-confinement-evidence{,/**/*}",
   ],
   extraResources: [
     ...(channel === "dev"
@@ -100,7 +109,7 @@ const getBase = (appId: string): Configuration => ({
       filter: ["index.js", "index.d.ts", "build/Release/mac_window.node", "swift-build/**"],
     },
     {
-      from: "../opencode/dist/node/sandbox-runtime/",
+      from: prepared?.sandboxRoot ?? "../opencode/dist/node/sandbox-runtime/",
       to: "sandbox-runtime/",
       filter: [
         "sandbox-worker.mjs",
@@ -110,15 +119,13 @@ const getBase = (appId: string): Configuration => ({
         "vendor/**/*",
       ],
     },
-    ...documentRuntimeResources,
-    ...(channel === "dev"
-      ? []
-      : [
-          {
-            from: documentRuntimeAttestation,
-            to: "document-runtime.attestation.json",
-          },
-        ]),
+    ...(prepared
+      ? [
+          { from: prepared.root, to: "document-runtime/", filter: ["**/*"] },
+          { from: prepared.attestation, to: "document-runtime.attestation.json" },
+          { from: prepared.evidenceRoot, to: "document-confinement-evidence/", filter: ["**/*"] },
+        ]
+      : []),
   ],
   mac: {
     category: "public.app-category.developer-tools",
@@ -127,11 +134,11 @@ const getBase = (appId: string): Configuration => ({
     gatekeeperAssess: false,
     entitlements: "resources/entitlements.plist",
     entitlementsInherit: "resources/entitlements.plist",
-    notarize: true,
+    notarize: confinementCandidate || Boolean(process.env.OPENCODE_RELEASE),
     target: ["dmg", "zip"],
   },
   dmg: {
-    sign: true,
+    sign: confinementCandidate || Boolean(process.env.OPENCODE_RELEASE),
   },
   protocols: {
     name: "OpenCode",

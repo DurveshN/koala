@@ -1,20 +1,16 @@
 #!/usr/bin/env bun
-import {
-  loadAndVerifyProductionManifest,
-  loadTrustedAttestation,
-  probeProductionRuntime,
-  type ProductionProbeResult,
-  type VerifiedManifest,
-} from "@koala-ai/document-runtime"
-import { copyFile, cp, mkdir, readdir, realpath, rename, rm } from "node:fs/promises"
+import { loadAndVerifyProductionManifest, loadTrustedAttestation } from "@koala-ai/document-runtime"
+import { randomUUID } from "node:crypto"
+import { cp, lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { hostTarget, verifySandboxRuntimeRoot } from "../src/main/sandbox-runtime"
-import { matchesConfinementEvidence } from "../src/main/document-runtime"
-import type { ResolvedSandboxRuntime } from "../src/main/sandbox-runtime"
+import { verifyConfinementResources, type ReleaseIdentity } from "../src/main/document-confinement"
+import { hostTarget, verifySandboxRuntimeRoot, type SandboxRuntimeTarget } from "../src/main/sandbox-runtime"
+import { releaseIdentity } from "./document-runtime-evidence"
 
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const workspaceDir = path.resolve(packageDir, "../..")
+const MarkerName = ".koala-document-staging.json"
 export const stagedDocumentRuntime = path.join(packageDir, "resources", "document-runtime")
 export const documentRuntimeAttestation = path.join(packageDir, "resources", "document-runtime.attestation.json")
 export const sandboxRuntimeRoot = path.join(workspaceDir, "packages", "opencode", "dist", "node", "sandbox-runtime")
@@ -28,7 +24,10 @@ const targets = [
 ] as const
 
 export async function buildDevelopmentDocumentRuntime() {
-  await cleanStaging(stagedDocumentRuntime, documentRuntimeAttestation)
+  await Promise.all([
+    rm(stagedDocumentRuntime, { recursive: true, force: true }),
+    rm(documentRuntimeAttestation, { force: true }),
+  ])
   const environment = { ...process.env }
   delete environment.OPENCODE_CHANNEL
   delete environment.OPENCODE_VERSION
@@ -44,78 +43,102 @@ export async function buildDevelopmentDocumentRuntime() {
 }
 
 export async function prepareReleaseDocumentRuntime(input?: {
-  readonly source?: string
-  readonly trustedAttestation?: string
-  readonly destination?: string
-  readonly attestation?: string
+  readonly sourceResourcesRoot?: string
+  readonly stagingParent?: string
+  readonly stagingRoot?: string
   readonly environment?: NodeJS.ProcessEnv
-  readonly probe?: (runtime: VerifiedManifest) => Promise<ProductionProbeResult>
-  readonly sandboxRuntime?: ResolvedSandboxRuntime
+  readonly release?: ReleaseIdentity
 }) {
   const environment = input?.environment ?? process.env
-  const source = input?.source ?? environment.KOALA_DOCUMENT_RUNTIME_RELEASE_ROOT
-  if (!source || !path.isAbsolute(source)) {
-    throw new Error("KOALA_DOCUMENT_RUNTIME_RELEASE_ROOT must be an absolute path")
-  }
-  const trustedAttestation = input?.trustedAttestation ?? environment.KOALA_DOCUMENT_RUNTIME_ATTESTATION
-  if (!trustedAttestation || !path.isAbsolute(trustedAttestation)) {
-    throw new Error("KOALA_DOCUMENT_RUNTIME_ATTESTATION must be an absolute path")
-  }
-
-  const destination = input?.destination ?? stagedDocumentRuntime
-  const attestation = input?.attestation ?? documentRuntimeAttestation
-  const sourceRoot = await realpath(source)
-  const destinationPath = path.resolve(destination)
-  const existingDestination = await realpath(destination).catch(() => destinationPath)
-  if (inside(sourceRoot, existingDestination) || inside(existingDestination, sourceRoot)) {
-    throw new Error("Source and staged document runtimes must not overlap")
-  }
-  if (path.resolve(trustedAttestation) === path.resolve(attestation)) {
-    throw new Error("Trusted and staged document runtime attestations must be different files")
-  }
-  const trustedFile = await realpath(trustedAttestation)
-  if (inside(sourceRoot, trustedFile)) {
-    throw new Error("Trusted document runtime attestation must be outside the runtime root")
-  }
-  await cleanStaging(destination, attestation)
   const target = parseTarget(environment.RUST_TARGET)
-  const trust = await loadTrustedAttestation(trustedAttestation)
-  if (trust.target !== target) throw new Error("Document runtime attestation target does not match RUST_TARGET")
-  const sourceRuntime = await loadAndVerifyProductionManifest(source, target, trust)
-  const sandboxRuntime = input?.sandboxRuntime ?? (await verifyPreparedSandboxRuntime(environment))
-  if (!matchesConfinementEvidence(trust.confinementEvidence, target, sourceRuntime.manifestSha256, sandboxRuntime)) {
-    throw new Error("Document confinement evidence is missing or does not match packaged resources")
+  const release = input?.release ?? releaseIdentity(environment)
+  const source = input?.sourceResourcesRoot ?? required(environment, "KOALA_DOCUMENT_CONFINEMENT_RESOURCES_ROOT")
+  const stagingParent = input?.stagingParent ?? required(environment, "KOALA_DOCUMENT_RUNTIME_STAGING_PARENT")
+  const destination = input?.stagingRoot ?? required(environment, "KOALA_DOCUMENT_RUNTIME_STAGING_ROOT")
+  const [sourceRoot, parentRoot] = await Promise.all([canonicalDirectory(source), canonicalDirectory(stagingParent)])
+  const destinationPath = path.resolve(destination)
+  if (!samePath(path.dirname(destinationPath), parentRoot)) {
+    throw new Error("Document runtime staging root must be a direct child of its explicit parent")
   }
-  const temporary = `${destination}.tmp-${process.pid}`
-  const temporaryAttestation = `${attestation}.tmp-${process.pid}`
+  if (overlap(sourceRoot, parentRoot) || overlap(sourceRoot, destinationPath)) {
+    throw new Error("Source and staged document resources must not overlap")
+  }
+  if (await exists(destinationPath)) throw new Error("Document runtime staging root must be fresh")
 
-  await mkdir(path.dirname(destination), { recursive: true })
-  await mkdir(path.dirname(attestation), { recursive: true })
+  const sourceContext = await verifyResourceTree(sourceRoot, target, release)
+  await mkdir(destinationPath, { mode: 0o700 })
+  const created = await identity(destinationPath)
   try {
-    await cp(source, temporary, { recursive: true })
-    const staged = await loadAndVerifyProductionManifest(temporary, target, trust)
-    const probe = await (input?.probe ?? probeProductionRuntime)(staged)
+    await Promise.all([
+      cp(path.join(sourceRoot, "document-runtime"), path.join(destinationPath, "document-runtime"), { recursive: true }),
+      cp(path.join(sourceRoot, "sandbox-runtime"), path.join(destinationPath, "sandbox-runtime"), { recursive: true }),
+      cp(
+        path.join(sourceRoot, "document-runtime.attestation.json"),
+        path.join(destinationPath, "document-runtime.attestation.json"),
+      ),
+      cp(
+        path.join(sourceRoot, "document-confinement-evidence"),
+        path.join(destinationPath, "document-confinement-evidence"),
+        { recursive: true },
+      ),
+    ])
+    await writeFile(
+      path.join(destinationPath, MarkerName),
+      `${JSON.stringify({ ownerVersion: 1, target, nonce: randomUUID() })}\n`,
+      { flag: "wx", mode: 0o600 },
+    )
+    const staged = await verifyResourceTree(await realpath(destinationPath), target, release)
     if (
-      !probe.performed &&
-      (!trust.smokeEvidence ||
-        trust.smokeEvidence.target !== target ||
-        trust.smokeEvidence.manifestSha256 !== staged.manifestSha256)
+      staged.runtime.manifestSha256 !== sourceContext.runtime.manifestSha256 ||
+      staged.sandbox.manifestSha256 !== sourceContext.sandbox.manifestSha256 ||
+      staged.evidence.keyID !== sourceContext.evidence.keyID
     ) {
-      throw new Error("Cross-target document runtime staging requires attested target-native smoke evidence")
+      throw new Error("Staged document resources changed during copy")
     }
-    await rm(destination, { recursive: true, force: true })
-    await rename(temporary, destination)
-    await copyFile(trustedAttestation, temporaryAttestation)
-    await rename(temporaryAttestation, attestation)
-    return { root: await realpath(destination), manifestSha256: staged.manifestSha256, target, probe }
-  } finally {
-    await rm(temporary, { recursive: true, force: true })
-    await rm(temporaryAttestation, { force: true })
+    return result(destinationPath, staged, target)
+  } catch (error) {
+    if (await sameIdentity(destinationPath, created)) await rm(destinationPath, { recursive: true, force: true })
+    throw error
   }
 }
 
-export function prepareOrVerifyReleaseDocumentRuntime() {
-  return prepareReleaseDocumentRuntime()
+export async function verifyPreparedReleaseDocumentRuntime(input?: {
+  readonly stagingRoot?: string
+  readonly environment?: NodeJS.ProcessEnv
+  readonly release?: ReleaseIdentity
+}) {
+  const environment = input?.environment ?? process.env
+  const target = parseTarget(environment.RUST_TARGET)
+  const release = input?.release ?? releaseIdentity(environment)
+  const root = await canonicalDirectory(
+    input?.stagingRoot ?? required(environment, "KOALA_DOCUMENT_RUNTIME_STAGING_ROOT"),
+  )
+  const markerPath = path.join(root, MarkerName)
+  const markerInfo = await lstat(markerPath)
+  if (!markerInfo.isFile() || markerInfo.isSymbolicLink() || markerInfo.size > 4096) {
+    throw new Error("Document runtime staging ownership marker is invalid")
+  }
+  const marker = JSON.parse(await readFile(markerPath, "utf8")) as {
+    readonly ownerVersion?: unknown
+    readonly target?: unknown
+    readonly nonce?: unknown
+  }
+  if (
+    marker.ownerVersion !== 1 ||
+    marker.target !== target ||
+    typeof marker.nonce !== "string" ||
+    !/^[a-f0-9-]{36}$/.test(marker.nonce)
+  ) {
+    throw new Error("Document runtime staging ownership marker is invalid")
+  }
+  return result(root, await verifyResourceTree(root, target, release), target)
+}
+
+export async function prepareOrVerifyReleaseDocumentRuntime() {
+  const root = required(process.env, "KOALA_DOCUMENT_RUNTIME_STAGING_ROOT")
+  return (await exists(root))
+    ? verifyPreparedReleaseDocumentRuntime({ stagingRoot: root })
+    : prepareReleaseDocumentRuntime({ stagingRoot: root })
 }
 
 export function verifyPreparedSandboxRuntime(environment: NodeJS.ProcessEnv = process.env) {
@@ -126,51 +149,88 @@ export function verifyPreparedSandboxRuntime(environment: NodeJS.ProcessEnv = pr
   return verifySandboxRuntimeRoot(sandboxRuntimeRoot, target)
 }
 
-export async function verifyPreparedReleaseDocumentRuntime(input?: {
-  readonly root?: string
-  readonly attestation?: string
-  readonly environment?: NodeJS.ProcessEnv
-  readonly sandboxRuntime?: ResolvedSandboxRuntime
-}) {
-  const root = input?.root ?? stagedDocumentRuntime
-  const target = parseTarget((input?.environment ?? process.env).RUST_TARGET)
-  const trust = await loadTrustedAttestation(input?.attestation ?? documentRuntimeAttestation)
-  if (target !== trust.target) throw new Error("Prepared document runtime target does not match RUST_TARGET")
-  const verified = await loadAndVerifyProductionManifest(root, target, trust)
-  const sandboxRuntime = input?.sandboxRuntime ?? (await verifyPreparedSandboxRuntime(input?.environment ?? process.env))
-  if (!matchesConfinementEvidence(trust.confinementEvidence, target, verified.manifestSha256, sandboxRuntime)) {
-    throw new Error("Document confinement evidence is missing or does not match packaged resources")
+async function verifyResourceTree(root: string, target: SandboxRuntimeTarget, release: ReleaseIdentity) {
+  const attestation = await loadTrustedAttestation(path.join(root, "document-runtime.attestation.json"))
+  if (attestation.target !== target) throw new Error("Prepared document runtime target does not match RUST_TARGET")
+  const [runtime, sandbox] = await Promise.all([
+    loadAndVerifyProductionManifest(path.join(root, "document-runtime"), target, attestation),
+    verifySandboxRuntimeRoot(path.join(root, "sandbox-runtime"), target),
+  ])
+  const evidence = await verifyConfinementResources({
+    resourcesRoot: root,
+    target,
+    runtimeManifestSha256: runtime.manifestSha256,
+    sandboxRuntime: sandbox,
+    release,
+  })
+  return { runtime, sandbox, evidence }
+}
+
+function result(
+  root: string,
+  verified: Awaited<ReturnType<typeof verifyResourceTree>>,
+  target: SandboxRuntimeTarget,
+) {
+  return {
+    resourcesRoot: root,
+    root: verified.runtime.root,
+    attestation: path.join(root, "document-runtime.attestation.json"),
+    evidenceRoot: path.join(root, "document-confinement-evidence"),
+    sandboxRoot: verified.sandbox.root,
+    manifestSha256: verified.runtime.manifestSha256,
+    target,
   }
-  return { root: verified.root, manifestSha256: verified.manifestSha256, target: trust.target }
+}
+
+async function canonicalDirectory(value: string) {
+  if (!path.isAbsolute(value)) throw new Error("Document runtime staging paths must be absolute")
+  const info = await lstat(value)
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Document runtime staging path is invalid")
+  const canonical = await realpath(value)
+  if (!samePath(canonical, path.normalize(value))) throw new Error("Document runtime staging path is not canonical")
+  return canonical
+}
+
+async function identity(value: string) {
+  const info = await lstat(value, { bigint: true })
+  return { dev: info.dev, ino: info.ino }
+}
+
+async function sameIdentity(value: string, expected: { readonly dev: bigint; readonly ino: bigint }) {
+  const info = await lstat(value, { bigint: true }).catch(() => undefined)
+  return Boolean(info?.isDirectory() && !info.isSymbolicLink() && info.dev === expected.dev && info.ino === expected.ino)
+}
+
+async function exists(value: string) {
+  return lstat(value).then(
+    () => true,
+    () => false,
+  )
+}
+
+function overlap(left: string, right: string) {
+  const relation = path.relative(left, right)
+  const reverse = path.relative(right, left)
+  return relation === "" || inside(relation) || inside(reverse)
+}
+
+function inside(relation: string) {
+  return relation !== ".." && !relation.startsWith(`..${path.sep}`) && !path.isAbsolute(relation)
+}
+
+function samePath(left: string, right: string) {
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right
+}
+
+function required(environment: NodeJS.ProcessEnv, key: string) {
+  const value = environment[key]
+  if (!value || !path.isAbsolute(value)) throw new Error(`${key} must be an absolute path`)
+  return value
 }
 
 function parseTarget(value: unknown) {
-  if (typeof value === "string" && targets.some((target) => target === value)) {
-    return value as (typeof targets)[number]
-  }
+  if (typeof value === "string" && targets.some((target) => target === value)) return value as SandboxRuntimeTarget
   throw new Error("RUST_TARGET must identify a supported document runtime target")
-}
-
-function inside(root: string, value: string) {
-  const relation = path.relative(root, value)
-  return relation === "" || (!relation.startsWith(`..${path.sep}`) && relation !== ".." && !path.isAbsolute(relation))
-}
-
-async function cleanStaging(destination: string, attestation: string) {
-  await Promise.all([rm(destination, { recursive: true, force: true }), rm(attestation, { force: true })])
-  await Promise.all(
-    [
-      [path.dirname(destination), `${path.basename(destination)}.tmp-`],
-      [path.dirname(attestation), `${path.basename(attestation)}.tmp-`],
-    ].map(async ([directory, prefix]) => {
-      const entries = await readdir(directory).catch(() => [])
-      await Promise.all(
-        entries
-          .filter((entry) => entry.startsWith(prefix))
-          .map((entry) => rm(path.join(directory, entry), { recursive: true, force: true })),
-      )
-    }),
-  )
 }
 
 if (import.meta.main) {
@@ -178,11 +238,11 @@ if (import.meta.main) {
   if (mode !== "prepare" && mode !== "verify" && mode !== "verify-sandbox") {
     throw new Error("Expected prepare, verify, or verify-sandbox")
   }
-  const runtime =
+  const output =
     mode === "prepare"
       ? await prepareReleaseDocumentRuntime()
       : mode === "verify"
         ? await verifyPreparedReleaseDocumentRuntime()
         : await verifyPreparedSandboxRuntime()
-  console.log(runtime.root)
+  console.log(JSON.stringify(output))
 }

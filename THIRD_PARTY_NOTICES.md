@@ -102,3 +102,17 @@ its Koala component has no declared license and remains `releaseReady: false`.
 Release staging also requires complete, target-specific notices for Tesseract,
 Leptonica, tessdata, native canvas, and every linked native dependency. Those
 notices are not present in the current development artifact.
+
+The release workflow does not synthesize or download those notices. Its native
+document gate requires an externally prepared release runtime, then includes the
+runtime's exact license files in the hashed inventory and dependency report
+submitted to the independent confinement-evidence issuer. The resulting
+Ed25519 envelope, its SPKI DER verification key, and the strict reports are
+packaged with those inventoried files. Until those inputs exist and pass
+verification, no document-runtime target is release-enabled.
+
+The current repository therefore does not claim to distribute Tesseract,
+Leptonica, tessdata, or a release-ready native canvas closure. Their complete
+target-specific copyright and license texts must be supplied with the authentic
+six-target runtime artifacts before this section can be expanded into final
+distribution notices.

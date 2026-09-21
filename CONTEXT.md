@@ -658,6 +658,89 @@ Document confinement Phase 6 verification completed on 2026-09-21:
 - Native SRT confinement was not exercised or claimed. Phase 7 target-native
   policy, teardown, packaging, and installed-app evidence remains required.
 
+Document-runtime confinement Phase 7 code-owned gates are implemented without
+enabling a target. Confinement evidence is now a detached version-3 subject in a
+version-1 Ed25519 envelope. The canonical signed bytes bind target,
+runtime-manifest and detached-attestation digests, proxy and sandbox-manifest
+digests, SRT/policy versions, release version, source commit, build identity,
+the five report digests, and the SHA-256 key ID derived from the issuer's SPKI
+DER public key. The public key, release identity, strict reports, inventory, and
+envelope are packaged together. Staging and packaged startup both derive the key
+ID, verify the signature, decode every report with excess-property rejection,
+and compare every binding and inventoried file. Repository code has no private
+key or self-issuance path.
+
+The capability-gated OpenCode native suite uses the exact built one-job proxy
+whose bytes match the sandbox manifest and a real SRT policy with a manifest-
+bound hostile bootstrap in a copied test runtime. It
+checks allowed runtime/job operations; denied project, home, credential,
+sibling, pending, application-resource, runtime-write, and system-temp access;
+DNS/TCP/UDP/loopback/bind/socket denial; runtime replacement and link attacks;
+output substitution; crash and inner disconnect; held-open descendants; parent
+interruption; proxy nonreuse; and verified private-root deletion. Accepted runs
+require a terminal result, `closed`, IPC disconnect, clean proxy exit, and no
+cleanup/reset/termination failure. The `closed` event carries fixed tree,
+manager, cleanup-count/completion, and reset-count/completion fields; accepted
+runs require one completed cleanup and reset, while pre-initialization closures
+must report zero calls. A separate pass uses the authentic release
+runtime for PDF rendering, bundled Tesseract OCR, release, cancellation, and
+cleanup. Both paths replace `PATH` with a Tesseract trap while SRT uses only its
+audited absolute helpers. Ordinary development skips this one native test.
+`KOALA_REQUIRE_DOCUMENT_CONFINEMENT=1` enters it and treats every missing input
+or capability as failure.
+
+Desktop now has an installer-only smoke script with a hostile system-Tesseract
+`PATH` trap and deterministic typed report output. It mounts a DMG, silently
+installs an NSIS executable into owned temporary storage, or extracts an
+AppImage, then discovers exactly one installed resource root. It has no checkout
+or unpacked-build fallback. Candidate smoke supplies the report before issuance;
+final smoke verifies that the installed report bytes, detached attestation,
+public key, signature, release identity, and exact inventory match the envelope.
+
+The publish matrix runs these gates only for an actual release. It builds a
+non-publishable candidate whose packaged resolver remains unavailable, runs the
+native and installed candidate gates, obtains external Ed25519 evidence, copies
+the complete verified resource set into a fresh owned staging child, and then
+builds and installs the final package. Non-release packages use the development
+channel and omit release evidence. Windows ARM64 is bound to an ARM64 self-
+hosted runner label rather than an x64 cross-build runner.
+
+Candidate staging accepts only canonical, disjoint runtime, sandbox, base-
+attestation, public-key, and destination paths. Its destination must be absent
+and be a direct child of the explicit staging parent. Final staging similarly
+creates one absent owned child, records its filesystem identity, rejects reuse
+without a valid ownership marker, and removes a failed copy only while the
+created identity still matches.
+
+No Phase 7 native pass or production evidence exists in this checkout. This
+Windows x64 host still lacks approved loader evidence, Job Object tree evidence,
+ACL-reset reconciliation, and provisioned WFP/sandbox-account state; stock SRT
+`0.0.76` remains insufficient for the Windows gate. Authentic six-target
+runtimes, complete native notices/dependency closure, target signing reporters,
+an Ed25519 issuer/public-key pair, a Linux package-signature verifier, and
+provisioned native runners remain external inputs.
+
+Phase 7 review-remediation verification completed on 2026-09-21:
+
+- Koala complete suite: 568 passed; typecheck passed.
+- Document Runtime complete suite: 82 passed and 2 existing symlink-capability
+  tests skipped; build, typecheck, and both generated-worker syntax checks
+  passed.
+- OpenCode document, sandbox, and `sandbox_execute` suites: 213 passed and the
+  single Phase 7 native test skipped in ordinary-development mode; typecheck and
+  Node proxy build/syntax check passed.
+- Desktop evidence, smoke, staging, resolver, sidecar-environment, and packaging
+  suites: 47 passed and 1 platform-capability test skipped; typecheck and
+  production build passed.
+- Required native mode was invoked on this Windows x64 host and failed, rather
+  than skipped, because the packaged candidate resource root was not
+  provisioned. A separate ARM64 target check failed with explicit host
+  `x86_64-pc-windows-msvc` versus target `aarch64-pc-windows-msvc` mismatch.
+- No native report, smoke report, issuance request, or production attestation
+  was generated during local verification.
+- `.github/workflows/publish.yml` parsed successfully with the locally installed
+  Python YAML parser.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.

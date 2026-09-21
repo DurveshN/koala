@@ -21,6 +21,8 @@
     "package:win": "electron-builder --win --config electron-builder.config.ts",
     "package:linux": "electron-builder --linux --config electron-builder.config.ts",
     "verify:document-runtime": "bun ./scripts/document-runtime.ts verify",
+    "smoke:document-runtime": "bun ./scripts/document-runtime-smoke.ts",
+    "evidence:document-runtime": "bun ./scripts/document-runtime-evidence.ts",
     "native:build": "bun install --cwd native"
   },
   "main": "./out/main/index.js",
