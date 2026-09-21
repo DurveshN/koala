@@ -523,9 +523,11 @@ exit, bounded stdout/stderr end-and-close drainage, output promotion, and
 verified tombstone and parent deletion. Late send callbacks cannot replace a
 newer cancellation or terminal state. Missing closure, unconfirmed termination
 or deletion, diagnostic overflow/error/incomplete drainage, and proxy-reported
-command-cleanup, reset, or termination failures set a process-global unhealthy
-latch; a cleanly closed parser failure does not. Later jobs fail closed after
-the latch is set.
+command-cleanup, reset, or termination failures set the unhealthy latch in the
+owning `DocumentRuntime.layer(config)` service instance; a cleanly
+closed parser failure does not. Independent layers have independent health,
+while the single layer retained by `makeGlobalNode` keeps production health
+process-global. Later jobs through a poisoned layer fail closed.
 
 The proxy independently validates that `jobRoot` and `pendingRoot` are canonical
 non-link direct siblings beneath the same private parent. Only `jobRoot` enters
@@ -689,6 +691,17 @@ audited absolute helpers. Ordinary development skips this one native test.
 `KOALA_REQUIRE_DOCUMENT_CONFINEMENT=1` enters it and treats every missing input
 or capability as failure.
 
+The outer launch now carries a random 256-bit receipt nonce. After confirmed
+tree containment and the teardown attempt, the proxy writes one exclusive,
+bounded, canonical receipt beneath the identity-verified pending root. The
+receipt contains only job identity, nonce, terminal category, containment, and
+cleanup/reset counts and completion flags. Its SHA-256 covers canonical payload
+bytes. Normal closure binds the same values and digest in `closed`; after parent
+IPC loss, the coordinator waits for proxy exit, sweeps the recorded inner
+process group, and accepts cleanup reconciliation only from the stable receipt.
+An externally killed proxy produces no receipt and therefore cannot claim
+cleanup/reset completion; native tests record descendant containment separately.
+
 Desktop now has an installer-only smoke script with a hostile system-Tesseract
 `PATH` trap and deterministic typed report output. It mounts a DMG, silently
 installs an NSIS executable into owned temporary storage, or extracts an
@@ -726,9 +739,11 @@ Phase 7 review-remediation verification completed on 2026-09-21:
 - Document Runtime complete suite: 82 passed and 2 existing symlink-capability
   tests skipped; build, typecheck, and both generated-worker syntax checks
   passed.
-- OpenCode document, sandbox, and `sandbox_execute` suites: 213 passed and the
+- OpenCode document, sandbox, and `sandbox_execute` suites: 216 passed and the
   single Phase 7 native test skipped in ordinary-development mode; typecheck and
   Node proxy build/syntax check passed.
+- The document coordinator suite also passed three randomized seeds with every
+  test file rerun three times; each seed completed 48 runs without failure.
 - Desktop evidence, smoke, staging, resolver, sidecar-environment, and packaging
   suites: 47 passed and 1 platform-capability test skipped; typecheck and
   production build passed.

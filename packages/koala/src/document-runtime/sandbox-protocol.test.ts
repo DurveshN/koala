@@ -525,7 +525,7 @@ describe("DocumentSandboxProtocol lifecycle", () => {
     expect(
       DocumentSandboxProtocol.advanceLifecycle(
         active(),
-        proxy({ protocolVersion: 1, type: "accepted", jobID: otherJobID }),
+        proxy({ protocolVersion: 1, type: "accepted", jobID: otherJobID, innerProcessID: 1234 }),
       ),
     ).toEqual({ ok: false, code: "job-mismatch" })
     expect(

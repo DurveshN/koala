@@ -1,4 +1,5 @@
 import { DocumentSandboxProtocol } from "@koala-ai/core/document-runtime/sandbox-protocol"
+import { DocumentRuntimeManifest } from "@koala-ai/core/document-runtime/manifest"
 import { Schema } from "effect"
 import { createHash } from "node:crypto"
 import { constants } from "node:fs"
@@ -20,8 +21,11 @@ export async function write(
   const file = path.join(evidence.pendingRoot, relativePath(payload.receiptNonce))
   const body = Buffer.from(DocumentSandboxProtocol.teardownReceiptPayload(payload))
   if (body.byteLength > MaxReceiptBytes) throw new DocumentPendingRoot.EvidenceError("receipt-overflow")
-  const receipt = { ...payload, receiptSha256: createHash("sha256").update(body).digest("hex") }
-  const encoded = Buffer.from(`${JSON.stringify(receipt)}\n`)
+  const receipt = {
+    ...payload,
+    receiptSha256: DocumentRuntimeManifest.Digest.make(createHash("sha256").update(body).digest("hex")),
+  }
+  const encoded = Buffer.from(DocumentSandboxProtocol.teardownReceipt(receipt))
   const handle = await open(file, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
   let identity: { readonly dev: bigint; readonly ino: bigint } | undefined
   try {
@@ -65,6 +69,9 @@ export async function read(
       JSON.parse(bytes.toString("utf8")),
       { onExcessProperty: "error" },
     )
+    if (!bytes.equals(Buffer.from(DocumentSandboxProtocol.teardownReceipt(receipt)))) {
+      throw new DocumentPendingRoot.EvidenceError("noncanonical-teardown-receipt")
+    }
     if (receipt.receiptNonce !== nonce) throw new DocumentPendingRoot.EvidenceError("teardown-receipt-nonce-mismatch")
     const digest = createHash("sha256")
       .update(DocumentSandboxProtocol.teardownReceiptPayload(receipt))
@@ -81,7 +88,18 @@ export async function read(
 
 export function matchesClosed(
   receipt: DocumentSandboxProtocol.TeardownReceipt,
-  closed: typeof DocumentSandboxProtocol.ClosedEvent.Type,
+  closed: {
+    readonly jobID: DocumentSandboxProtocol.TeardownReceipt["jobID"] | null
+    readonly receiptNonce: DocumentSandboxProtocol.ReceiptNonce | null
+    readonly receiptSha256: DocumentRuntimeManifest.Digest | null
+    readonly terminalCategory: DocumentSandboxProtocol.TeardownReceiptPayload["terminalCategory"] | null
+    readonly treeContained: boolean
+    readonly managerInitialized: boolean
+    readonly cleanupCalls: 0 | 1
+    readonly cleanupCompleted: boolean
+    readonly resetCalls: 0 | 1
+    readonly resetCompleted: boolean
+  },
 ) {
   return (
     closed.jobID === receipt.jobID &&

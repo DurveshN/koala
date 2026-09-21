@@ -37,9 +37,24 @@ evidence that has not been produced.
   cleanup/reset call counts, and completion booleans. Accepted runs require one
   completed cleanup and reset. Valid pre-initialization rejection reports zero
   calls and false completion values.
+- Every launch carries a random 256-bit receipt nonce. After containment and the
+  teardown attempt, the proxy writes one exclusive canonical receipt below the
+  verified pending root. The parent verifies root identity, file identity, exact
+  bytes, nonce, payload digest, terminal category, and teardown fields after
+  proxy exit. This same receipt permits bounded reconciliation after parent IPC
+  loss.
+- Native tests also kill the exact built proxy after worker startup and after
+  hostile descendants exist. A trusted supervisor sweeps the recorded inner
+  process group and verifies process and root absence. These cases are recorded
+  only as `proxyCrashContained`; they do not claim cleanup/reset completion.
 - Every private job, pending, and parent root is removed through the production
   verified root finalizer. The native report is created exclusively after all
   assertions pass.
+- The unhealthy latch belongs to each `DocumentRuntime.layer(config)` service
+  instance and is threaded through verification, job ownership, sessions,
+  pending-output handling, and teardown. Reusing one layer retains poison across
+  calls; independently created layers are isolated. The one layer retained by
+  `makeGlobalNode` preserves process-global production behavior.
 - Real PDF rendering and Tesseract OCR run separately through the production
   coordinator, authentic attested runtime, built proxy, and SRT assets. The test
   also exercises page release and cancellation.
@@ -106,8 +121,10 @@ Observed non-native verification on 2026-09-21:
 - Koala: 568 tests passed; typecheck passed.
 - Document Runtime: 82 tests passed, 2 existing symlink-capability tests skipped;
   build, typecheck, and generated bootstrap/worker syntax checks passed.
-- OpenCode document/sandbox regressions: 213 tests passed, 1 Phase 7 native test
+- OpenCode document/sandbox regressions: 216 tests passed, 1 Phase 7 native test
   skipped in ordinary mode; typecheck, Node build, and proxy syntax check passed.
+- Runtime order-isolation stress passed seeds 1701, 2903, and 4219 with
+  `--randomize --rerun-each 3`; each seed completed 48 runs.
 - Desktop focused gate/staging/package tests: 47 passed and 1 platform-capability
   test skipped; typecheck and production build passed.
 - Required native mode failed on the absent packaged-resource input instead of

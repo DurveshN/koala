@@ -10,6 +10,7 @@ let tsvPath
 let terminal = false
 let terminalCategory = "completed"
 let sending = Promise.resolve()
+const absentInnerProcessID = 2_147_483_647
 
 process.on("message", (message) => {
   sending = sending.then(() => handle(message)).catch(() => process.exit(1))
@@ -21,10 +22,16 @@ async function handle(message) {
     launch = message
     mode = JSON.parse(await readFile(path.join(message.runtimeRoot, "manifest.json"), "utf8")).components[0]
       .sourceRevision
-    await send({ protocolVersion: 1, type: "accepted", jobID: launch.jobID, innerProcessID: process.pid })
+    await send({ protocolVersion: 1, type: "accepted", jobID: launch.jobID, innerProcessID: absentInnerProcessID })
     if (mode === "reset-failure") return fail("reset-failed", "reset")
     if (mode === "root-identity-failure") return fail("root-identity-failed", "worker")
-    if (mode === "parser-failure") {
+    if (mode === "parent-disconnect-reconciled") {
+      await event({ protocolVersion: 1, type: "started", jobID: launch.jobID, operation: launch.start.type })
+      terminal = true
+      terminalCategory = "failure"
+      return close(false)
+    }
+    if (mode === "parser-failure" && launch.start.type === "ocr") {
       await event({ protocolVersion: 1, type: "started", jobID: launch.jobID, operation: launch.start.type })
       await event({
         protocolVersion: 1,
@@ -35,6 +42,7 @@ async function handle(message) {
         retryable: false,
       })
       terminal = true
+      terminalCategory = "failure"
       return close()
     }
     if (mode === "invalid-outer") {
@@ -165,7 +173,7 @@ async function fail(code, stage) {
   await close()
 }
 
-async function close() {
+async function close(sendClosed = true) {
   const teardownComplete = mode !== "incomplete-teardown"
   const payload = {
     protocolVersion: 1,
@@ -186,20 +194,23 @@ async function close() {
     `${JSON.stringify({ ...payload, receiptSha256 })}\n`,
     { flag: "wx", mode: 0o600 },
   )
-  await send({
-    protocolVersion: 1,
-    type: "closed",
-    jobID: launch?.jobID ?? null,
-    receiptNonce: launch.receiptNonce,
-    receiptSha256,
-    terminalCategory,
-    treeContained: true,
-    managerInitialized: true,
-    cleanupCalls: 1,
-    cleanupCompleted: teardownComplete,
-    resetCalls: 1,
-    resetCompleted: teardownComplete,
-  })
+  if (sendClosed) {
+    await send({
+      protocolVersion: 1,
+      type: "closed",
+      jobID: launch?.jobID ?? null,
+      receiptNonce: launch.receiptNonce,
+      receiptSha256,
+      terminalCategory,
+      treeContained: true,
+      managerInitialized: true,
+      cleanupCalls: 1,
+      cleanupCompleted: teardownComplete,
+      resetCalls: 1,
+      resetCompleted: teardownComplete,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
   await new Promise((resolve) => process.disconnect(resolve))
   await new Promise((resolve) => setTimeout(resolve, 10))
   process.exit(0)

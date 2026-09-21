@@ -293,7 +293,8 @@ self-start guard, `NativeConfinementLauncher`, direct `worker.js` launch,
 parent-to-worker IPC, and parent-built inner environment. The coordinator must
 launch only the configured proxy, wrap document commands in the outer protocol,
 require `accepted -> terminal -> closed -> disconnect -> exit 0`, and retain the
-existing two-job semaphore. Add a process-global unhealthy latch for missing
+existing two-job semaphore. Add a service-layer unhealthy latch, retained
+process-globally by the production node, for missing
 closure, unconfirmed termination, command cleanup, reset, or policy revocation;
 later jobs fail closed until sidecar restart.
 

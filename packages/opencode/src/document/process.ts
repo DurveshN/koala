@@ -124,7 +124,19 @@ export async function terminateProcessTree(
 }
 
 export async function terminateProcessGroup(pid: number, timeoutMs: number) {
-  if (process.platform === "win32" || !Number.isSafeInteger(pid) || pid < 1 || timeoutMs < 1) return false
+  if (!Number.isSafeInteger(pid) || pid < 1 || timeoutMs < 1) return false
+  if (process.platform === "win32") {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      try {
+        process.kill(pid, 0)
+      } catch (error) {
+        return processMissing(error)
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10))
+    }
+    return false
+  }
   const deadline = Date.now() + timeoutMs
   try {
     process.kill(-pid, "SIGTERM")

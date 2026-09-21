@@ -449,9 +449,9 @@ async function runExternallyKilledProxy(input: {
       if (decoded.type === "accepted") innerProcessID = decoded.innerProcessID
       if (decoded.type === "event" && decoded.event.type === "started") started.resolve()
     })
-    const exited = Promise.withResolvers<void>()
+    const exited = Promise.withResolvers<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>()
     child.once("error", exited.reject)
-    child.once("exit", () => exited.resolve())
+    child.once("exit", (code, signal) => exited.resolve({ code, signal }))
     child.send({
       protocolVersion: 1,
       type: "launch",

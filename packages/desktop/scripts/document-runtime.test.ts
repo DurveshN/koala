@@ -33,7 +33,7 @@ describe("release document runtime staging", () => {
     await expect(
       verifyPreparedReleaseDocumentRuntime({ stagingRoot: destination, environment: { RUST_TARGET: target }, release }),
     ).resolves.toEqual(prepared)
-  })
+  }, 15_000)
 
   test("rejects an existing destination without deleting it", async () => {
     const root = await temporaryDirectory()

@@ -245,6 +245,13 @@ that inventory to avoid recursive digests, while their exact bytes are bound by
 the signed subject. The subject separately binds the complete detached runtime-
 attestation bytes.
 
+Each proxy launch also carries a 256-bit receipt nonce. Once the inner process
+tree is absent and SRT teardown has been attempted, the proxy writes a canonical
+receipt with exclusive creation beneath the verified pending root. Its digest is
+repeated in the normal `closed` event. If IPC is lost, the parent waits for exit,
+sweeps the recorded inner process group, then reads the same identity-checked
+receipt before deciding whether runtime health can be retained.
+
 The publish matrix checks host operating system and architecture before native
 work. Windows ARM64 uses an ARM64 self-hosted runner label rather than the
 existing x64 cross-build host. Release jobs create a non-publishable candidate,

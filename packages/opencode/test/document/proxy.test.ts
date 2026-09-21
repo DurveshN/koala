@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime"
 import { DocumentRuntimeLimits } from "@koala-ai/core/document-runtime/limits"
+import { DocumentRuntimeManifest } from "@koala-ai/core/document-runtime/manifest"
 import { DocumentRuntimeProtocol } from "@koala-ai/core/document-runtime/protocol"
 import { DocumentSandboxProtocol } from "@koala-ai/core/document-runtime/sandbox-protocol"
 import {
@@ -402,7 +403,7 @@ describe("document confinement proxy lifecycle", () => {
     await pending
 
     expect(harness.terminations).toBe(1)
-    expect(harness.parent.messages).toEqual([{ protocolVersion: 1, type: "accepted", jobID }])
+    expect(harness.parent.messages).toEqual([{ protocolVersion: 1, type: "accepted", jobID, innerProcessID: 1234 }])
     expect(harness.manager.cleanupCalls).toBe(1)
     expect(harness.manager.resetCalls).toBe(1)
     expect(harness.parent.listenerCount()).toBe(0)
@@ -604,16 +605,16 @@ describe("document confinement proxy failure boundaries", () => {
     expect(harness.terminations).toBe(1)
   })
 
-  test("treats a spawned process without a PID as confirmed absence and still resets SRT", async () => {
+  test("does not claim containment or reset when a spawned process has no PID", async () => {
     const harness = makeHarness({ missingPid: true })
     const pending = DocumentProxy.startProxy(harness.dependencies)
     harness.parent.emit(launch())
     await pending
 
-    expect(failureOf(harness)).toMatchObject({ code: "spawn-failed", stage: "spawn" })
-    expect(harness.terminations).toBe(0)
-    expect(harness.manager.cleanupCalls).toBe(1)
-    expect(harness.manager.resetCalls).toBe(1)
+    expect(failureOf(harness)).toMatchObject({ code: "termination-failed", stage: "termination" })
+    expect(harness.terminations).toBe(1)
+    expect(harness.manager.cleanupCalls).toBe(0)
+    expect(harness.manager.resetCalls).toBe(0)
   })
 
   test("routes stderr stream errors through guarded teardown and removes the listener", async () => {
@@ -913,10 +914,14 @@ function makeHarness(options: HarnessOptions = {}) {
       release: async () => true,
       cleanup: async () => undefined,
     }),
-    writeReceipt: async (_evidence, payload) => ({ ...payload, receiptSha256: digest }),
+    writeReceipt: async (_evidence, payload) => ({
+      ...payload,
+      receiptSha256: DocumentRuntimeManifest.Digest.make(digest),
+    }),
     sweepProcessTree: async () => {
       terminations++
       calls.push("sweep")
+      if (options.missingPid) return { status: "unavailable", code: "missing-pid" }
       if (options.terminationThrows) throw new Error("tree-kill-canary")
       if (options.terminationFailure) return { status: "unavailable", code: "exit-not-observed" }
       child.complete(null, "SIGKILL")

@@ -31,7 +31,6 @@ const CleanupWatchdogMs = 10_000
 const DeletionReserveMs = 2_000
 const jobs = Semaphore.makeUnsafe(DocumentRuntimeLimits.MaxConcurrentJobs)
 const unsafeJobRoots = new Set<string>()
-let unhealthy = false
 
 export interface Config {
   readonly runtimePath: string
@@ -112,10 +111,11 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Do
 
 export function layer(config: Config | undefined) {
   const policy = config ? { ...config } : undefined
+  const health = makeHealth()
   const probe: Interface["probe"] = Effect.fn("DocumentRuntime.probe")(() =>
     limited(
-      withRuntime(policy, (runtime) =>
-        withJob((job) =>
+      withRuntime(health, policy, (runtime) =>
+        withJob(health, (job) =>
           Effect.gen(function* () {
             const request = yield* decodeInput(DocumentRuntimeProtocol.ProbeRequest, {
               protocolVersion: 1,
@@ -124,7 +124,7 @@ export function layer(config: Config | undefined) {
               target: runtime.target,
               manifestSha256: runtime.manifestSha256,
             })
-            return yield* runProxy(runtime, job, request, (session) => probeWorker(session, runtime))
+            return yield* runProxy(health, runtime, job, request, (session) => probeWorker(session, runtime))
           }),
         ),
       ),
@@ -136,8 +136,8 @@ export function layer(config: Config | undefined) {
       Effect.gen(function* () {
         const limits = yield* requestedLimits(input.limits)
         const page = yield* decodeInput(DocumentRuntimeLimits.PageNumber, input.page ?? 1)
-        const runtime = yield* verifiedRuntime(policy)
-        return yield* withJob((job) =>
+        const runtime = yield* verifiedRuntime(health, policy)
+        return yield* withJob(health, (job) =>
           Effect.gen(function* () {
             const staged = yield* stageInput(job.path, input.inputPath, "input/image", limits.imageInputBytes)
             const dimensions = yield* attempt(
@@ -158,7 +158,9 @@ export function layer(config: Config | undefined) {
               },
               limits,
             })
-            return yield* runProxy(runtime, job, request, (session, decoded) => ocrWorker(session, decoded, dimensions))
+            return yield* runProxy(health, runtime, job, request, (session, decoded) =>
+              ocrWorker(session, decoded, dimensions),
+            )
           }),
         )
       }),
@@ -169,8 +171,8 @@ export function layer(config: Config | undefined) {
     limited(
       Effect.gen(function* () {
         const limits = yield* requestedLimits(input.limits)
-        const runtime = yield* verifiedRuntime(policy)
-        return yield* withJob((job) =>
+        const runtime = yield* verifiedRuntime(health, policy)
+        return yield* withJob(health, (job) =>
           Effect.gen(function* () {
             const staged = yield* stageInput(job.path, input.inputPath, "input/document.pdf", limits.pdfInputBytes)
             const request = yield* decodeInput(DocumentRuntimeProtocol.RenderRequest, {
@@ -183,7 +185,7 @@ export function layer(config: Config | undefined) {
               pageCount: input.pageCount,
               limits,
             })
-            return yield* runProxy(runtime, job, request, (session, decoded) =>
+            return yield* runProxy(health, runtime, job, request, (session, decoded) =>
               renderWorker(session, decoded, callback),
             )
           }),
@@ -242,7 +244,13 @@ interface Runtime {
   readonly proxyAssetsRoot: string
 }
 
+interface Health {
+  readonly read: () => boolean
+  readonly poison: () => void
+}
+
 interface Session {
+  readonly health: Health
   readonly child: ChildProcess
   readonly queue: Queue.Queue<Signal>
   readonly request: DocumentRuntimeProtocol.InitialRequest
@@ -272,14 +280,28 @@ function limited<A, E, R>(effect: Effect.Effect<A, E, R>) {
   return jobs.withPermits(1)(effect)
 }
 
-function withRuntime<A, E, R>(config: Config | undefined, use: (runtime: Runtime) => Effect.Effect<A, E, R>) {
-  return Effect.flatMap(verifiedRuntime(config), use)
+function makeHealth(): Health {
+  let poisoned = false
+  return {
+    read: () => poisoned,
+    poison: () => {
+      poisoned = true
+    },
+  }
 }
 
-function verifiedRuntime(config: Config | undefined) {
+function withRuntime<A, E, R>(
+  health: Health,
+  config: Config | undefined,
+  use: (runtime: Runtime) => Effect.Effect<A, E, R>,
+) {
+  return Effect.flatMap(verifiedRuntime(health, config), use)
+}
+
+function verifiedRuntime(health: Health, config: Config | undefined) {
   return Effect.gen(function* () {
     if (
-      unhealthy ||
+      health.read() ||
       !config ||
       !path.isAbsolute(config.runtimePath) ||
       !path.isAbsolute(config.proxyPath) ||
@@ -375,12 +397,12 @@ async function safeInfo(root: string, value: string, kind: "file" | "directory")
   return kind === "file" ? info.isFile() : info.isDirectory()
 }
 
-function withJob<A, E, R>(use: (job: DocumentJobRoot.Root) => Effect.Effect<A, E, R>) {
+function withJob<A, E, R>(health: Health, use: (job: DocumentJobRoot.Root) => Effect.Effect<A, E, R>) {
   return Effect.acquireUseRelease(
     Effect.tryPromise({
       try: () => DocumentJobRoot.create(),
       catch: (error) => {
-        if (error instanceof DocumentJobRoot.LifecycleError && error.unhealthy) unhealthy = true
+        if (error instanceof DocumentJobRoot.LifecycleError && error.unhealthy) health.poison()
         return failure("worker-failed", "cleanup")
       },
     }),
@@ -394,7 +416,7 @@ function withJob<A, E, R>(use: (job: DocumentJobRoot.Root) => Effect.Effect<A, E
           return DocumentJobRoot.remove(job, { deadline: job.cleanupDeadline ?? Date.now() + CleanupWatchdogMs })
         },
         catch: () => {
-          unhealthy = true
+          health.poison()
           return failure("worker-failed", "cleanup")
         },
       }),
@@ -402,13 +424,14 @@ function withJob<A, E, R>(use: (job: DocumentJobRoot.Root) => Effect.Effect<A, E
 }
 
 function runProxy<A, E, R>(
+  health: Health,
   runtime: Runtime,
   job: DocumentJobRoot.Root,
   request: DocumentRuntimeProtocol.InitialRequest,
   use: (session: Session, request: DocumentRuntimeProtocol.InitialRequest) => Effect.Effect<A, E | RuntimeError, R>,
 ) {
   return Effect.acquireUseRelease(
-    spawnProxy(runtime, job, request),
+    spawnProxy(health, runtime, job, request),
     (session) =>
       Effect.andThen(
         sendParent(session, {
@@ -439,12 +462,17 @@ function runProxy<A, E, R>(
   )
 }
 
-function spawnProxy(runtime: Runtime, job: DocumentJobRoot.Root, request: DocumentRuntimeProtocol.InitialRequest) {
+function spawnProxy(
+  health: Health,
+  runtime: Runtime,
+  job: DocumentJobRoot.Root,
+  request: DocumentRuntimeProtocol.InitialRequest,
+) {
   return Effect.gen(function* () {
     yield* Effect.tryPromise({
       try: () => DocumentJobRoot.verifyForLaunch(job),
       catch: () => {
-        unhealthy = true
+        health.poison()
         return failure("worker-failed", "cleanup")
       },
     })
@@ -462,6 +490,7 @@ function spawnProxy(runtime: Runtime, job: DocumentJobRoot.Root, request: Docume
       catch: () => failure("worker-failed", "worker"),
     })
     const session: Session = {
+      health,
       child,
       queue,
       request,
@@ -479,7 +508,7 @@ function spawnProxy(runtime: Runtime, job: DocumentJobRoot.Root, request: Docume
     const offer = (signal: Signal) => {
       if (Queue.offerUnsafe(queue, signal)) return
       session.overflowed = true
-      unhealthy = true
+      health.poison()
       try {
         child.kill("SIGKILL")
       } catch {}
@@ -487,13 +516,13 @@ function spawnProxy(runtime: Runtime, job: DocumentJobRoot.Root, request: Docume
     const diagnostic = (chunk: unknown) => {
       if (typeof chunk !== "string" && !(chunk instanceof Uint8Array)) {
         session.overflowed = true
-        unhealthy = true
+        health.poison()
         return
       }
       session.diagnosticBytes = Math.min(DiagnosticBytes + 1, session.diagnosticBytes + Buffer.byteLength(chunk))
       if (session.diagnosticBytes <= DiagnosticBytes || session.overflowed) return
       session.overflowed = true
-      unhealthy = true
+      health.poison()
       try {
         child.kill("SIGKILL")
       } catch {}
@@ -559,13 +588,14 @@ function ocrWorker(
       (event) => event.page === request.page && event.pageID === request.pageID,
     )
     const output = yield* resolveOutput(
+      session.health,
       pendingEvidence(session.job),
       result.outputPath,
       result.tsvBytes,
       result.outputSha256,
     )
-    const tsv = yield* pendingAttempt(() => DocumentPendingOutput.read(output))
-    yield* pendingAttempt(() => DocumentPendingOutput.remove(output))
+    const tsv = yield* pendingAttempt(session.health, () => DocumentPendingOutput.read(output))
+    yield* pendingAttempt(session.health, () => DocumentPendingOutput.remove(output))
     yield* expectType(session, "completed", (event) => event.operation === "ocr" && event.pagesProcessed === 1)
     yield* cleanExit(session)
     return { page: request.page, dimensions, tsv, tsvBytes: result.tsvBytes }
@@ -585,6 +615,7 @@ function renderWorker<A, E, R>(
       const rendered = yield* expectType(session, "page-ready", (event) => event.page === page && !seen.has(page))
       seen.add(page)
       const pageOutput = yield* resolveOutput(
+        session.health,
         pendingEvidence(session.job),
         rendered.outputPath,
         rendered.pngBytes,
@@ -606,6 +637,7 @@ function renderWorker<A, E, R>(
         (event) => event.page === page && event.pageID === rendered.pageID,
       )
       const tsvOutput = yield* resolveOutput(
+        session.health,
         pendingEvidence(session.job),
         ocr.outputPath,
         ocr.tsvBytes,
@@ -619,7 +651,7 @@ function renderWorker<A, E, R>(
         pngBytes: rendered.pngBytes,
         tsvBytes: ocr.tsvBytes,
       })
-      yield* pendingAttempt(() =>
+      yield* pendingAttempt(session.health, () =>
         Promise.all([DocumentPendingOutput.remove(pageOutput), DocumentPendingOutput.remove(tsvOutput)]).then(
           () => undefined,
         ),
@@ -718,7 +750,6 @@ function nextProxyMessage(session: Session): Effect.Effect<DocumentSandboxProtoc
   return Effect.gen(function* () {
     const signal = yield* Queue.take(session.queue)
     if (session.overflowed || signal.type !== "message") {
-      unhealthy = true
       return yield* closureFailure()
     }
     const message = yield* Effect.try({
@@ -737,7 +768,7 @@ function nextProxyMessage(session: Session): Effect.Effect<DocumentSandboxProtoc
       message.type === "failure" &&
       ["root-identity-failed", "termination-failed", "command-cleanup-failed", "reset-failed"].includes(message.code)
     ) {
-      unhealthy = true
+      session.health.poison()
     }
     return message
   })
@@ -764,23 +795,29 @@ function finishClosure(session: Session): Effect.Effect<void, RuntimeError> {
         ? !DocumentSandboxProtocol.teardownCompleted(closed)
         : closed.managerInitialized && !DocumentSandboxProtocol.teardownCompleted(closed))
     ) {
-      unhealthy = true
+      session.health.poison()
       return yield* closureFailure()
     }
-    const disconnected = yield* Queue.take(session.queue)
-    if (session.overflowed || disconnected.type !== "disconnect") return yield* closureFailure()
-    const exited = yield* Queue.take(session.queue)
-    if (exited.type !== "exit" || exited.code !== 0 || exited.signal !== null) {
+    const stopped = [yield* Queue.take(session.queue), yield* Queue.take(session.queue)]
+    const exited = stopped.find((signal) => signal.type === "exit")
+    if (
+      session.overflowed ||
+      !stopped.some((signal) => signal.type === "disconnect") ||
+      !exited ||
+      exited.type !== "exit" ||
+      exited.code !== 0 ||
+      exited.signal !== null
+    ) {
       return yield* closureFailure()
     }
-    const receipt = yield* pendingAttempt(() =>
+    const receipt = yield* pendingAttempt(session.health, () =>
       DocumentTeardownReceipt.read(pendingEvidence(session.job), session.receiptNonce, closed.receiptSha256 ?? undefined),
     )
     if (
       !DocumentTeardownReceipt.matchesClosed(receipt, closed) ||
       receipt.terminalCategory !== session.channel.state.terminalCategory
     ) {
-      unhealthy = true
+      session.health.poison()
       return yield* closureFailure()
     }
     const diagnostics = session.diagnostics
@@ -789,7 +826,7 @@ function finishClosure(session: Session): Effect.Effect<void, RuntimeError> {
       settleWithin(diagnostics.drain, Math.max(1, deadline - DeletionReserveMs - Date.now())),
     )
     if (!drained || session.overflowed) {
-      unhealthy = true
+      session.health.poison()
       return yield* closureFailure()
     }
     session.complete = true
@@ -829,35 +866,44 @@ function stopProxy(session: Session, job: DocumentJobRoot.Root) {
       session.cleanup?.()
       return
     }
-    const termination = yield* Effect.promise(() =>
-      DocumentProcess.terminateProcessTree(session.child, {
-        timeoutMs: Math.max(1, deadline - DeletionReserveMs - Date.now()),
-        systemRoot: process.env.SystemRoot,
-      }).catch(() => undefined),
+    const observed = yield* Effect.promise(() =>
+      DocumentProcess.waitForObservedExit(
+        session.child,
+        Math.min(DocumentRuntimeLimits.MaxCancellationGraceMs, Math.max(1, deadline - DeletionReserveMs - Date.now())),
+      ),
     )
+    const termination =
+      observed.status === "exited"
+        ? observed
+        : yield* Effect.promise(() =>
+            DocumentProcess.terminateProcessTree(session.child, {
+              timeoutMs: Math.max(1, deadline - DeletionReserveMs - Date.now()),
+              systemRoot: process.env.SystemRoot,
+            }).catch(() => undefined),
+          )
     const innerProcessID = session.innerProcessID
     const innerContained = innerProcessID
       ? yield* Effect.promise(() => DocumentProcess.terminateProcessGroup(innerProcessID, Math.max(1, deadline - Date.now())))
       : session.spawnAbsenceConfirmed
     if (!session.spawnAbsenceConfirmed && termination?.status !== "exited") {
-      unhealthy = true
+      session.health.poison()
       unsafeJobRoots.add(job.path)
       session.cleanup?.()
       return yield* closureFailure()
     }
-    if (!innerContained) unhealthy = true
-    const reconciled = yield* pendingAttempt(() =>
+    if (!innerContained) session.health.poison()
+    const reconciled = yield* pendingAttempt(session.health, () =>
       DocumentTeardownReceipt.read(pendingEvidence(job), session.receiptNonce),
     ).pipe(
       Effect.map(
         (receipt) =>
           receipt.jobID === session.request.jobID &&
-          receipt.terminalCategory === "failure" &&
+          receipt.terminalCategory === (session.channel.state.terminalCategory ?? "failure") &&
           DocumentSandboxProtocol.teardownCompleted(receipt),
       ),
       Effect.catch(() => Effect.succeed(false)),
     )
-    if (!reconciled || !innerContained) unhealthy = true
+    if (!reconciled || !innerContained) session.health.poison()
     session.cleanup?.()
     if (!reconciled || !innerContained) return yield* closureFailure()
   })
@@ -884,12 +930,13 @@ function cleanupSession(
 }
 
 function resolveOutput(
+  health: Health,
   root: DocumentPendingRoot.Evidence,
   relative: DocumentRuntimeManifest.RelativePath,
   bytes: number,
   sha256: DocumentRuntimeManifest.Digest,
 ) {
-  return pendingAttempt(() => DocumentPendingOutput.resolve(root, relative, bytes, sha256))
+  return pendingAttempt(health, () => DocumentPendingOutput.resolve(root, relative, bytes, sha256))
 }
 
 function pendingEvidence(job: DocumentJobRoot.Root): DocumentPendingRoot.Evidence {
@@ -971,11 +1018,11 @@ function attempt<A>(tryPromise: () => PromiseLike<A>, error: RuntimeError) {
   return Effect.tryPromise({ try: tryPromise, catch: () => error })
 }
 
-function pendingAttempt<A>(tryPromise: () => PromiseLike<A>) {
+function pendingAttempt<A>(health: Health, tryPromise: () => PromiseLike<A>) {
   return Effect.tryPromise({
     try: tryPromise,
     catch: (error) => {
-      if (error instanceof DocumentPendingRoot.EvidenceError) unhealthy = true
+      if (error instanceof DocumentPendingRoot.EvidenceError) health.poison()
       return failure("worker-failed", "cleanup")
     },
   })

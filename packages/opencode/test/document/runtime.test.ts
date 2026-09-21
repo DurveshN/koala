@@ -186,18 +186,50 @@ describe("document runtime proxy coordinator", () => {
 
   test("does not poison later jobs after an ordinary parser failure with confirmed closure", async () => {
     const parserFailure = await makeRuntime("parser-failure", true)
-    const error = await run(
-      parserFailure.config,
+    const image = await temporaryFile("parser-failure.png", png(12, 8))
+    const shared = DocumentRuntime.layer(parserFailure.config)
+    const error = await runLayer(
+      shared,
       Effect.gen(function* () {
-        return yield* (yield* DocumentRuntime.Service).probe()
+        return yield* (yield* DocumentRuntime.Service).ocr({ inputPath: image })
       }).pipe(Effect.flip),
     )
     expect(error).toEqual(expect.objectContaining({ code: "render-failed", stage: "render" }))
     expect(
+      await runLayer(
+        shared,
+        Effect.gen(function* () {
+          return yield* (yield* DocumentRuntime.Service).probe()
+        }),
+      ),
+    ).toEqual(expect.objectContaining({ status: "available" }))
+    expect(
       await run(
         runtime.config,
         Effect.gen(function* () {
-          return yield* (yield* DocumentRuntime.Service).availability()
+          return yield* (yield* DocumentRuntime.Service).probe()
+        }),
+      ),
+    ).toEqual(expect.objectContaining({ status: "available" }))
+  })
+
+  test("reconciles a parent IPC loss from the stable teardown receipt without poisoning later jobs", async () => {
+    const disconnected = await makeRuntime("parent-disconnect-reconciled", true)
+    const shared = DocumentRuntime.layer(disconnected.config)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const error = await runLayer(
+        shared,
+        Effect.gen(function* () {
+          return yield* (yield* DocumentRuntime.Service).probe()
+        }).pipe(Effect.flip),
+      )
+      expect(error).toEqual(expect.objectContaining({ code: "worker-failed", stage: "cleanup" }))
+    }
+    expect(
+      await run(
+        runtime.config,
+        Effect.gen(function* () {
+          return yield* (yield* DocumentRuntime.Service).probe()
         }),
       ),
     ).toEqual(expect.objectContaining({ status: "available" }))
@@ -275,15 +307,24 @@ describe("document runtime proxy coordinator", () => {
     expect(await Bun.file(page.tsvPath).exists()).toBe(false)
   })
 
-  test("latches the process unhealthy after an incomplete proxy teardown receipt", async () => {
+  test("persists poison within one layer and isolates independently created layers", async () => {
     const identityFailure = await makeRuntime("incomplete-teardown", true)
-    const error = await run(
-      identityFailure.config,
+    const shared = DocumentRuntime.layer(identityFailure.config)
+    const error = await runLayer(
+      shared,
       Effect.gen(function* () {
         return yield* (yield* DocumentRuntime.Service).probe()
       }).pipe(Effect.flip),
     )
     expect(error).toEqual(expect.objectContaining({ code: "worker-failed" }))
+    expect(
+      await runLayer(
+        shared,
+        Effect.gen(function* () {
+          return yield* (yield* DocumentRuntime.Service).availability()
+        }),
+      ),
+    ).toEqual({ status: "unavailable", code: "runtime-unavailable" })
     expect(
       await run(
         runtime.config,
@@ -291,7 +332,7 @@ describe("document runtime proxy coordinator", () => {
           return yield* (yield* DocumentRuntime.Service).availability()
         }),
       ),
-    ).toEqual({ status: "unavailable", code: "runtime-unavailable" })
+    ).toEqual(expect.objectContaining({ status: "available" }))
   })
 })
 
@@ -299,7 +340,14 @@ async function run<A, E>(
   config: DocumentRuntime.Config | undefined,
   effect: Effect.Effect<A, E, DocumentRuntime.Service>,
 ) {
-  return Effect.runPromise(effect.pipe(Effect.provide(DocumentRuntime.layer(config))))
+  return runLayer(DocumentRuntime.layer(config), effect)
+}
+
+async function runLayer<A, E>(
+  layer: ReturnType<typeof DocumentRuntime.layer>,
+  effect: Effect.Effect<A, E, DocumentRuntime.Service>,
+) {
+  return Effect.runPromise(effect.pipe(Effect.provide(layer)))
 }
 
 async function temporaryFile(name: string, body: Uint8Array) {

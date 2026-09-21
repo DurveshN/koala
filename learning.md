@@ -327,6 +327,14 @@ work. It is not a substitute for the implementation plan or audit logs.
   Create one absent direct child under an explicit canonical parent, record its
   filesystem identity, and remove it on failure only while that identity still
   matches.
+- IPC closure is not durable teardown evidence. A nonce-addressed receipt in a
+  trusted sibling root can carry bounded cleanup/reset facts across parent IPC
+  loss, but only when its exact canonical bytes, self-digest, file identity, and
+  pending-root identity are revalidated after process exit.
+- Killing a trusted proxy externally is not evidence that its detached inner
+  process tree exited. The supervisor must retain the inner process-group ID,
+  sweep it after proxy death, and report containment separately from cleanup or
+  reset, which the killed proxy cannot attest.
 - Cross-compilation cannot satisfy a native confinement gate. In particular, a
   Windows x64 host building ARM64 artifacts remains a target mismatch until an
   ARM64 runner executes the policy, descendant, cleanup, and packaged smoke

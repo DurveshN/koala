@@ -213,7 +213,14 @@ export const ClosedEvent = Schema.Struct({
   ),
 )
 
-export function teardownCompleted(event: typeof ClosedEvent.Type) {
+export function teardownCompleted(event: {
+  readonly treeContained: boolean
+  readonly managerInitialized: boolean
+  readonly cleanupCalls: 0 | 1
+  readonly cleanupCompleted: boolean
+  readonly resetCalls: 0 | 1
+  readonly resetCompleted: boolean
+}) {
   return (
     event.treeContained &&
     event.managerInitialized &&
@@ -237,6 +244,23 @@ export function teardownReceiptPayload(input: TeardownReceiptPayload) {
     cleanupCompleted: input.cleanupCompleted,
     resetCalls: input.resetCalls,
     resetCompleted: input.resetCompleted,
+  })}\n`
+}
+
+export function teardownReceipt(input: TeardownReceipt) {
+  return `${JSON.stringify({
+    protocolVersion: input.protocolVersion,
+    type: input.type,
+    jobID: input.jobID,
+    receiptNonce: input.receiptNonce,
+    terminalCategory: input.terminalCategory,
+    treeContained: input.treeContained,
+    managerInitialized: input.managerInitialized,
+    cleanupCalls: input.cleanupCalls,
+    cleanupCompleted: input.cleanupCompleted,
+    resetCalls: input.resetCalls,
+    resetCompleted: input.resetCompleted,
+    receiptSha256: input.receiptSha256,
   })}\n`
 }
 

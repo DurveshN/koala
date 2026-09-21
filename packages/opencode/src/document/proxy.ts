@@ -158,7 +158,7 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
   let resetCalls: 0 | 1 = 0
   let resetCompleted = false
   let treeContained = true
-  let receiptSha256: string | null = null
+  let receiptSha256: DocumentSandboxProtocol.TeardownReceipt["receiptSha256"] | null = null
   let accepted = false
   let leaderExit: ObservedExit | undefined
   let spawnAbsenceConfirmed = false
