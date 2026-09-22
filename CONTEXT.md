@@ -1316,3 +1316,16 @@ Combined verification completed on 2026-09-22 after Milestones 1–3:
 One unrelated `packages/core` effect-flock stress test has intermittent failures
 under process contention; it is not caused by the document, office, or knowledge
 changes.
+
+## Commit / push
+
+- Created `.subagent/phase-10-document-pipeline.md`,
+  `.subagent/phase-11-docx-generation.md`, and `.subagent/phase-12-knowledge-base.md`
+  to record what each phase's subagents did.
+- Fixed `packages/enterprise/src/custom-elements.d.ts`: replaced a stale symlink
+  path with a proper `/// <reference path="..." />` directive so the Husky pre-push
+  `turbo typecheck` hook can pass on Windows.
+- Committed everything as `phase-10-11-12`:
+  `feat(koala,opencode,core): implement Phases 10-12 document, docx, and knowledge tools`.
+- Pushed to `origin/phase-10-11-12`:
+  https://github.com/DurveshN/koala/pull/new/phase-10-11-12
