@@ -1330,6 +1330,52 @@ changes.
 - Pushed to `origin/phase-10-11-12`:
   https://github.com/DurveshN/koala/pull/new/phase-10-11-12
 
+## Rebrand: OpenCode → Koala
+
+After the user updated the desktop icon, the app still showed the old
+`OpenCode` name in the window title, HTML title, app menu, updater dialogs,
+favicon meta, theme picker, and electron-builder product metadata. The
+following changes rebrand the visible product surface to **Koala** while
+keeping internal identifiers (app IDs, URL schemes, package scopes, class
+names) unchanged to avoid breaking protocols and deeplinks.
+
+### Files changed
+
+- `packages/desktop/src/main/windows.ts` — main window title `Koala`.
+- `packages/desktop/src/renderer/index.html` — page title `Koala`.
+- `packages/desktop/src/main/index.ts` — `APP_NAMES` and dev fallback to
+  `Koala Dev` / `Koala Beta` / `Koala`.
+- `packages/desktop/electron-builder.config.ts` — `productName` and protocol
+  `name` for dev/beta/prod channels.
+- `packages/desktop/scripts/copy-metainfo.ts` — generated Linux metainfo
+  product name.
+- `packages/desktop/resources/linux/opencode-desktop.desktop` — legacy hidden
+  entry name and `/opt/Koala/` install path.
+- `packages/app/src/components/windows-app-menu.tsx` — Windows app menu
+  heading.
+- `packages/ui/src/components/favicon.tsx` — `apple-mobile-web-app-title`.
+- `packages/ui/src/theme/context.tsx` — display label for the built-in
+  `opencode` theme.
+- `packages/ui/src/context/marked-theme.tsx` and
+  `marked-theme-register.tsx` — editor theme display name.
+- `packages/desktop/src/renderer/i18n/*.ts` — updater strings in all supported
+  locales (`OpenCode` → `Koala`).
+- `packages/desktop/electron-builder.config.test.ts` — updated Linux legacy
+  entry expectation to match `/opt/Koala/`.
+
+### Verification
+
+- `bun turbo typecheck` — 32/32 packages passed.
+- `bun test ./electron-builder.config.test.ts --timeout 30000` from
+  `packages/desktop` — 12 passed.
+- `bun --cwd packages/desktop dev` launched successfully; predev copied the new
+  icons (`Copied dev icons from ./icons/dev to resources/icons`) and the app
+  started without main-process JS errors.
+
+The EPERM errors seen after launch are unrelated to the rebrand; they came
+from a concurrent Electron process holding the `%AppData%\ai.opencode.desktop.dev`
+store files.
+
 ## Local desktop startup
 
 Command:
