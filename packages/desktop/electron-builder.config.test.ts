@@ -110,7 +110,7 @@ test("keeps a hidden prod launcher for old Linux pins", async () => {
   ).toBe(true)
 
   const desktop = await Bun.file(legacyDesktopEntry).text()
-  expect(desktop).toContain("Exec=/opt/OpenCode/ai.opencode.desktop %U")
+  expect(desktop).toContain("Exec=/opt/Koala/ai.opencode.desktop %U")
   expect(desktop).toContain("Icon=ai.opencode.desktop")
   expect(desktop).toContain("StartupWMClass=ai.opencode.desktop")
   expect(desktop).toContain("NoDisplay=true")
