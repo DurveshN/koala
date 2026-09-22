@@ -35,8 +35,10 @@ export function createSidecarEnv(
   env.AWS_EC2_METADATA_DISABLED = "true"
   env.METADATA_SERVER_DETECTION = "none"
   env.OPENCODE_DISABLE_AUTOUPDATE = "1"
+  env.OPENCODE_DISABLE_MODELS_FETCH = "1"
   env.OPENCODE_DISABLE_SHARE = "1"
   env.KOALA_AGENT_EXECUTION = "sandbox"
+  env.KOALA_DISABLE_MODELS_CATALOG = "1"
   if (sandboxWorkerPath) env.KOALA_SANDBOX_WORKER_PATH = sandboxWorkerPath
   if (documentRuntime) {
     env[DOCUMENT_RUNTIME_PATH] = documentRuntime.root

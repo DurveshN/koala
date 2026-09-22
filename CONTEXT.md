@@ -1211,7 +1211,7 @@ Verification completed on 2026-09-22:
 - `packages/koala`: `bun run typecheck` passed.
 - `packages/opencode`: `bun run typecheck` passed.
 - `packages/opencode`: `bun test test/tool/docx-create.test.ts
-  test/tool/tool-registry-document.test.ts --timeout 30000` passed (5 tests).
+test/tool/tool-registry-document.test.ts --timeout 30000` passed (5 tests).
 - `packages/opencode`: `bun test test/document --timeout 30000` passed (182
   passed, 1 skipped).
 
@@ -1387,6 +1387,7 @@ bun --cwd packages/desktop dev
 (also available as `bun dev:desktop` from the repo root).
 
 Before launching, this runs the desktop `predev` script, which:
+
 - copies dev icons,
 - rebuilds `packages/opencode` Node output,
 - runs `bun run build` in `packages/document-runtime`,
@@ -1554,3 +1555,23 @@ koala emoji favicon.
 - `bun typecheck` from `packages/ui`, `packages/app`, and `packages/desktop` —
   all passed.
 - `bun test src/context/marked-parser.test.ts` from `packages/ui` — 3 passed.
+
+## Correction: prevent public model catalog from leaking into Koala model selector
+
+When opening a new session, the Desktop app still listed the public OpenCode/Anthropic/etc. models because the embedded sidecar loaded the public `models.dev` catalog from cache, bundled snapshot, or `models.opencode.ai`. Koala must only show user-configured local/private models.
+
+### Files changed
+
+- `packages/core/src/flag/flag.ts` — added `KOALA_DISABLE_MODELS_CATALOG` truthy environment flag.
+- `packages/core/src/models-dev.ts` — returns an empty catalog early when the flag is set, skipping disk cache, bundled snapshots, and remote fetches; the background catalog refresh fiber is also suppressed.
+- `packages/desktop/src/main/sidecar-env.ts` — sets `OPENCODE_DISABLE_MODELS_FETCH=1` and `KOALA_DISABLE_MODELS_CATALOG=1` for the sidecar.
+- `packages/desktop/src/main/sidecar-env.test.ts` — updated expected snapshots.
+
+### Verification
+
+- `bun typecheck` from `packages/core`, `packages/desktop`, `packages/opencode`, and `packages/app` — all passed.
+- `bun test test/models.test.ts` and `bun test test/plugin/models-dev.test.ts` from `packages/core` — 11 passed.
+- `bun test src/main/sidecar-env.test.ts` from `packages/desktop` — 3 passed.
+- `bun test test/server/httpapi-provider.test.ts` from `packages/opencode` — 5 passed, 1 skipped.
+
+[Inference] Existing cloud `provider`/`auth` config entries could still surface in the selector; those are a separate cleanup that depends on whether the install is fresh or migrating from an older OpenCode state.
