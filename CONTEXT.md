@@ -1409,3 +1409,54 @@ After these fixes, `bun --cwd packages/desktop dev` launched successfully:
 the Electron window opened, the sidecar started on a local port, the backend
 reported `server ready`, and first-launch onboarding completed. The command
 was left running during verification.
+
+## Rebrand follow-up: Koala wordmark, remaining visible OpenCode strings, and startup speed
+
+The desktop startup and new-session background still showed the old `opencode`
+wordmark, and several visible product strings still used `OpenCode`. Some of the
+rebranded favicon SVGs also became large base64-embedded PNGs that are fetched
+early in renderer startup, which added unnecessary decode/render work.
+
+### Files changed
+
+- `packages/ui/src/v2/components/wordmark-v2.tsx` — replaced the heavy
+  geometric `opencode` wordmark with a lightweight text-based `Koala`
+  wordmark. This removes the slow vector-geometry background from the new
+  session view.
+- `packages/ui/src/components/logo.tsx` — replaced the geometric `opencode`
+  wordmark with a lightweight text-based `Koala` wordmark (used by error pages,
+  legacy home, share pages, etc.).
+- `packages/app/index.html` — changed page title to `Koala` and removed the
+  `favicon-v3.svg` link to avoid loading the heavy base64 SVG on startup.
+- `packages/desktop/src/renderer/index.html` — removed the `favicon-v3.svg`
+  link for the same reason.
+- `packages/ui/src/assets/favicon/site.webmanifest` — `name`/`short_name`
+  changed to `Koala`.
+- `packages/ui/src/theme/themes/opencode.json` and
+  `packages/ui/src/theme/desktop-theme.schema.json` — visible theme name/label
+  updated to `Koala`.
+- `packages/ui/src/context/marked.tsx` and
+  `packages/ui/src/context/marked-parser.test.ts` — editor highlighter theme
+  references use `Koala` instead of `OpenCode`.
+- `packages/app/src/i18n/*.ts`, `packages/app/src/i18n/desktop-native.ts`,
+  and `packages/ui/src/i18n/*.ts` — remaining visible `OpenCode` product strings
+  changed to `Koala`. CLI command references (e.g. `'opencode'`) were left
+  unchanged because the binary name has not changed.
+- `packages/app/src/components/dialog-select-model-unpaid-v2.stories.tsx`,
+  `packages/ui/src/components/logo.stories.tsx` — story provider/title names
+  updated to `Koala`.
+- `packages/desktop/src/main/wsl/servers.test.ts`,
+  `packages/desktop/src/main/install-state.test.ts`,
+  `packages/desktop/src/main/sandbox-runtime.test.ts`,
+  `packages/app/src/wsl/settings-model.test.ts` — test descriptions updated to
+  match the new product name.
+
+### Verification
+
+- `bun typecheck` from `packages/ui`, `packages/app`, and `packages/desktop` —
+  all passed.
+- `bun test src/context/marked-parser.test.ts` from `packages/ui` — 3 passed.
+- `bun test src/main/wsl/servers.test.ts` from `packages/desktop` — 12 passed.
+- `bun test src/wsl/settings-model.test.ts` from `packages/app` — 10 passed.
+- `bun test electron-builder.config.test.ts --timeout 30000` from
+  `packages/desktop` — 12 passed.

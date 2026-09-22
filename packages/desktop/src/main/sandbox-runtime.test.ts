@@ -39,7 +39,7 @@ describe("sandbox runtime resources", () => {
     })
   })
 
-  test("uses only the OpenCode build in development", async () => {
+  test("uses only the Koala build in development", async () => {
     const workspace = await temporaryDirectory()
     const desktop = path.join(workspace, "packages", "desktop")
     const root = path.join(workspace, "packages", "opencode", "dist", "node", "sandbox-runtime")
