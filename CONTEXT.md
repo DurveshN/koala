@@ -1485,25 +1485,30 @@ the ~184 MB native `opencode-cli` binary on every run.
   all passed.
 - `bun test src/context/marked-parser.test.ts` from `packages/ui` — 3 passed.
 
-## Rebrand / startup follow-up: inline Koala mark/splash icon
+## Rebrand / startup follow-up: reuse OpenCode logo structure, only swap icon asset
 
-The desktop's loading splash (and other logo marks) was blank because the
-previous change used an external PNG asset (`/favicon-96x96-v3.png`), which
-could not be resolved under the desktop renderer's custom `oc://renderer/`
-protocol. The old geometric `opencode` mark rendered inline, which is why the
-icon disappeared once we moved to an external image.
+A history trace from `5db73420828f73ed031932492af58e18f9e82f47` to `HEAD` showed:
 
-`git show 3f79784566873f04891c644cfb49d1c00eabd3f8 -- packages/ui/src/components/logo.tsx`
-confirms the rebrand commit did not touch the logo component; the startup icon
-was already the old `opencode` glyph before that commit.
+- `git show 3f79784566873f04891c644cfb49d1c00eabd3f8 -- packages/ui/src/components/logo.tsx`
+  produces no output; the rebrand commit did not touch the logo component.
+- The original `Mark`/`Splash` were inline SVGs; the first replacement switched them
+  to external `<img>` sources, which resolved badly under the desktop renderer's
+  `oc://renderer/` protocol and briefly flashed or stayed blank.
+
+To honor "reuse OpenCode code, just update the icon", `Mark`/`Splash` were
+restored to their original SVG component structure. Only the inner icon content
+changed: the two `<path>` elements were replaced with a single inline SVG
+`<image>` whose `href` is a base64 data URL of the Koala favicon PNG. Because the
+image data is embedded in the component, it paints synchronously with the SVG,
+matching the timing/visibility behavior of the original OpenCode mark.
 
 ### Files changed
 
-- `packages/ui/src/components/logo-icon.ts` — new auto-generated file that
-  exports the Koala favicon PNG as a `data:image/png;base64` data URL.
-- `packages/ui/src/components/logo.tsx` — `Mark` and `Splash` now use the inline
-  base64 data URL, so the Koala icon renders immediately in the desktop renderer
-  without any external fetch.
+- `packages/ui/src/components/logo.tsx` — `Mark` and `Splash` are SVGs again and
+  draw the Koala favicon via a synchronous base64 SVG `<image>`.
+- `packages/ui/src/components/logo-icon.ts` — removed.
+- `packages/ui/src/custom-elements.d.ts` — reverted the temporary `*.png` module
+  declaration because the component no longer imports a PNG file.
 
 ### Verification
 
