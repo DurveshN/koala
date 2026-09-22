@@ -19,7 +19,10 @@ export {
   type RenderedPage,
   type RenderPageOptions,
 } from "./render"
+export { generateDocx, type DocxContent, type DocxSection } from "./generate/docx"
 export { readImageDimensions, validateOcrImage, type ImageDimensions } from "./image"
+export { readPdf, type PdfOutput, type PdfPage, type PdfTextBlock, type ReadPdfOptions } from "./read"
+export { validateOoxmlDocx, type OoxmlValidationResult } from "./validation/ooxml"
 export {
   runtimeNativeBinary,
   runtimeNativePackage,

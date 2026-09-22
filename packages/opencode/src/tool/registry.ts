@@ -14,7 +14,18 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { DocxReadTool, PptxReadTool, SpreadsheetReadTool } from "./office"
+import { DocxCreateTool } from "./docx-create"
+import { ArtifactValidateTool } from "./artifact-validate"
+import { KnowledgeIngestTool } from "./knowledge-ingest"
+import { KnowledgeOpenTool } from "./knowledge-open"
+import { KnowledgeSearchTool } from "./knowledge-search"
+import { PdfReadTool } from "./pdf-read"
+import { OcrExtractTool } from "./ocr-extract"
+import { VisionAnalyzeTool } from "./vision-analyze"
+import { DocumentExtractTool } from "./document-extract"
 import { TaskTool } from "./task"
+import { ArtifactInput } from "@/koala/artifact-input"
+import { Auth } from "@/auth"
 import { Database } from "@opencode-ai/core/database/database"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
@@ -60,8 +71,25 @@ import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
 import { ArtifactStoreLive } from "@/koala/artifact-store"
+
+const documentToolIDs = new Set([
+  "docx_create",
+  "docx_read",
+  "pptx_read",
+  "spreadsheet_read",
+  "pdf_read",
+  "ocr_extract",
+  "vision_analyze",
+  "document_extract",
+  "docx_create",
+  "artifact_validate",
+])
+
 import { IndustrialAuditLive } from "@/koala/industrial-audit"
 import { IndustrialExecution } from "@/koala/industrial-execution"
+import { KnowledgeStore } from "@/koala/knowledge-store"
+import { ModelEndpointClient } from "@/koala/model-endpoint-client"
+import { ModelProfileStore } from "@/koala/model-profile-store"
 import { SandboxRuntime } from "@/sandbox/runtime"
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
@@ -125,13 +153,27 @@ const layer = Layer.effect(
     const edit = yield* EditTool
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
+    const docxCreate = yield* DocxCreateTool
     const docxRead = yield* DocxReadTool
     const pptxRead = yield* PptxReadTool
     const spreadsheetRead = yield* SpreadsheetReadTool
+    const pdfRead = yield* PdfReadTool
+    const ocrExtract = yield* OcrExtractTool
+    const visionAnalyze = yield* VisionAnalyzeTool
+    const documentExtract = yield* DocumentExtractTool
+    const artifactValidate = yield* ArtifactValidateTool
+    const knowledgeIngest = yield* KnowledgeIngestTool
+    const knowledgeSearch = yield* KnowledgeSearchTool
+    const knowledgeOpen = yield* KnowledgeOpenTool
     const skilltool = yield* SkillTool
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
     const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
+
+    const documentRuntime = yield* DocumentRuntime.Service
+    const availability = yield* documentRuntime.availability()
+    const documentsEnabled =
+      availability.status === "available" || process.env.KOALA_ENABLE_DOCUMENT_TOOLS === "1"
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -238,13 +280,25 @@ const layer = Layer.effect(
           search: Tool.init(websearch),
           skill: Tool.init(skilltool),
           patch: Tool.init(patchtool),
-          docxRead: Tool.init(docxRead),
-          pptxRead: Tool.init(pptxRead),
-          spreadsheetRead: Tool.init(spreadsheetRead),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
+          knowledgeIngest: Tool.init(knowledgeIngest),
+          knowledgeSearch: Tool.init(knowledgeSearch),
+          knowledgeOpen: Tool.init(knowledgeOpen),
           ...(codeModeTool ? { execute: Tool.init(codeModeTool) } : {}),
+        })
+
+        const documentTools = yield* Effect.all({
+          docxCreate: Tool.init(docxCreate),
+          docxRead: Tool.init(docxRead),
+          pptxRead: Tool.init(pptxRead),
+          spreadsheetRead: Tool.init(spreadsheetRead),
+          pdfRead: Tool.init(pdfRead),
+          ocrExtract: Tool.init(ocrExtract),
+          visionAnalyze: Tool.init(visionAnalyze),
+          documentExtract: Tool.init(documentExtract),
+          artifactValidate: Tool.init(artifactValidate),
         })
 
         return {
@@ -262,15 +316,24 @@ const layer = Layer.effect(
             tool.grep,
             tool.edit,
             tool.write,
-            tool.docxRead,
-            tool.pptxRead,
-            tool.spreadsheetRead,
             tool.task,
             tool.fetch,
             tool.todo,
             tool.search,
             tool.skill,
             tool.patch,
+            documentTools.docxCreate,
+            documentTools.docxRead,
+            documentTools.pptxRead,
+            documentTools.spreadsheetRead,
+            documentTools.pdfRead,
+            documentTools.ocrExtract,
+            documentTools.visionAnalyze,
+            documentTools.documentExtract,
+            documentTools.artifactValidate,
+            tool.knowledgeIngest,
+            tool.knowledgeSearch,
+            tool.knowledgeOpen,
             ...(tool.execute ? [tool.execute] : []),
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
@@ -283,7 +346,12 @@ const layer = Layer.effect(
 
     const all: Interface["all"] = Effect.fn("ToolRegistry.all")(function* () {
       const s = yield* InstanceState.get(state)
-      return [...s.builtin, ...s.custom] as Tool.Def[]
+      const documentsEnabled =
+        availability.status === "available" || process.env.KOALA_ENABLE_DOCUMENT_TOOLS === "1"
+      return [
+        ...s.builtin.filter((tool) => !documentToolIDs.has(tool.id) || documentsEnabled),
+        ...s.custom,
+      ] as Tool.Def[]
     })
 
     const ids: Interface["ids"] = Effect.fn("ToolRegistry.ids")(function* () {
@@ -481,10 +549,15 @@ export const node = LayerNode.make({
     Database.node,
     Ripgrep.node,
     ArtifactStoreLive.node,
+    KnowledgeStore.node,
     IndustrialAuditLive.node,
     IndustrialExecution.node,
     SandboxRuntime.node,
     DocumentRuntime.node,
+    ArtifactInput.node,
+    ModelProfileStore.node,
+    ModelEndpointClient.node,
+    Auth.node,
   ],
 })
 

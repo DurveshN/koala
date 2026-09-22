@@ -1,3 +1,4 @@
+import { DocumentGenerate } from "@koala-ai/core/document/generate"
 import { DocumentRuntimeLimits } from "@koala-ai/core/document-runtime/limits"
 import { DocumentRuntimeManifest } from "@koala-ai/core/document-runtime/manifest"
 import { DocumentRuntimeProtocol } from "@koala-ai/core/document-runtime/protocol"
@@ -8,9 +9,12 @@ import { constants } from "node:fs"
 import { access, lstat, open, rm, writeFile } from "node:fs/promises"
 import type { FileHandle } from "node:fs/promises"
 import path from "node:path"
+import { generateDocx } from "./generate/docx"
 import { RuntimeFailure, runtimeFailure } from "./error"
 import { validateOcrImage } from "./image"
 import { readDocx, readPptx, readXlsx } from "./office"
+import { validateOoxmlDocx } from "./validation/ooxml"
+import { readPdf } from "./read/pdf"
 import { loadAndVerifyManifest } from "./manifest"
 import { makePrivateDirectory, resolveInRoot, validateInputFile, validatePrivateJobRoot } from "./path"
 import { openPdf, probeRenderer, readPdfBytes, renderPdfPage } from "./render"
@@ -183,7 +187,7 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport, de
       const jobDeadlineMs =
         message.type === "probe"
           ? 10 * 60_000
-          : message.type === "read-office"
+          : message.type === "read-office" || message.type === "read-pdf" || message.type === "create-docx"
             ? DocumentRuntimeLimits.MaxJobDeadlineMs
             : message.limits.jobDeadlineMs
       const jobDeadline = setTimeout(
@@ -325,6 +329,14 @@ async function execute(
   }
   if (request.type === "read-office") {
     await executeOffice(request, root, signal, generated, send, openOutput)
+    return
+  }
+  if (request.type === "read-pdf") {
+    await executeReadPdf(request, paths, root, signal, generated, send, openOutput)
+    return
+  }
+  if (request.type === "create-docx") {
+    await executeCreateDocx(request, root, signal, generated, send, openOutput)
     return
   }
   await executeRender(request, paths, root, signal, generated, cleanup, send, nextCommand, openOutput)
@@ -543,6 +555,147 @@ async function executeOffice(
   })
 }
 
+async function executeReadPdf(
+  request: typeof DocumentRuntimeProtocol.ReadPdfRequest.Type,
+  runtime: ReturnType<typeof runtimePaths>,
+  jobRoot: string,
+  signal: AbortSignal,
+  generated: Set<string>,
+  send: (event: DocumentRuntimeProtocol.WorkerOutput) => Promise<void>,
+  openOutput: (value: string) => Promise<OutputHandle>,
+) {
+  const input = resolveInRoot(jobRoot, request.inputPath)
+  await validateInputFile(jobRoot, input, request.inputBytes)
+  signal.throwIfAborted()
+  await makePrivateDirectory(jobRoot, "pdf")
+  const sourcePath = DocumentRuntimeProtocol.OutputSourcePath.make("pdf/output.json")
+  const output = resolveInRoot(jobRoot, sourcePath)
+  generated.add(output)
+  const bytes = await readPdf(input, request.inputBytes, {
+    assets: {
+      pdfEntry: path.join(runtime.pdfRoot, "legacy", "build", "pdf.mjs"),
+      canvasEntry: runtime.canvasEntry,
+      cMapDirectory: path.join(runtime.pdfRoot, "cmaps"),
+      iccDirectory: path.join(runtime.pdfRoot, "iccs"),
+      standardFontDirectory: path.join(runtime.pdfRoot, "standard_fonts"),
+      wasmDirectory: path.join(runtime.pdfRoot, "wasm"),
+    },
+    limits: request.limits,
+    signal,
+  }).catch((error: unknown) => {
+    if (error instanceof RuntimeFailure) throw error
+    throw new RuntimeFailure("render-failed", "render")
+  })
+  await writeFileAtomic(output, bytes)
+  const pageID = DocumentRuntimeProtocol.PageID.make(`page_${randomUUID()}`)
+  const transfer = await streamOutput({
+    jobID: request.jobID,
+    kind: "pdf-text",
+    page: 1,
+    pageID,
+    sourcePath,
+    path: output,
+    declaredBytes: bytes.byteLength,
+    send,
+    signal,
+    openOutput,
+  })
+  const parsed = JSON.parse(Buffer.from(bytes).toString("utf8"))
+  await send({
+    protocolVersion: 1,
+    type: "pdf-info",
+    jobID: request.jobID,
+    pageCount: parsed.pageCount ?? 0,
+    outputPath: sourcePath,
+    outputID: transfer.outputID,
+    outputSha256: transfer.sha256,
+    outputBytes: bytes.byteLength,
+    metadata: parsed.title || parsed.author || parsed.subject || parsed.creator || parsed.producer
+      ? {
+          title: parsed.title,
+          author: parsed.author,
+          subject: parsed.subject,
+          creator: parsed.creator,
+          producer: parsed.producer,
+          creationDate: parsed.creationDate,
+          modDate: parsed.modDate,
+        }
+      : undefined,
+  })
+  await rm(output)
+  generated.delete(output)
+  await send({
+    protocolVersion: 1,
+    type: "completed",
+    jobID: request.jobID,
+    operation: "read-pdf",
+    pagesProcessed: 0,
+    temporaryBytes: 0,
+  })
+}
+
+async function executeCreateDocx(
+  request: typeof DocumentRuntimeProtocol.CreateDocxRequest.Type,
+  jobRoot: string,
+  signal: AbortSignal,
+  generated: Set<string>,
+  send: (event: DocumentRuntimeProtocol.WorkerOutput) => Promise<void>,
+  openOutput: (value: string) => Promise<OutputHandle>,
+) {
+  const input = resolveInRoot(jobRoot, request.inputPath)
+  await validateInputFile(jobRoot, input, request.inputBytes)
+  signal.throwIfAborted()
+  const content = await readDocxContent(input)
+  await makePrivateDirectory(jobRoot, "generate")
+  const sourcePath = DocumentRuntimeProtocol.OutputSourcePath.make("generate/output.docx")
+  const output = resolveInRoot(jobRoot, sourcePath)
+  generated.add(output)
+  const buffer = await generateDocx(content.contents)
+  await validateOoxmlDocx(new Uint8Array(buffer), buffer.byteLength)
+  await writeFileAtomic(output, new Uint8Array(buffer))
+  const pageID = DocumentRuntimeProtocol.PageID.make(`page_${randomUUID()}`)
+  const transfer = await streamOutput({
+    jobID: request.jobID,
+    kind: "docx-output",
+    page: 1,
+    pageID,
+    sourcePath,
+    path: output,
+    declaredBytes: buffer.byteLength,
+    send,
+    signal,
+    openOutput,
+  })
+  await send({
+    protocolVersion: 1,
+    type: "docx-ready",
+    jobID: request.jobID,
+    outputPath: sourcePath,
+    outputID: transfer.outputID,
+    outputSha256: transfer.sha256,
+    outputBytes: buffer.byteLength,
+  })
+  await rm(output)
+  generated.delete(output)
+  await send({
+    protocolVersion: 1,
+    type: "completed",
+    jobID: request.jobID,
+    operation: "create-docx",
+    pagesProcessed: 0,
+    temporaryBytes: 0,
+  })
+}
+
+async function readDocxContent(inputPath: string): Promise<typeof DocumentGenerate.DocxCreate.Input.Type> {
+  const json = await Bun.file(inputPath).json()
+  try {
+    return Schema.decodeUnknownSync(DocumentGenerate.DocxCreate.Input)(json)
+  } catch {
+    throw new RuntimeFailure("invalid-request", "input")
+  }
+}
+
 async function writeFileAtomic(file: string, bytes: Uint8Array) {
   await writeFile(file, bytes, { flag: "wx", mode: 0o600 })
 }
@@ -623,7 +776,7 @@ async function executeOcr(
 
 async function streamOutput(input: {
   readonly jobID: DocumentRuntimeProtocol.JobID
-  readonly kind: "page-png" | "ocr-tsv" | "office-text"
+  readonly kind: "page-png" | "ocr-tsv" | "office-text" | "pdf-text" | "docx-output"
   readonly page: number
   readonly pageID: DocumentRuntimeProtocol.PageID
   readonly resultID?: DocumentRuntimeProtocol.ResultID
@@ -696,7 +849,7 @@ export async function readLogicalChunk(handle: OutputHandle, buffer: Uint8Array)
 function makeOutputStart(
   input: {
     readonly jobID: DocumentRuntimeProtocol.JobID
-    readonly kind: "page-png" | "ocr-tsv" | "office-text"
+    readonly kind: "page-png" | "ocr-tsv" | "office-text" | "pdf-text" | "docx-output"
     readonly page: number
     readonly pageID: DocumentRuntimeProtocol.PageID
     readonly resultID?: DocumentRuntimeProtocol.ResultID
@@ -716,7 +869,8 @@ function makeOutputStart(
     declaredBytes: input.declaredBytes,
   }
   if (input.kind === "page-png") return { ...common, kind: input.kind }
-  if (input.kind === "office-text") return { ...common, kind: input.kind }
+  if (input.kind === "office-text" || input.kind === "pdf-text" || input.kind === "docx-output")
+    return { ...common, kind: input.kind }
   if (!input.resultID) throw new RuntimeFailure("worker-failed", "worker")
   return { ...common, kind: input.kind, resultID: input.resultID }
 }

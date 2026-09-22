@@ -408,3 +408,12 @@ On 2026-09-17, after the first sovereignty slice:
   bounded.
 - Parser-specific warnings (e.g. Mammoth conversion messages) are not size
   signals; enforce limits with file-size checks and bounded output encoding.
+
+## Koala Phase 10
+
+- When using `ModelEndpointClient` to call a local model endpoint, the transport
+  only pins the URL/fetch; the caller must add the `Authorization: Bearer <key>`
+  header by retrieving the provider's API key from the existing `Auth` service.
+- When building result metadata objects for Effect `Schema.optionalKey` fields,
+  omit `undefined` optional fields entirely before schema decoding to avoid
+  decode failures.

@@ -192,6 +192,58 @@ evaluation path; the Effect driver yields between bounded operations so caller
 cancellation and engine deadlines can be observed without executing model input
 as JavaScript or delegating it to a shell or sandbox.
 
+## Phase 10/11 Document Tools
+
+The `docx_read`, `pptx_read`, `spreadsheet_read`, `pdf_read`, `ocr_extract`,
+`vision_analyze`, `document_extract`, `docx_create`, and `artifact_validate`
+tool adapters are implemented on top of the industrial boundary. Each adapter:
+
+- Resolves `{ artifactID } | { path }` input through `ArtifactInput.Service`
+  into an immutable private snapshot.
+- Calls the appropriate `DocumentRuntime` operation (`readOffice`, `readPdf`,
+  `ocr`, `renderAndOcr`, `createDocx`) or runs the OOXML validator directly in a
+  scoped, audited, deadline-bound operation.
+- Persists generated DOCX files or large structured results as artifacts in the
+  artifact store and returns compact artifact references with source citations.
+- Records a durable redacted `koala_tool_audit` row.
+
+`vision_analyze` routes one image or one rendered PDF page at a time to a local
+vision-capable model. It uses `ModelRouter.route({ task: "vision" })` and the
+pinned `ModelEndpointClient` transport, reads the corresponding API key from the
+existing `Auth` service, and requests structured JSON observations.
+
+`docx_create` drives the bundled `docx` package through the confined document
+worker, validates the generated DOCX with `jszip`/`mammoth`, and promotes the
+validated bytes as a new artifact.
+
+`artifact_validate` runs the same OOXML validation module on an existing artifact
+snapshot and returns a structured validity result.
+
+The tools are registered in `ToolRegistry` but are filtered from the model-visible
+list unless `DocumentRuntime` is available or the `KOALA_ENABLE_DOCUMENT_TOOLS=1`
+override is set in development.
+
+## Phase 12 Knowledge Base
+
+`knowledge_ingest`, `knowledge_search`, and `knowledge_open` use a dedicated
+`KnowledgeStore` service backed by `koala_knowledge_entry` and
+`koala_knowledge_term` tables in the existing Core SQLite database. No FTS5
+extension is required; search uses a pure inverted index built from
+lowercase-alphanumeric tokens with a minimal English stop-word set.
+
+- `knowledge_ingest` resolves an artifact, reads its snapshot text, chunks it
+  (newline-aware, ~1000 characters, with a `NormalizedDocument` path), and writes
+  entries plus term-frequency rows scoped to the Session.
+- `knowledge_search` tokenizes the query the same way and performs a ranked
+  boolean AND search grouped by entry, returning the chunk text, source locator,
+  and score.
+- `knowledge_open` resolves a previously returned entry ID under the same
+  Session ownership and returns the chunk text and locator.
+
+Re-ingesting an artifact deletes its prior per-Session entries and terms. The
+knowledge tools are registered unconditionally because they depend only on the
+Core database.
+
 ## Document Runtime Foundation
 
 ```text

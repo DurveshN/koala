@@ -1,3 +1,4 @@
+import { DocumentGenerate } from "@koala-ai/core/document/generate"
 import {
   loadAndVerifyManifest,
   readImageDimensions,
@@ -104,6 +105,39 @@ export interface ReadOfficeResult {
   readonly sections: ReadonlyArray<OfficeSection>
 }
 
+export interface CreateDocxInput {
+  readonly contents: typeof DocumentGenerate.DocxContent.Type
+}
+
+export interface CreateDocxResult {
+  readonly path: string
+  readonly bytes: Uint8Array
+}
+
+export interface ReadPdfInput {
+  readonly inputPath: string
+  readonly limits?: DocumentRuntimeLimits.Requested
+}
+
+export interface ReadPdfPage {
+  readonly number: number
+  readonly rotation: number
+  readonly mediaBox: ReadonlyArray<number>
+  readonly blocks: ReadonlyArray<{ readonly text: string }>
+}
+
+export interface ReadPdfResult {
+  readonly title?: string
+  readonly author?: string
+  readonly subject?: string
+  readonly creator?: string
+  readonly producer?: string
+  readonly creationDate?: string
+  readonly modDate?: string
+  readonly pageCount: number
+  readonly pages: ReadonlyArray<ReadPdfPage>
+}
+
 export class RuntimeError extends Schema.TaggedErrorClass<RuntimeError>()("DocumentRuntimeError", {
   code: DocumentRuntimeProtocol.FailureCode,
   stage: DocumentRuntimeProtocol.FailureStage,
@@ -119,6 +153,8 @@ export interface Interface {
   readonly probe: () => Effect.Effect<Available, RuntimeError>
   readonly ocr: (input: OcrInput) => Effect.Effect<OcrResult, RuntimeError>
   readonly readOffice: (input: ReadOfficeInput) => Effect.Effect<ReadOfficeResult, RuntimeError>
+  readonly readPdf: (input: ReadPdfInput) => Effect.Effect<ReadPdfResult, RuntimeError>
+  readonly createDocx: (input: CreateDocxInput) => Effect.Effect<CreateDocxResult, RuntimeError>
   readonly renderAndOcr: <A, E, R>(
     input: RenderInput,
     callback: (page: ScopedPage) => Effect.Effect<A, E, R>,
@@ -239,6 +275,60 @@ export function layer(config: Config | undefined) {
     ),
   )
 
+  const readPdf: Interface["readPdf"] = Effect.fn("DocumentRuntime.readPdf")((input) =>
+    limited(
+      Effect.gen(function* () {
+        const limits = yield* requestedLimits(input.limits)
+        const runtime = yield* verifiedRuntime(health, policy)
+        return yield* withJob(health, (job) =>
+          Effect.gen(function* () {
+            const staged = yield* stageInput(job.path, input.inputPath, "input/document.pdf", limits.pdfInputBytes)
+            const request = yield* decodeInput(DocumentRuntimeProtocol.ReadPdfRequest, {
+              protocolVersion: 1,
+              type: "read-pdf",
+              jobID: jobID(),
+              inputPath: DocumentRuntimeManifest.RelativePath.make("input/document.pdf"),
+              inputBytes: staged.bytes,
+              limits,
+            })
+            return yield* runProxy(health, runtime, job, request, (session) => pdfWorker(session))
+          }),
+        )
+      }),
+    ),
+  )
+
+  const createDocx: Interface["createDocx"] = Effect.fn("DocumentRuntime.createDocx")((input) =>
+    limited(
+      Effect.gen(function* () {
+        const runtime = yield* verifiedRuntime(health, policy)
+        return yield* withJob(health, (job) =>
+          Effect.gen(function* () {
+            const content = yield* decodeInput(DocumentGenerate.DocxCreate.Input, { contents: input.contents })
+            const contentBytes = Buffer.from(JSON.stringify(content), "utf8")
+            const contentPath = "input/content.json"
+            const absoluteContentPath = path.join(job.path, ...contentPath.split("/"))
+            yield* attempt(
+              async () => {
+                await mkdir(path.dirname(absoluteContentPath), { recursive: true, mode: 0o700 })
+                await writeFile(absoluteContentPath, contentBytes, { flag: "wx", mode: 0o600 })
+              },
+              failure("invalid-request", "input"),
+            )
+            const request = yield* decodeInput(DocumentRuntimeProtocol.CreateDocxRequest, {
+              protocolVersion: 1,
+              type: "create-docx",
+              jobID: jobID(),
+              inputPath: DocumentRuntimeManifest.RelativePath.make(contentPath),
+              inputBytes: contentBytes.byteLength,
+            })
+            return yield* runProxy(health, runtime, job, request, (session) => docxWorker(session))
+          }),
+        )
+      }),
+    ),
+  )
+
   return Layer.succeed(
     Service,
     Service.of({
@@ -250,6 +340,8 @@ export function layer(config: Config | undefined) {
       probe,
       ocr,
       readOffice,
+      readPdf,
+      createDocx,
       renderAndOcr,
     }),
   )
@@ -501,7 +593,10 @@ function runProxy<A, E, R>(
       ).pipe(
         Effect.timeoutOrElse({
           duration:
-            request.type === "probe" || request.type === "read-office"
+            request.type === "probe" ||
+            request.type === "read-office" ||
+            request.type === "read-pdf" ||
+            request.type === "create-docx"
               ? DocumentRuntimeLimits.MaxJobDeadlineMs
               : request.limits.jobDeadlineMs,
           orElse: () => failure("job-deadline-exceeded", "worker", true),
@@ -750,6 +845,61 @@ function officeWorker(
   })
 }
 
+function pdfWorker(session: Session): Effect.Effect<ReadPdfResult, RuntimeError> {
+  return Effect.gen(function* () {
+    yield* expectType(session, "started", (event) => event.operation === "read-pdf")
+    const ready = yield* expectType(session, "pdf-info", () => true)
+    const output = yield* resolveOutput(
+      session.health,
+      pendingEvidence(session.job),
+      ready.outputPath,
+      ready.outputBytes,
+      ready.outputSha256,
+    )
+    const bytes = yield* pendingAttempt(session.health, () => DocumentPendingOutput.read(output))
+    yield* pendingAttempt(session.health, () => DocumentPendingOutput.remove(output))
+    const parsed = yield* decodePdfOutput(bytes)
+    if (parsed.pageCount !== ready.pageCount) return yield* failure("invalid-order", "worker")
+    yield* expectType(
+      session,
+      "completed",
+      (event) => event.operation === "read-pdf" && event.pagesProcessed === 0,
+    )
+    yield* cleanExit(session)
+    return parsed
+  })
+}
+
+function docxWorker(session: Session): Effect.Effect<CreateDocxResult, RuntimeError> {
+  return Effect.gen(function* () {
+    yield* expectType(session, "started", (event) => event.operation === "create-docx")
+    const ready = yield* expectType(session, "docx-ready", () => true)
+    const output = yield* resolveOutput(
+      session.health,
+      pendingEvidence(session.job),
+      ready.outputPath,
+      ready.outputBytes,
+      ready.outputSha256,
+    )
+    const bytes = yield* pendingAttempt(session.health, () => DocumentPendingOutput.read(output))
+    yield* pendingAttempt(session.health, () => DocumentPendingOutput.remove(output))
+    yield* expectType(
+      session,
+      "completed",
+      (event) => event.operation === "create-docx" && event.pagesProcessed === 0,
+    )
+    yield* cleanExit(session)
+    return { path: output.path, bytes }
+  })
+}
+
+function decodePdfOutput(bytes: Uint8Array) {
+  return Effect.try({
+    try: () => JSON.parse(Buffer.from(bytes).toString("utf8")) as ReadPdfResult,
+    catch: () => failure("invalid-order", "worker"),
+  })
+}
+
 function decodeOfficeOutput(bytes: Uint8Array) {
   return Effect.try({
     try: () => JSON.parse(Buffer.from(bytes).toString("utf8")) as ReadOfficeResult,
@@ -777,8 +927,15 @@ function nextEvent(session: Session): Effect.Effect<DocumentRuntimeProtocol.Work
     if (message.type === "failure") return yield* proxyFailure(message)
     if (message.type !== "event") return yield* closureFailure()
     const event = message.event
-    if (event.type === "page-ready" || event.type === "ocr-result" || event.type === "office-ready") {
-      const extension = event.type === "page-ready" ? ".png" : event.type === "office-ready" ? ".json" : ".tsv"
+    if (
+      event.type === "page-ready" ||
+      event.type === "ocr-result" ||
+      event.type === "office-ready" ||
+      event.type === "docx-ready" ||
+      event.type === "pdf-info"
+    ) {
+      const extension =
+        event.type === "page-ready" ? ".png" : event.type === "ocr-result" ? ".tsv" : event.type === "docx-ready" ? ".docx" : ".json"
       if (
         !event.outputPath.endsWith(extension) ||
         session.outputIDs.has(event.outputID) ||

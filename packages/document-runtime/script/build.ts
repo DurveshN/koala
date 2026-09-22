@@ -3,7 +3,7 @@ import { DocumentRuntimeManifest } from "@koala-ai/core/document-runtime/manifes
 import { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
 import { Schema } from "effect"
 import { createHash } from "node:crypto"
-import { createReadStream } from "node:fs"
+import { createReadStream, existsSync } from "node:fs"
 import { chmod, cp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import path from "node:path"
@@ -55,6 +55,7 @@ const canvasRoot = packageRoot("@napi-rs/canvas")
 const nativePackage = nativePackages[target]
 const nativeRoot = packageRoot(nativePackage)
 const officePackages = [
+  { name: "docx", version: "9.7.1", licenseFile: "LICENSE" },
   { name: "mammoth", version: "1.9.0", licenseFile: "LICENSE" },
   { name: "xlsx", version: "0.18.5", licenseFile: "LICENSE" },
   { name: "jszip", version: "3.10.1", licenseFile: "LICENSE.markdown" },
@@ -237,7 +238,16 @@ async function buildEntry(entry: "bootstrap" | "worker", external: ReadonlyArray
 }
 
 function packageRoot(name: string) {
-  return path.dirname(require.resolve(`${name}/package.json`))
+  try {
+    return path.dirname(require.resolve(`${name}/package.json`))
+  } catch {
+    let directory = path.dirname(require.resolve(name))
+    while (directory !== path.dirname(directory)) {
+      if (existsSync(path.join(directory, "package.json"))) return directory
+      directory = path.dirname(directory)
+    }
+    throw new Error(`Could not resolve package root for ${name}`)
+  }
 }
 
 async function copyEntries(from: string, to: string, entries: ReadonlyArray<string>) {

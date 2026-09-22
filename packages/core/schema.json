@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "8f097411-35f1-4af2-b6bb-f7f011d739b0",
+  "id": "97a181d6-bfbb-4d75-ac60-dbdf4cf364c2",
   "prevIds": [
-    "fbce9f46-2ced-472a-8fc5-3350ca22103b"
+    "8f097411-35f1-4af2-b6bb-f7f011d739b0"
   ],
   "ddl": [
     {
@@ -48,6 +48,14 @@
     },
     {
       "name": "event",
+      "entityType": "tables"
+    },
+    {
+      "name": "koala_knowledge_entry",
+      "entityType": "tables"
+    },
+    {
+      "name": "koala_knowledge_term",
       "entityType": "tables"
     },
     {
@@ -767,6 +775,136 @@
       "name": "data",
       "entityType": "columns",
       "table": "event"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "owner_session_id",
+      "entityType": "columns",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "artifact_id",
+      "entityType": "columns",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "index_profile_id",
+      "entityType": "columns",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "extractor_version",
+      "entityType": "columns",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "chunker_version",
+      "entityType": "columns",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "chunk_index",
+      "entityType": "columns",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "chunk_text",
+      "entityType": "columns",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "locator",
+      "entityType": "columns",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "term",
+      "entityType": "columns",
+      "table": "koala_knowledge_term"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "entry_id",
+      "entityType": "columns",
+      "table": "koala_knowledge_term"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "count",
+      "entityType": "columns",
+      "table": "koala_knowledge_term"
     },
     {
       "type": "text",
@@ -2090,6 +2228,51 @@
     },
     {
       "columns": [
+        "owner_session_id"
+      ],
+      "tableTo": "session",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_koala_knowledge_entry_owner_session_id_session_id_fk",
+      "entityType": "fks",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "columns": [
+        "artifact_id"
+      ],
+      "tableTo": "koala_artifact",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_koala_knowledge_entry_artifact_id_koala_artifact_id_fk",
+      "entityType": "fks",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "columns": [
+        "entry_id"
+      ],
+      "tableTo": "koala_knowledge_entry",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_koala_knowledge_term_entry_id_koala_knowledge_entry_id_fk",
+      "entityType": "fks",
+      "table": "koala_knowledge_term"
+    },
+    {
+      "columns": [
         "project_id"
       ],
       "tableTo": "project",
@@ -2261,6 +2444,16 @@
     },
     {
       "columns": [
+        "term",
+        "entry_id"
+      ],
+      "nameExplicit": false,
+      "name": "koala_knowledge_term_pk",
+      "entityType": "pks",
+      "table": "koala_knowledge_term"
+    },
+    {
+      "columns": [
         "project_id",
         "directory"
       ],
@@ -2358,6 +2551,15 @@
       "nameExplicit": false,
       "name": "event_pk",
       "table": "event",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "koala_knowledge_entry_pk",
+      "table": "koala_knowledge_entry",
       "entityType": "pks"
     },
     {
@@ -2559,6 +2761,62 @@
       "name": "event_aggregate_type_seq_idx",
       "entityType": "indexes",
       "table": "event"
+    },
+    {
+      "columns": [
+        {
+          "value": "owner_session_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "koala_knowledge_entry_owner_session_idx",
+      "entityType": "indexes",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "columns": [
+        {
+          "value": "artifact_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "koala_knowledge_entry_artifact_idx",
+      "entityType": "indexes",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "columns": [
+        {
+          "value": "term",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "koala_knowledge_term_term_idx",
+      "entityType": "indexes",
+      "table": "koala_knowledge_term"
+    },
+    {
+      "columns": [
+        {
+          "value": "entry_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "koala_knowledge_term_entry_idx",
+      "entityType": "indexes",
+      "table": "koala_knowledge_term"
     },
     {
       "columns": [
@@ -2987,6 +3245,36 @@
       "name": "koala_artifact_validation_scalar_check",
       "entityType": "checks",
       "table": "koala_artifact"
+    },
+    {
+      "value": "length(\"id\") > 4 AND substr(\"id\", 1, 4) = 'kwe_'",
+      "name": "koala_knowledge_entry_id_check",
+      "entityType": "checks",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "value": "\"chunk_index\" >= 0",
+      "name": "koala_knowledge_entry_chunk_index_check",
+      "entityType": "checks",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "value": "json_valid(\"locator\") AND json_type(\"locator\") = 'object'",
+      "name": "koala_knowledge_entry_locator_json_check",
+      "entityType": "checks",
+      "table": "koala_knowledge_entry"
+    },
+    {
+      "value": "\"count\" > 0",
+      "name": "koala_knowledge_term_count_check",
+      "entityType": "checks",
+      "table": "koala_knowledge_term"
+    },
+    {
+      "value": "length(\"term\") > 0",
+      "name": "koala_knowledge_term_term_check",
+      "entityType": "checks",
+      "table": "koala_knowledge_term"
     },
     {
       "value": "length(\"id\") = 40 AND substr(\"id\", 1, 4) = 'aud_' AND substr(\"id\", 13, 1) = '-' AND substr(\"id\", 18, 1) = '-' AND substr(\"id\", 19, 1) = '4' AND substr(\"id\", 23, 1) = '-' AND substr(\"id\", 24, 1) GLOB '[89ab]' AND substr(\"id\", 28, 1) = '-' AND length(replace(substr(\"id\", 5), '-', '')) = 32 AND replace(substr(\"id\", 5), '-', '') NOT GLOB '*[^0-9a-f]*'",

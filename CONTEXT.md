@@ -756,6 +756,57 @@ Phase 7 review-remediation verification completed on 2026-09-21:
 - `.github/workflows/publish.yml` parsed successfully with the locally installed
   Python YAML parser.
 
+Milestone 1 of Koala Phase 10 is implemented. The document-runtime protocol gained a `read-pdf` initial request and a streaming `pdf-info` terminal event. The worker now runs a pure-JS PDF text/metadata reader using the bundled `pdfjs-dist`, extracting page count, document metadata, page boxes/rotation, and text blocks while enforcing requested input-byte and page limits. The OpenCode `DocumentRuntime` service exposes a typed `readPdf(input)` method that stages the file, drives the proxy, collects the streamed JSON output, verifies size/digest, and parses the result.
+
+Files added:
+
+- `packages/document-runtime/src/read/pdf.ts`
+- `packages/document-runtime/src/read/index.ts`
+- `packages/document-runtime/test/read.test.ts`
+
+Files modified:
+
+- `packages/koala/src/document-runtime/protocol.ts` — `ReadPdfRequest`, `PdfInfoEvent`, `"read-pdf"` operation, `"pdf-text"` output frame, order/output state-machine wiring, new failure code.
+- `packages/document-runtime/src/index.ts` — export read module.
+- `packages/document-runtime/src/worker.ts` — `read-pdf` dispatch and `executeReadPdf`.
+- `packages/opencode/src/document/runtime.ts` — `ReadPdfInput`, `ReadPdfResult`, `readPdf`, `pdfWorker`.
+
+Verification completed on 2026-09-22:
+
+- `packages/koala`: `bun typecheck` passed.
+- `packages/document-runtime`: `bun typecheck` passed; full suite 88 passed, 2 skipped, 0 failed.
+- `packages/opencode`: `bun typecheck` passed; focused `test/document` suite 179 passed, 1 skipped, 0 failed.
+- The broader `packages/opencode` full test run timed out and showed pre-existing unrelated failures in `project/vcs.test.ts` (carriage-return diff parsing) and `provider/cf-ai-gateway-e2e.test.ts` (unsupported provider).
+
+Milestone 2 of Koala Phase 11 is implemented. The document-runtime side of DOCX generation and validation is wired end to end. `docx@9.7.1` is added to `packages/document-runtime`, locked in `source-lock.json`, bundled into the worker, and captured in the manifest component/dependency/license inventory. Koala owns `DocumentGenerate.DocxCreate` input/result schemas. The runtime protocol adds `create-docx` initial requests, `docx-ready` terminal events, an `awaiting-docx`/`awaiting-completed` order phase, a `docx-output` output frame, and the `docx-generation-failed` failure code. The worker generates a DOCX from a JSON content description using the `docx` library, validates the OPC package with `jszip` and `mammoth` (structural checks, macro/external-link rejection, compression ratio), streams `generate/output.docx`, then emits `docx-ready` and `completed`. OpenCode `DocumentRuntime.createDocx` writes the content JSON, drives the proxy, collects the binary output, and returns the absolute path and bytes. One-shot result events (`office-ready`, `docx-ready`, `pdf-info`) now advance the order to `awaiting-completed` so the subsequent `completed` event is accepted.
+
+Files added:
+
+- `packages/koala/src/document/generate.ts`
+- `packages/document-runtime/src/generate/docx.ts`
+- `packages/document-runtime/src/validation/ooxml.ts`
+- `packages/document-runtime/test/generate-docx.test.ts`
+- `packages/opencode/test/document/runtime-create-docx.test.ts`
+
+Files modified:
+
+- `packages/document-runtime/package.json` — `docx@9.7.1` dependency.
+- `packages/document-runtime/source-lock.json` — docx integrity.
+- `packages/document-runtime/script/build.ts` — `docx` in `officePackages`; fallback `packageRoot` for packages that do not export `package.json`.
+- `THIRD_PARTY_NOTICES.md` — MIT notice for docx.
+- `packages/koala/src/index.ts` — export `DocumentGenerate`.
+- `packages/koala/src/document-runtime/protocol.ts` — `CreateDocxRequest`, `DocxReadyEvent`, `Operation`, `FailureCode`, order/output state-machine wiring, `OutputSourcePath`, `DocxOutputStart`.
+- `packages/document-runtime/src/index.ts` — export generate/validation helpers.
+- `packages/document-runtime/src/worker.ts` — `create-docx` dispatch, `executeCreateDocx`.
+- `packages/opencode/src/document/runtime.ts` — `CreateDocxInput`, `CreateDocxResult`, `createDocx`, `docxWorker`, request timeout branch.
+
+Verification completed on 2026-09-22:
+
+- `packages/koala`: `bun typecheck` passed; full suite 598 passed.
+- `packages/document-runtime`: `bun typecheck` passed; full suite 90 passed, 2 skipped, 0 failed; build emitted the Windows x64 artifact with docx component, dependency, and license file.
+- `packages/opencode`: `bun typecheck` passed; focused `test/document` suite 182 passed, 1 skipped, 0 failed.
+- `bun.lock` reflects `docx@9.7.1` with integrity `sha512-ilXFf9Moz47ABjFpDiA5s1w9lpb4EFSp7+5iiJSbfyYDM+bpZdAgLlSr7fW4aXhVe/E+F6QCv0EvRVFEd5CsWg==`.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.
@@ -1009,6 +1060,259 @@ Verification:
   pending-root path and digest, matching the existing `page-ready`/`ocr-result`
   handoff and preventing the parent from opening a sandbox-writable path.
 
+## Milestone 1 — Koala Phase 10 browser-safe document schemas
+
+Implemented the browser-safe document schema foundation for Phase 10:
+
+- Added `packages/koala/src/document/engine.ts` with decoded `IndustrialTool.Engine`
+  identities for `PdfReadEngine`, `OcrEngine`, `OfficeReadEngine`, and
+  `VisionEngine`.
+- Added `packages/koala/src/document/normalized.ts` with Effect schemas for
+  normalized document content: `OcrWord`, `OcrLine`, `PageTextBlock`,
+  `PageTextBlock`, `ImageRegion`, `VisualObservation`, `Page`, `Section`,
+  `DocumentMetadata`, and `NormalizedDocument`. Coordinates are normalized 0-1;
+  absolute dimensions live in `Page.dimensions`.
+- Added `packages/koala/src/document/tool.ts` with `PdfRead`, `OcrExtract`,
+  `VisionAnalyze`, and `DocumentExtract` input/result pairs. Result schemas use
+  `IndustrialResult.make` to produce the checked success/error/cancelled/timeout
+  union envelopes.
+- Added `packages/koala/src/document/normalized.test.ts` and
+  `packages/koala/src/document/tool.test.ts` covering round-trips, invalid
+  locators, out-of-range coordinates, inconsistent result states, mismatched tool
+  names, and bounded collections.
+- Re-exported each module with its namespace (`DocumentEngine`,
+  `DocumentNormalized`, `DocumentTool`) and added them to
+  `packages/koala/src/index.ts`.
+- Added `"./document/*"` to `packages/koala/package.json` exports.
+
+Verification:
+
+- `packages/koala`: `bun test` passed (598 tests).
+- `packages/koala`: `bun typecheck` shows two pre-existing errors in
+  `src/document-runtime/protocol.ts` unrelated to these changes; the new document
+  modules typecheck cleanly.
+
 ## Flagged ambiguities
 
 - Legacy `experimental.chat.system.transform` can mutate the assembled baseline system prompt arbitrarily, but V2 plugins do not yet expose an equivalent hook. Decide separately whether to port it, replace dynamic uses with plugin-defined **Context Sources**, or narrow its semantics.
+
+## Session Update — 2026-09-22
+
+Refactored Koala Phase 10 Office readers and registered the new document tools:
+
+- `packages/opencode/src/tool/office.ts` now defines `docx_read`, `pptx_read`, and
+  `spreadsheet_read` through `IndustrialExecution.execute`, resolving sources via
+  `ArtifactInput.Service`, invoking `DocumentRuntime.readOffice`, and returning
+  typed industrial results with the existing friendly markdown preserved as the
+  result summary.
+- Added `packages/opencode/src/tool/document-common.ts` with shared schema
+  helpers (`SourceInput`, `OfficeReadData`, result-schema factory), provenance and
+  artifact-reference builders, runtime-error mapping, and normalized-document/OCR
+  mapping helpers.
+- Added Phase 10 tool adapters in `packages/opencode/src/tool/pdf-read.ts`,
+  `ocr-extract.ts`, `vision-analyze.ts`, and `document-extract.ts`. Each wraps
+  `IndustrialExecution.execute` with the matching `DocumentTool.*` schema and
+  `DocumentRuntime` operation.
+- Updated `packages/opencode/src/tool/registry.ts` to import the adapters and
+  gate all document tools on `DocumentRuntime.availability()` or
+  `process.env.KOALA_ENABLE_DOCUMENT_TOOLS === "1"`. Added `ArtifactInput.node` to
+  the registry's dependencies. Document tools remain visible under
+  `agentExecution === "sandbox"`.
+- Added tests:
+  - `packages/opencode/test/tool/office.test.ts` verifies Office reader execution
+    and runtime-error mapping with mocked services.
+  - `packages/opencode/test/tool/tool-registry-document.test.ts` verifies document
+    tools are hidden when the runtime is unavailable and the env flag is unset,
+    appear when the env flag is set, and remain visible under sandbox execution.
+
+Verification:
+
+- `packages/opencode`: `bun typecheck` passed.
+- `packages/opencode`: targeted tests for Office readers and document-tool
+  registry passed (6 tests).
+
+## Session Update — 2026-09-22
+
+Completed the Koala Phase 10 document/vision tool adapters and focused tests:
+
+- Implemented/rewrote adapters to satisfy `IndustrialExecution.execute` contract:
+  - `packages/opencode/src/tool/pdf-read.ts` — `pdf_read` using `DocumentRuntime.readPdf`.
+  - `packages/opencode/src/tool/ocr-extract.ts` — `ocr_extract` using direct
+    `DocumentRuntime.ocr` for explicit pages/images and `renderAndOcr` for PDF ranges.
+  - `packages/opencode/src/tool/vision-analyze.ts` — `vision_analyze` using model
+    routing, `ModelEndpointClient`, and parsed JSON observations.
+  - `packages/opencode/src/tool/document-extract.ts` — `document_extract`
+    normalizing PDF, image, office, and text sources through `DocumentRuntime`.
+- Fixed `packages/opencode/src/tool/document-common.ts` to omit `undefined`
+  optional metadata fields so decoded results satisfy
+  `DocumentNormalized.DocumentMetadata` and avoid `optionalKey` decode failures.
+- Updated `packages/opencode/src/tool/registry.ts` to add `ModelProfileStore` and
+  `ModelEndpointClient` dependencies for `vision_analyze`.
+- Added focused adapter tests:
+  - `packages/opencode/test/tool/pdf-read.test.ts`
+  - `packages/opencode/test/tool/ocr-extract.test.ts`
+  - `packages/opencode/test/tool/document-extract.test.ts`
+  - `packages/opencode/test/tool/vision-analyze.test.ts`
+- Reworked `packages/opencode/test/tool/document-tool-fixture.ts` to provide the
+  `ArtifactStore.Service` mock through `LayerNode.compile` replacement of
+  `ArtifactStoreLive.node`, satisfying Industrial Execution's same-session
+  artifact authentication in tests.
+
+Verification:
+
+- `packages/opencode`: `bun run typecheck` passed.
+- `packages/opencode`: targeted document-tool tests passed (8 tests: 5 adapter + 3 registry).
+
+## Koala Phase 10 Milestone 1 completion
+
+- PDF `read-pdf`, OCR, vision analysis, and `document_extract` tool adapters are
+  implemented in `packages/opencode/src/tool/`. The Office readers were
+  refactored through `IndustrialExecution.execute` and `ArtifactInput.Service`.
+- `vision_analyze` now retrieves `Auth` credentials and sends
+  `Authorization: Bearer <key>` when the stored credential is `type: "api"`.
+- Document tools are gated in `ToolRegistry` on `DocumentRuntime.availability()`
+  or the `KOALA_ENABLE_DOCUMENT_TOOLS=1` environment override.
+- Structured JSON artifacts and citations are produced; large results are
+  promoted as JSON artifacts via `ArtifactStore.promoteBatch`.
+
+Verification completed on 2026-09-22:
+
+- `packages/koala`: `bun typecheck` passed; 598 tests passed.
+- `packages/document-runtime`: `bun typecheck` passed; 88 passed, 2 skipped.
+- `packages/opencode`: `bun typecheck` passed; `bun test test/document` 179
+  passed, 1 skipped; targeted document-tool tests 11 passed.
+- `packages/desktop`: `bun typecheck` passed; production build passed.
+- `packages/core`: `bun typecheck` passed.
+- The broader `packages/core` full test suite timed out on unrelated external
+  network activity in `test/skill-discovery.test.ts`.
+
+## Koala Phase 11 Milestone 2 completion
+
+- Updated `packages/koala/src/document/generate.ts` so `DocxCreate.Result` returns
+  an `artifact: Artifact.Reference` instead of a host `path`.
+- Added `DocumentEngine.DocxCreateEngine` (`docx-writer` v1) in
+  `packages/koala/src/document/engine.ts`.
+- Implemented the `docx_create` tool adapter in
+  `packages/opencode/src/tool/docx-create.ts`. It drives
+  `IndustrialExecution.execute`, writes generated DOCX bytes to a staged artifact,
+  runs OOXML validation via `validateOoxmlDocx`, and promotes the output through
+  `ArtifactStore.promoteBatch`.
+- Registered `DocxCreateTool` in `packages/opencode/src/tool/registry.ts`;
+  `docx_create` is gated with the other document tools and appears under the
+  `KOALA_ENABLE_DOCUMENT_TOOLS=1` override.
+- Added `packages/opencode/test/tool/docx-create.test.ts` and updated
+  `packages/opencode/test/tool/tool-registry-document.test.ts`.
+- Fixed a type-narrowing issue in the pre-existing
+  `packages/opencode/test/document/runtime-create-docx.test.ts` so the document
+  test file typechecks.
+
+Verification completed on 2026-09-22:
+
+- `packages/koala`: `bun run typecheck` passed.
+- `packages/opencode`: `bun run typecheck` passed.
+- `packages/opencode`: `bun test test/tool/docx-create.test.ts
+  test/tool/tool-registry-document.test.ts --timeout 30000` passed (5 tests).
+- `packages/opencode`: `bun test test/document --timeout 30000` passed (182
+  passed, 1 skipped).
+
+## Koala Phase 11 artifact validation
+
+- Added `packages/koala/src/document/validation.ts` with `ArtifactValidate` input and
+  result schemas, plus a `DocumentEngine.ValidationEngine` identity in
+  `packages/koala/src/document/engine.ts`.
+- Added `packages/opencode/src/tool/artifact-validate.ts` implementing
+  `artifact_validate`. It resolves an artifact/path input, reads the snapshot
+  bytes, and runs the existing OOXML validator (`validateOoxmlDocx` from
+  `@koala-ai/document-runtime`) directly inside the industrial-execution
+  operation. The tool records the validation result and writes a durable
+  `koala_tool_audit` row.
+- Registered `ArtifactValidateTool` in `packages/opencode/src/tool/registry.ts` so
+  `artifact_validate` is gated alongside the other document tools.
+- Added `packages/opencode/test/tool/artifact-validate.test.ts` covering valid
+  DOCX and invalid content paths.
+
+Verification completed on 2026-09-22:
+
+- `packages/koala`: `bun run typecheck` passed.
+- `packages/document-runtime`: `bun run typecheck` passed; 90 passed, 2 skipped.
+- `packages/document-runtime`: `bun run build` passed; manifest includes the
+  `docx` component, dependency, and `licenses/docx-LICENSE`.
+- `packages/opencode`: `bun run typecheck` passed.
+- `packages/opencode`: `bun run script/build-node.ts` passed.
+- `packages/opencode`: `bun test test/document --timeout 30000` passed (182
+  passed, 1 skipped).
+- `packages/opencode`: targeted document-tool tests passed (15 tests across
+  `artifact-validate`, `docx-create`, `pdf-read`, `ocr-extract`, `vision-analyze`,
+  `document-extract`, `office`, and `tool-registry-document`).
+- `packages/desktop`: `bun run typecheck` passed.
+
+## Koala Phase 12 Milestone 3: knowledge-base schema
+
+- Added `packages/core/src/knowledge/sql.ts` with Drizzle definitions for the
+  inverted-index fallback knowledge-base tables:
+  - `koala_knowledge_entry` (FKs: `session(id)`, `koala_artifact(id)`);
+  - `koala_knowledge_term` (composite PK on `(term, entry_id)`, FK:
+    `koala_knowledge_entry(id)`).
+- Generated migration `20260922025546_koala_knowledge_base` under
+  `packages/core/src/database/migration/`.
+- Regenerated `packages/core/src/database/schema.gen.ts`,
+  `packages/core/src/database/migration.gen.ts`, and
+  `packages/core/schema.json`.
+
+Milestone 3 of Koala Phase 12 is implemented. Koala owns browser-safe `Knowledge` tool contracts (`knowledge_ingest`, `knowledge_search`, `knowledge_open`), including a branded `KnowledgeEntryID`, typed inputs, and industrial result envelopes. `DocumentEngine.KnowledgeEngine` identifies the `local-knowledge-store` engine. OpenCode provides a process-global `KnowledgeStore` service backed by the migrated `koala_knowledge_entry` and `koala_knowledge_term` tables: it chunks text (respecting newline boundaries and a 1000-character limit, with a `NormalizedDocument` path), tokenizes on lowercase alphanumeric tokens with a minimal English stop-word set, persists entries and per-entry term frequencies, and supports ranked boolean search by exact term overlap. The three knowledge tool adapters (`knowledge_ingest`, `knowledge_search`, `knowledge_open`) go through the shared `IndustrialExecution` boundary, request the correct permissions, resolve source artifacts through `ArtifactInput`, and return correlated result envelopes. The tool registry now yields all three tools and includes them in the built-in set unconditionally.
+
+Files added:
+
+- `packages/koala/src/knowledge/tool.ts`
+- `packages/koala/src/document/engine.ts` ( KnowledgeEngine line)
+- `packages/opencode/src/koala/knowledge-store.ts`
+- `packages/opencode/src/tool/knowledge-ingest.ts`
+- `packages/opencode/src/tool/knowledge-search.ts`
+- `packages/opencode/src/tool/knowledge-open.ts`
+- `packages/opencode/test/koala/knowledge-store.test.ts`
+- `packages/opencode/test/tool/knowledge-fixture.ts`
+- `packages/opencode/test/tool/knowledge-ingest.test.ts`
+- `packages/opencode/test/tool/knowledge-search.test.ts`
+- `packages/opencode/test/tool/knowledge-open.test.ts`
+
+Files modified:
+
+- `packages/koala/package.json` — added `./knowledge/*` export.
+- `packages/koala/src/index.ts` — exported `Knowledge` namespace.
+- `packages/koala/src/document/engine.ts` — added `KnowledgeEngine` constant.
+- `packages/opencode/src/tool/registry.ts` — imported, yielded, initialized, registered, and added `KnowledgeStore.node` dependency for the three knowledge tools.
+
+Verification completed on 2026-09-22:
+
+- `packages/koala`: `bun run typecheck` passed.
+- `packages/opencode`: `bun run typecheck` passed.
+- `packages/opencode`: focused knowledge tests passed:
+  - `test/koala/knowledge-store.test.ts`: 3 passed.
+  - `test/tool/knowledge-ingest.test.ts`: 1 passed.
+  - `test/tool/knowledge-search.test.ts`: 1 passed.
+  - `test/tool/knowledge-open.test.ts`: 2 passed.
+- `packages/opencode`: `bun test test/document --timeout 30000` returned 182 passed, 1 skipped, 0 failed.
+- `packages/opencode`: `bun run script/build-node.ts` completed successfully.
+
+## Final verification — Koala Phases 10-12
+
+Combined verification completed on 2026-09-22 after Milestones 1–3:
+
+- `packages/koala`: `bun run typecheck` passed.
+- `packages/document-runtime`: `bun run typecheck` passed; 90 passed, 2 skipped.
+- `packages/document-runtime`: `bun run build` passed; manifest includes `docx`
+  component/dependency and `licenses/docx-LICENSE`.
+- `packages/core`: `bun run typecheck` passed; `bun run migration --check` passed.
+- `packages/opencode`: `bun run typecheck` passed.
+- `packages/opencode`: `bun test test/document --timeout 30000` passed (182 passed,
+  1 skipped, 0 failed).
+- `packages/opencode`: targeted tool tests passed (19 tests across
+  `artifact-validate`, `docx-create`, `pdf-read`, `ocr-extract`, `vision-analyze`,
+  `document-extract`, `office`, `tool-registry-document`, `knowledge-ingest`,
+  `knowledge-search`, and `knowledge-open`).
+- `packages/opencode`: `bun run script/build-node.ts` passed.
+- `packages/desktop`: `bun run typecheck` passed.
+
+One unrelated `packages/core` effect-flock stress test has intermittent failures
+under process contention; it is not caused by the document, office, or knowledge
+changes.
