@@ -1484,3 +1484,29 @@ the ~184 MB native `opencode-cli` binary on every run.
 - `bun typecheck` from `packages/ui`, `packages/app`, and `packages/desktop` —
   all passed.
 - `bun test src/context/marked-parser.test.ts` from `packages/ui` — 3 passed.
+
+## Rebrand / startup follow-up: inline Koala mark/splash icon
+
+The desktop's loading splash (and other logo marks) was blank because the
+previous change used an external PNG asset (`/favicon-96x96-v3.png`), which
+could not be resolved under the desktop renderer's custom `oc://renderer/`
+protocol. The old geometric `opencode` mark rendered inline, which is why the
+icon disappeared once we moved to an external image.
+
+`git show 3f79784566873f04891c644cfb49d1c00eabd3f8 -- packages/ui/src/components/logo.tsx`
+confirms the rebrand commit did not touch the logo component; the startup icon
+was already the old `opencode` glyph before that commit.
+
+### Files changed
+
+- `packages/ui/src/components/logo-icon.ts` — new auto-generated file that
+  exports the Koala favicon PNG as a `data:image/png;base64` data URL.
+- `packages/ui/src/components/logo.tsx` — `Mark` and `Splash` now use the inline
+  base64 data URL, so the Koala icon renders immediately in the desktop renderer
+  without any external fetch.
+
+### Verification
+
+- `bun typecheck` from `packages/ui`, `packages/app`, and `packages/desktop` —
+  all passed.
+- `bun test src/context/marked-parser.test.ts` from `packages/ui` — 3 passed.

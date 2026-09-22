@@ -1,11 +1,11 @@
 import { type ComponentProps } from "solid-js"
-import koalaMark from "../assets/favicon/favicon-96x96-v3.png"
+import { koalaIconDataUrl } from "./logo-icon"
 
 export const Mark = (props: { class?: string }) => {
   return (
     <img
       data-component="logo-mark"
-      src={koalaMark}
+      src={koalaIconDataUrl}
       alt=""
       aria-hidden="true"
       classList={{ [props.class ?? ""]: !!props.class }}
@@ -18,7 +18,7 @@ export const Splash = (props: Pick<ComponentProps<"img">, "ref" | "class">) => {
     <img
       ref={props.ref}
       data-component="logo-splash"
-      src={koalaMark}
+      src={koalaIconDataUrl}
       alt=""
       aria-hidden="true"
       classList={{ [props.class ?? ""]: !!props.class }}
