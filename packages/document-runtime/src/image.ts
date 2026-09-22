@@ -1,7 +1,7 @@
 import type { DocumentRuntimeLimits } from "@koala-ai/core/document-runtime/limits"
 import { open } from "node:fs/promises"
-import { RuntimeFailure } from "./error"
-import { validateInputFile } from "./path"
+import { RuntimeFailure } from "./error.ts"
+import { validateInputFile } from "./path.ts"
 
 const MaxHeaderBytes = 1024 * 1024
 

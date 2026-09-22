@@ -3,7 +3,7 @@ import { DocumentRuntimeManifest } from "@koala-ai/core/document-runtime/manifes
 import type { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
 import { open } from "node:fs/promises"
 import path from "node:path"
-import { runtimeNativeBinary, runtimeNativePackage } from "./runtime"
+import { runtimeNativeBinary, runtimeNativePackage } from "./runtime.ts"
 
 const TessdataRevision = "87416418657359cb625c412a48b6e1d6d41c29bd"
 const RuntimePackageSha256 = "1239d4d885dcad42201a27ed9324f8f0f760b78700d8db9ced39a511cffe7eae"

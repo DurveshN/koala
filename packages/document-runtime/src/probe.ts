@@ -3,10 +3,10 @@ import { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
 import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import type { VerifiedManifest } from "./manifest"
-import { openPdf, probeRenderer, renderPdfPage } from "./render"
-import { runtimePaths } from "./runtime"
-import { probeTesseract, runTesseract } from "./tesseract"
+import type { VerifiedManifest } from "./manifest.ts"
+import { openPdf, probeRenderer, renderPdfPage } from "./render.ts"
+import { runtimePaths } from "./runtime.ts"
+import { probeTesseract, runTesseract } from "./tesseract.ts"
 
 export type ProductionProbeResult =
   | { readonly performed: true }

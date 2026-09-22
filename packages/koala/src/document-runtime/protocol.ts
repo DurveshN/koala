@@ -1,9 +1,9 @@
-export * as DocumentRuntimeProtocol from "./protocol"
+export * as DocumentRuntimeProtocol from "./protocol.ts"
 
 import { Schema } from "effect"
-import { DocumentRuntimeLimits } from "./limits"
-import { DocumentRuntimeManifest } from "./manifest"
-import { DocumentRuntimeTarget } from "./target"
+import { DocumentRuntimeLimits } from "./limits.ts"
+import { DocumentRuntimeManifest } from "./manifest.ts"
+import { DocumentRuntimeTarget } from "./target.ts"
 
 export const ProtocolVersion = Schema.Literal(1)
 export type ProtocolVersion = typeof ProtocolVersion.Type

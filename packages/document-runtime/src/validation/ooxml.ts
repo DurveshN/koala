@@ -1,7 +1,7 @@
 import { XMLParser } from "fast-xml-parser"
 import JSZip from "jszip"
 import mammoth from "mammoth"
-import { RuntimeFailure } from "../error"
+import { RuntimeFailure } from "../error.ts"
 
 const MaxCompressionRatio = 100
 

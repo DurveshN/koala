@@ -6,7 +6,7 @@ export {
   loadAndVerifyProductionManifest,
   loadTrustedAttestation,
   type VerifiedManifest,
-} from "./manifest"
+} from "./manifest.ts"
 export {
   openPdf,
   probeRenderer,
@@ -18,20 +18,20 @@ export {
   type RendererProbeOptions,
   type RenderedPage,
   type RenderPageOptions,
-} from "./render"
-export { generateDocx, type DocxContent, type DocxSection } from "./generate/docx"
-export { readImageDimensions, validateOcrImage, type ImageDimensions } from "./image"
-export { readPdf, type PdfOutput, type PdfPage, type PdfTextBlock, type ReadPdfOptions } from "./read"
-export { validateOoxmlDocx, type OoxmlValidationResult } from "./validation/ooxml"
+} from "./render.ts"
+export { generateDocx, type DocxContent, type DocxSection } from "./generate/docx.ts"
+export { readImageDimensions, validateOcrImage, type ImageDimensions } from "./image.ts"
+export { readPdf, type PdfOutput, type PdfPage, type PdfTextBlock, type ReadPdfOptions } from "./read/index.ts"
+export { validateOoxmlDocx, type OoxmlValidationResult } from "./validation/ooxml.ts"
 export {
   runtimeNativeBinary,
   runtimeNativePackage,
   runtimePaths,
   sanitizeNativeLoaderEnvironment,
-} from "./runtime"
-export { verifyProductionProfile, verifyProductionTargetBinaries } from "./production-profile"
-export { probeProductionRuntime, type ProductionProbeResult } from "./probe"
-export { createNodeStreamTransport, TransportError, type NodeStreamTransport } from "./transport"
+} from "./runtime.ts"
+export { verifyProductionProfile, verifyProductionTargetBinaries } from "./production-profile.ts"
+export { probeProductionRuntime, type ProductionProbeResult } from "./probe.ts"
+export { createNodeStreamTransport, TransportError, type NodeStreamTransport } from "./transport.ts"
 export {
   runTesseract,
   probeTesseract,
@@ -43,4 +43,4 @@ export {
   type TesseractOptions,
   type TesseractProbeOptions,
   type TesseractResult,
-} from "./tesseract"
+} from "./tesseract.ts"

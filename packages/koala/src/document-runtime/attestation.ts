@@ -1,8 +1,8 @@
-export * as DocumentRuntimeAttestation from "./attestation"
+export * as DocumentRuntimeAttestation from "./attestation.ts"
 
 import { Schema } from "effect"
-import { DocumentRuntimeManifest } from "./manifest"
-import { DocumentRuntimeTarget } from "./target"
+import { DocumentRuntimeManifest } from "./manifest.ts"
+import { DocumentRuntimeTarget } from "./target.ts"
 
 export const AttestationVersion = Schema.Literal(1)
 export const ProductionProfileVersion = Schema.Literal(1)

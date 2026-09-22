@@ -1,4 +1,4 @@
-export * as DocumentRuntimeLimits from "./limits"
+export * as DocumentRuntimeLimits from "./limits.ts"
 
 import { Schema } from "effect"
 

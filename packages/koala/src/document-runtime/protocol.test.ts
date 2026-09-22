@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
-import { DocumentRuntimeLimits } from "./limits"
-import { DocumentRuntimeProtocol } from "./protocol"
+import { DocumentRuntimeLimits } from "./limits.ts"
+import { DocumentRuntimeProtocol } from "./protocol.ts"
 
 const jobID = "job_123e4567-e89b-42d3-a456-426614174000"
 const otherJobID = "job_223e4567-e89b-42d3-a456-426614174000"

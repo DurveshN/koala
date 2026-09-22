@@ -5,7 +5,7 @@ import {
   type Limits,
   type StructuredText,
   validateInputBytes,
-} from "./common"
+} from "./common.ts"
 
 export async function readDocx(inputPath: string, declaredBytes: number, limits?: Limits): Promise<Uint8Array> {
   validateInputBytes(declaredBytes, limits)

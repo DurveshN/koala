@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
-import { DocumentRuntimeTarget } from "./target"
+import { DocumentRuntimeTarget } from "./target.ts"
 
 describe("DocumentRuntimeTarget", () => {
   test("contains exactly the six supported targets", () => {

@@ -1,4 +1,4 @@
-export * as DocumentRuntimeTarget from "./target"
+export * as DocumentRuntimeTarget from "./target.ts"
 
 import { Schema } from "effect"
 

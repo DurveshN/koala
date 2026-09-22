@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
-import { DocumentRuntimeManifest } from "./manifest"
+import { DocumentRuntimeManifest } from "./manifest.ts"
 
 const hash = "0123456789abcdef".repeat(4)
 const licensePath = "licenses/tesseract-LICENSE.txt"

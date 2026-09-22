@@ -1,7 +1,7 @@
 import { DocumentRuntimeLimits } from "@koala-ai/core/document-runtime/limits"
 import type { TextItem } from "pdfjs-dist/types/src/display/api.js"
-import { RuntimeFailure } from "../error"
-import { openPdf, readPdfBytes, type PdfAssets } from "../render"
+import { RuntimeFailure } from "../error.ts"
+import { openPdf, readPdfBytes, type PdfAssets } from "../render.ts"
 
 export interface PdfTextBlock {
   readonly text: string

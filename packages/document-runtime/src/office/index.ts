@@ -1,6 +1,6 @@
-export { readDocx } from "./docx"
-export { readPptx } from "./pptx"
-export { readXlsx } from "./xlsx"
+export { readDocx } from "./docx.ts"
+export { readPptx } from "./pptx.ts"
+export { readXlsx } from "./xlsx.ts"
 export {
   defaultLimits as officeDefaultLimits,
   encodeStructuredText,
@@ -9,4 +9,4 @@ export {
   type Limits as OfficeLimits,
   type Section as OfficeSection,
   type StructuredText as OfficeStructuredText,
-} from "./common"
+} from "./common.ts"

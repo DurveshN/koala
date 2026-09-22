@@ -4,10 +4,10 @@ import { open, readFile, rm } from "node:fs/promises"
 import path from "node:path"
 import type { ReadableStream } from "node:stream/web"
 import { pathToFileURL } from "node:url"
-import { RuntimeFailure } from "./error"
-import { pdfjsCanvas } from "./pdfjs-canvas"
-import { validateOutputFile } from "./path"
-import { sanitizeNativeLoaderEnvironment } from "./runtime"
+import { RuntimeFailure } from "./error.ts"
+import { pdfjsCanvas } from "./pdfjs-canvas.ts"
+import { validateOutputFile } from "./path.ts"
+import { sanitizeNativeLoaderEnvironment } from "./runtime.ts"
 
 export type PdfAssets = {
   readonly pdfEntry: string

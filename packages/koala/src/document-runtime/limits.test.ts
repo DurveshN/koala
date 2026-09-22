@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
-import { DocumentRuntimeLimits } from "./limits"
+import { DocumentRuntimeLimits } from "./limits.ts"
 
 describe("DocumentRuntimeLimits", () => {
   test("exposes the fixed hard ceilings", () => {

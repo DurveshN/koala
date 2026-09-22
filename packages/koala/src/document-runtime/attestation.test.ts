@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
-import { DocumentRuntimeAttestation } from "./attestation"
+import { DocumentRuntimeAttestation } from "./attestation.ts"
 
 const digest = "0123456789abcdef".repeat(4)
 const release = { version: "1.2.3", sourceCommit: "a".repeat(40), buildID: "github-123-1" } as const

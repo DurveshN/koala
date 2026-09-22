@@ -4,8 +4,8 @@ import { constants } from "node:fs"
 import { access, lstat, mkdir, open, rm } from "node:fs/promises"
 import path from "node:path"
 import type { Readable } from "node:stream"
-import { RuntimeFailure } from "./error"
-import { makePrivateDirectory, validateInputFile, validateOutputFile, validatePrivateJobRoot } from "./path"
+import { RuntimeFailure } from "./error.ts"
+import { makePrivateDirectory, validateInputFile, validateOutputFile, validatePrivateJobRoot } from "./path.ts"
 
 type SpawnedProcess = ChildProcessByStdio<null, Readable, Readable>
 type SpawnOptions = {

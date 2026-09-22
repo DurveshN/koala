@@ -6,7 +6,7 @@ import { createHash } from "node:crypto"
 import { createReadStream } from "node:fs"
 import { lstat, opendir, readFile, realpath } from "node:fs/promises"
 import path from "node:path"
-import { verifyProductionProfile, verifyProductionTargetBinaries } from "./production-profile"
+import { verifyProductionProfile, verifyProductionTargetBinaries } from "./production-profile.ts"
 
 const ManifestName = "manifest.json"
 const MaxManifestBytes = 8 * 1024 * 1024
@@ -23,9 +23,16 @@ export type VerifiedManifest = {
 
 export class ManifestVerificationError extends Error {
   override readonly name = "ManifestVerificationError"
+  readonly code:
+    | "invalid-manifest"
+    | "invalid-attestation"
+    | "target-mismatch"
+    | "file-mismatch"
+    | "release-incomplete"
+    | "profile-mismatch"
 
   constructor(
-    readonly code:
+    code:
       | "invalid-manifest"
       | "invalid-attestation"
       | "target-mismatch"
@@ -34,6 +41,7 @@ export class ManifestVerificationError extends Error {
       | "profile-mismatch",
   ) {
     super(code)
+    this.code = code
   }
 }
 

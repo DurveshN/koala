@@ -1,7 +1,7 @@
-export * as DocumentRuntimeManifest from "./manifest"
+export * as DocumentRuntimeManifest from "./manifest.ts"
 
 import { Schema } from "effect"
-import { DocumentRuntimeTarget } from "./target"
+import { DocumentRuntimeTarget } from "./target.ts"
 
 export const ManifestVersion = Schema.Literal(1)
 export type ManifestVersion = typeof ManifestVersion.Type

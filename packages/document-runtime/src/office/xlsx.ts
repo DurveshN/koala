@@ -1,5 +1,5 @@
 import xlsx from "xlsx"
-import { RuntimeFailure } from "../error"
+import { RuntimeFailure } from "../error.ts"
 import {
   encodeStructuredText,
   limitStructuredText,
@@ -7,7 +7,7 @@ import {
   type Section,
   type StructuredText,
   validateInputBytes,
-} from "./common"
+} from "./common.ts"
 
 export async function readXlsx(inputPath: string, declaredBytes: number, limits?: Limits): Promise<Uint8Array> {
   validateInputBytes(declaredBytes, limits)
