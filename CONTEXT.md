@@ -1533,3 +1533,24 @@ prefer the SVG declaration.
 
 - `bun typecheck` from `packages/ui`, `packages/app`, and `packages/desktop` —
   all passed.
+
+## Rebrand / startup follow-up: replace logo paths with Twemoji koala vector
+
+`packages/ui/src/components/logo.tsx` now keeps the original OpenCode SVG
+component structure for `Mark` and `Splash`. The old `opencode` geometric paths
+were replaced with real vector koala paths taken from Twemoji (`assets/svg/1f428.svg`,
+CC-BY 4.0), scaled to fit the existing `16×20` and `80×100` viewboxes. This is
+pure SVG, so it paints synchronously for the whole loading period and matches the
+koala emoji favicon.
+
+### Files changed
+
+- `packages/ui/src/components/logo.tsx` — `Mark` and `Splash` now draw a vector
+  koala using the original OpenCode SVG shell; `Logo` retains the `Koala` text
+  wordmark.
+
+### Verification
+
+- `bun typecheck` from `packages/ui`, `packages/app`, and `packages/desktop` —
+  all passed.
+- `bun test src/context/marked-parser.test.ts` from `packages/ui` — 3 passed.
