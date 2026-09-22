@@ -1485,28 +1485,27 @@ the ~184 MB native `opencode-cli` binary on every run.
   all passed.
 - `bun test src/context/marked-parser.test.ts` from `packages/ui` — 3 passed.
 
-## Rebrand / startup follow-up: vector Koala icon inside original OpenCode SVG structure
+## Rebrand / startup follow-up: reuse OpenCode logo structure, only swap icon asset
 
 A history trace from `5db73420828f73ed031932492af58e18f9e82f47` to `HEAD` showed:
 
 - `git show 3f79784566873f04891c644cfb49d1c00eabd3f8 -- packages/ui/src/components/logo.tsx`
   produces no output; the rebrand commit did not touch the logo component.
-- The original `Mark`/`Splash` were inline SVGs; replacing them with raster images
-  (first as `<img>`, then as SVG `<image>` with a base64 PNG) still required an
-  async image decode, so the icon only flashed for a split-second before the
-  splash was unmounted.
+- The original `Mark`/`Splash` were inline SVGs; the first replacement switched them
+  to external `<img>` sources, which resolved badly under the desktop renderer's
+  `oc://renderer/` protocol and briefly flashed or stayed blank.
 
-To match the original OpenCode mark's synchronous paint behavior, `Mark`/`Splash`
-were restored to the original SVG component shape and the path content was
-replaced with a simple vector koala built from SVG `<circle>`/`<ellipse>`
-elements. This removes any image decode step and lets the icon appear for the
-entire loading duration.
+To honor "reuse OpenCode code, just update the icon", `Mark`/`Splash` were
+restored to their original SVG component structure. Only the inner icon content
+changed: the two `<path>` elements were replaced with a single inline SVG
+`<image>` whose `href` is a base64 data URL of the Koala favicon PNG. Because the
+image data is embedded in the component, it paints synchronously with the SVG,
+matching the timing/visibility behavior of the original OpenCode mark.
 
 ### Files changed
 
-- `packages/ui/src/components/logo.tsx` — `Mark` and `Splash` are SVGs again.
-  The inner icon content is now a vector koala face using theme CSS variables,
-  so it paints synchronously like the old OpenCode geometric mark.
+- `packages/ui/src/components/logo.tsx` — `Mark` and `Splash` are SVGs again and
+  draw the Koala favicon via a synchronous base64 SVG `<image>`.
 - `packages/ui/src/components/logo-icon.ts` — removed.
 - `packages/ui/src/custom-elements.d.ts` — reverted the temporary `*.png` module
   declaration because the component no longer imports a PNG file.
