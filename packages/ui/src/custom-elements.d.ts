@@ -6,6 +6,11 @@ import { DIFFS_TAG_NAME } from "@pierre/diffs"
  * Required for using the @pierre/diffs web component in .tsx files.
  */
 
+declare module "*.png" {
+  const src: string
+  export default src
+}
+
 declare module "solid-js" {
   namespace JSX {
     interface IntrinsicElements {

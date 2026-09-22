@@ -1460,3 +1460,27 @@ early in renderer startup, which added unnecessary decode/render work.
 - `bun test src/wsl/settings-model.test.ts` from `packages/app` — 10 passed.
 - `bun test electron-builder.config.test.ts --timeout 30000` from
   `packages/desktop` — 12 passed.
+
+## Rebrand / startup follow-up: Koala splash/mark icon and faster dev startup
+
+The loading splash and small logo mark still rendered the old geometric
+`opencode` glyph, and the dev startup remained slow because `predev` re-downloaded
+the ~184 MB native `opencode-cli` binary on every run.
+
+### Files changed
+
+- `packages/ui/src/components/logo.tsx` — replaced the geometric `Mark` and
+  `Splash` SVGs with the Koala favicon PNG, so the loading splash and other
+  logo marks no longer show the old `opencode` glyph.
+- `packages/ui/src/custom-elements.d.ts` — added a `*.png` module declaration so
+  the logo component can import the PNG asset with full type safety.
+- `packages/desktop/scripts/utils.ts` — `downloadCliToResources()` now writes a
+  `resources/opencode-cli.version` sidecar and skips re-downloading when the
+  correct CLI version is already present. This removes the repeated ~184 MB
+  network fetch during `bun --cwd packages/desktop dev` restarts.
+
+### Verification
+
+- `bun typecheck` from `packages/ui`, `packages/app`, and `packages/desktop` —
+  all passed.
+- `bun test src/context/marked-parser.test.ts` from `packages/ui` — 3 passed.
