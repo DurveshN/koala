@@ -1515,3 +1515,21 @@ matching the timing/visibility behavior of the original OpenCode mark.
 - `bun typecheck` from `packages/ui`, `packages/app`, and `packages/desktop` —
   all passed.
 - `bun test src/context/marked-parser.test.ts` from `packages/ui` — 3 passed.
+
+## Rebrand / startup follow-up: restore SVG favicon link in index.html
+
+The upstream `packages/desktop/src/renderer/index.html` (and the equivalent
+`packages/app/index.html`) both included a `<link rel="icon" type="image/svg+xml"
+href="./favicon-v3.svg" />` favicon link. That link had been removed during the
+favicon cleanup, which could leave the page/window favicon blank in clients that
+prefer the SVG declaration.
+
+### Files changed
+
+- `packages/desktop/src/renderer/index.html` — restored the SVG favicon link.
+- `packages/app/index.html` — restored the SVG favicon link.
+
+### Verification
+
+- `bun typecheck` from `packages/ui`, `packages/app`, and `packages/desktop` —
+  all passed.
