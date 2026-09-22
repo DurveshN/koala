@@ -1329,3 +1329,37 @@ changes.
   `feat(koala,opencode,core): implement Phases 10-12 document, docx, and knowledge tools`.
 - Pushed to `origin/phase-10-11-12`:
   https://github.com/DurveshN/koala/pull/new/phase-10-11-12
+
+## Local desktop startup
+
+Command:
+
+```bash
+bun --cwd packages/desktop dev
+```
+
+(also available as `bun dev:desktop` from the repo root).
+
+Before launching, this runs the desktop `predev` script, which:
+- copies dev icons,
+- rebuilds `packages/opencode` Node output,
+- runs `bun run build` in `packages/document-runtime`,
+- downloads the matching native `opencode-cli` binary to `resources/opencode-cli.exe`.
+
+Several source files were incompatible with Node's TypeScript type-stripping
+mode that Electron main process uses when loading workspace `.ts` files
+directly. Fixes applied:
+
+- `packages/document-runtime/src/error.ts`, `src/manifest.ts`,
+  `src/transport.ts` — removed TypeScript parameter properties.
+- `packages/koala/src/document-runtime/ndjson.ts` — removed parameter property.
+- Added explicit `.ts` extensions to relative imports in
+  `packages/koala/src/document-runtime/*.ts` and
+  `packages/document-runtime/src/**/*.ts`.
+- `packages/desktop/tsconfig.json` — added `allowImportingTsExtensions: true`
+  so `.ts` import extensions typecheck under `tsgo -b`.
+
+After these fixes, `bun --cwd packages/desktop dev` launched successfully:
+the Electron window opened, the sidecar started on a local port, the backend
+reported `server ready`, and first-launch onboarding completed. The command
+was left running during verification.
