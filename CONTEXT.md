@@ -5,6 +5,33 @@ industrial work. It is based on an independent import of OpenCode Desktop
 `v1.18.31` at upstream commit
 `014614d35b397775e5d397a490fc72368c894ec2`.
 
+## State rebrand from opencode to koala
+
+As part of the Koala-only conversion, all local state written by Desktop and its embedded sidecar was moved from opencode-named directories/files to koala-named ones. The project-level `.opencode` directory and `opencode.json`/`opencode.jsonc` filenames are deliberately retained as a compatibility contract with existing repositories and tooling.
+
+### What changed
+
+- Core XDG root (`packages/core/src/global.ts`) is now `koala`, so platform data/config/state/cache/tmp directories become `~/.local/share/koala`, `~/.config/koala`, `~/.local/state/koala`, `~/.cache/koala`, `/tmp/koala` (and equivalent on Windows/macOS when the sidecar is not running under Desktop).
+- Default database (`packages/core/src/database/database.ts`) is now `koala.db` / `koala-<channel>.db`.
+- Default log file (`packages/core/src/observability/logging.ts`) is now `koala.log`.
+- Electron Desktop app IDs (`packages/desktop/src/main/index.ts`) changed to `ai.koala.desktop.dev`, `ai.koala.desktop.beta`, and `ai.koala.desktop`, which puts `userData` under e.g. `%AppData%\ai.koala.desktop.dev`.
+- Desktop persisted store stems (`packages/desktop/src/main/store-keys.ts`, `store-cleanup.ts`, `windows.ts`, `install-state.ts`, `updater.ts`, `logging.ts`) changed from `opencode.*` to `koala.*`, or from `opencode-updater` to `koala-updater`.
+- App renderer storage keys (`packages/app/src/utils/persist.ts`, `entry.tsx`, `context/language.tsx`) changed from `opencode.*` to `koala.*`.
+- Desktop renderer locale/last-url keys (`packages/desktop/src/renderer/index.tsx`, `renderer/i18n/index.ts`) changed to `koala.global.dat` and `koala.desktop.window.*`.
+- Electron-builder artifact/package names (`packages/desktop/electron-builder.config.ts`) changed to `koala-desktop-${os}-${arch}` and Linux rpm/deb package names `koala`, `koala-dev`, `koala-beta`.
+- Bundled CLI binary copy (`packages/desktop/scripts/utils.ts`, `background-cli.ts`, `.gitignore`) is renamed to `resources/koala-cli`.
+- Linux legacy launcher content (`packages/desktop/resources/linux/opencode-desktop.desktop`) updated to point to `ai.koala.desktop`.
+- Managed MDM/system config directory (`packages/opencode/src/config/managed.ts`) moved to `/Library/Application Support/koala`, `%ProgramData%\koala`, `/etc/koala`.
+- Nix installed icon/metainfo paths (`nix/desktop.nix`) updated to `ai.koala.desktop`.
+- Web troubleshooting docs and E2E tests were updated to reference `koala.global.dat`, `koala.window.browser.dat`, and `koala.settings.dat`.
+
+### What was left unchanged (deliberately)
+
+- Project-level `.opencode` directories and `opencode.json`/`opencode.jsonc` files remain as a public workspace config contract.
+- The global config file name defaults (`~/.config/koala/opencode.jsonc`) remain opencode-named for now because a large number of test fixtures and documentation depend on them.
+- Internal identifiers such as the `opencode://` URL protocol, the `opencode` BasicAuth service username, environment variable names, the `@opencode-ai/*` package scope, and the source npm package `opencode2` still contain `opencode`. These are identifiers, not file paths.
+- CI workflow artifacts and the Nix install prefix still reference opencode in places; they affect build packaging rather than runtime user state.
+
 ## Product Decisions
 
 - Keep OpenCode Desktop's layout and interaction model initially.

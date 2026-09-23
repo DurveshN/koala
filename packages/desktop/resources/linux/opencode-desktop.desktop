@@ -1,10 +1,10 @@
 [Desktop Entry]
 Name=Koala
-Exec=/opt/Koala/ai.opencode.desktop %U
+Exec=/opt/Koala/ai.koala.desktop %U
 Terminal=false
 Type=Application
-Icon=ai.opencode.desktop
-StartupWMClass=ai.opencode.desktop
+Icon=ai.koala.desktop
+StartupWMClass=ai.koala.desktop
 NoDisplay=true
 Comment=Open source AI coding agent
 Categories=Development;
