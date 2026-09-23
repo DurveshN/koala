@@ -44,6 +44,7 @@ import { Provider } from "@/provider/provider"
 import { WebSearchTool } from "./websearch"
 import { LspTool } from "./lsp"
 import * as Truncate from "./truncate"
+import * as ToolJsonSchema from "./json-schema"
 import { ApplyPatchTool } from "./apply_patch"
 import { Glob } from "@opencode-ai/core/util/glob"
 import path from "path"
@@ -358,12 +359,19 @@ const layer = Layer.effect(
       return (yield* all()).map((tool) => tool.id)
     })
 
-    const describeTask = Effect.fn("ToolRegistry.describeTask")(function* (agent: Agent.Info) {
+    const subagentOptions = Effect.fn("ToolRegistry.subagentOptions")(function* (agent: Agent.Info) {
       const items = (yield* agents.list()).filter((item) => item.mode !== "primary")
-      const filtered = items.filter(
-        (item) => Permission.evaluate("task", item.name, agent.permission).action !== "deny",
-      )
-      const list = filtered.toSorted((a, b) => a.name.localeCompare(b.name))
+      return items
+        .filter((item) => Permission.evaluate("task", item.name, agent.permission).action !== "deny")
+        .toSorted((a, b) => a.name.localeCompare(b.name))
+    })
+
+    const subagentNames = Effect.fn("ToolRegistry.subagentNames")(function* (agent: Agent.Info) {
+      return (yield* subagentOptions(agent)).map((item) => item.name)
+    })
+
+    const describeTask = Effect.fn("ToolRegistry.describeTask")(function* (agent: Agent.Info) {
+      const list = yield* subagentOptions(agent)
       const description = list
         .map(
           (item) =>
@@ -415,6 +423,29 @@ const layer = Layer.effect(
             jsonSchema: tool.jsonSchema,
           }
           yield* plugin.trigger("tool.definition", { toolID: tool.id }, output)
+
+          if (tool.id === TaskTool.id) {
+            const names = yield* subagentNames(input.agent)
+            const base = ToolJsonSchema.fromTool({ ...tool, jsonSchema: output.jsonSchema })
+            if (typeof base === "object" && base !== null) {
+              const existing = base.properties?.subagent_type
+              output.jsonSchema = {
+                ...base,
+                properties: {
+                  ...base.properties,
+                  subagent_type: {
+                    ...(typeof existing === "object" && existing !== null ? existing : {}),
+                    enum: names,
+                    description:
+                      names.length === 0
+                        ? "No subagent types are currently available."
+                        : `The type of specialized agent to use for this task; must be one of: ${names.join(", ")}`,
+                  },
+                },
+              }
+            }
+          }
+
           const jsonSchema =
             output.parameters === tool.parameters || output.jsonSchema !== tool.jsonSchema
               ? output.jsonSchema

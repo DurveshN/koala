@@ -834,6 +834,23 @@ Verification completed on 2026-09-22:
 - `packages/opencode`: `bun typecheck` passed; focused `test/document` suite 182 passed, 1 skipped, 0 failed.
 - `bun.lock` reflects `docx@9.7.1` with integrity `sha512-ilXFf9Moz47ABjFpDiA5s1w9lpb4EFSp7+5iiJSbfyYDM+bpZdAgLlSr7fW4aXhVe/E+F6QCv0EvRVFEd5CsWg==`.
 
+Local model tool-calling is corrected for small/quantized OpenAI-compatible endpoints. The fallback system prompt pushed every unknown model toward the `task` tool for file searches, and the `task` tool exposed subagent names (`general`, `explore`, etc.) as free-form strings. Local Gemma-family models confused those names with tool names and emitted invalid `general`/`explore` tool calls. Fixes:
+
+- Added `packages/opencode/src/session/prompt/gemma.txt` with a terse local-model system prompt that explicitly states agent names are not tools and that simple file operations should use direct tools.
+- Updated `packages/opencode/src/session/system.ts` to route model IDs containing `gemma` to the new prompt.
+- Updated `packages/opencode/src/session/prompt/default.txt` to prefer direct `read`/`glob`/`grep`/`edit` tools for simple file work instead of delegating through `task`.
+- Updated `packages/opencode/src/tool/task.txt` to clarify that agent names are values for `subagent_type`, not tools.
+- Updated `packages/opencode/src/tool/registry.ts` to inject an `enum` of currently allowed subagent names into the `task` tool's JSON schema, giving the model a closed list instead of an unconstrained string.
+- Added `packages/opencode/test/session/system.test.ts` coverage for Gemma prompt selection.
+
+Verification completed on 2026-09-23:
+
+- `packages/opencode`: `bun typecheck` passed.
+- `packages/core`: `bun typecheck` passed.
+- `packages/app`: `bun typecheck` passed.
+- `packages/opencode/test/session/system.test.ts`: 7 passed.
+- `packages/opencode/test/tool/task.test.ts` and `packages/opencode/test/tool/registry.test.ts`: 41 passed.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.

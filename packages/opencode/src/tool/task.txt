@@ -1,6 +1,6 @@
 Launch a new agent to handle complex, multistep tasks autonomously.
 
-When using the Task tool, you must specify a subagent_type parameter to select which agent type to use.
+When using the Task tool, you must specify a subagent_type parameter to select which agent type to use. The subagent_type must be one of the agent names listed below. These agent names are NOT tool names — do not call them directly as tools. Use this task tool with the correct subagent_type.
 
 When NOT to use the Task tool:
 - If you want to read a specific file path, use the Read or Glob tool instead of the Task tool, to find the match more quickly
