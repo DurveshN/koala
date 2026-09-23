@@ -851,6 +851,25 @@ Verification completed on 2026-09-23:
 - `packages/opencode/test/session/system.test.ts`: 7 passed.
 - `packages/opencode/test/tool/task.test.ts` and `packages/opencode/test/tool/registry.test.ts`: 41 passed.
 
+All shipped system, tool, command-template, and agent prompts were rebanded from
+OpenCode to Koala and stripped of upstream GitHub, public-web, and cloud-model
+references while preserving behavioral meaning. Updated files include every
+`.txt` prompt under `packages/opencode/src/session/prompt/`,
+`packages/opencode/src/tool/`, and `packages/opencode/src/command/template/`.
+The `opencode.json` / `opencode.jsonc` filenames remain as the workspace
+compatibility contract, but surrounding copy now refers to "project config".
+A tool-visibility audit confirmed that OpenCode's existing tools are still
+registered; the UI shows a truncated/filtered view because of deliberate
+filters for sandbox execution mode, document-runtime availability, provider
+web-search gating, model-specific patch handling, and experimental flags.
+
+Commit: `refactor(opencode/prompts): rebrand shipped prompts for Koala and tighten local-model tool calls`
+
+Verification completed on 2026-09-23:
+
+- `packages/opencode`: `bun typecheck` passed.
+- `packages/opencode/test/session/system.test.ts`, `test/tool/task.test.ts`, `test/tool/registry.test.ts`: 48 passed, 0 failed.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.
