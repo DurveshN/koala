@@ -92,6 +92,7 @@ const getBase = (appId: string): Configuration => ({
     "!resources/document-runtime{,/**/*}",
     "!resources/document-runtime.attestation.json",
     "!resources/document-confinement-evidence{,/**/*}",
+    "!node_modules/@koala-ai/document-runtime/**/*",
   ],
   extraResources: [
     ...(channel === "dev"
@@ -153,10 +154,15 @@ const getBase = (appId: string): Configuration => ({
     verifyUpdateCodeSignature: false,
   },
   nsis: {
-    oneClick: true,
-    perMachine: false,
+    oneClick: false,
+    perMachine: true,
     installerIcon: `resources/icons/icon.ico`,
     installerHeaderIcon: `resources/icons/icon.ico`,
+    include: "installer-setup.nsh",
+    allowToChangeInstallationDirectory: true,
+    createDesktopShortcut: true,
+    createStartMenuShortcut: true,
+    runAfterFinish: true,
   },
   linux: {
     icon: `resources/icons`,
