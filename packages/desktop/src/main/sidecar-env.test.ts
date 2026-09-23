@@ -50,10 +50,8 @@ describe("sidecar environment", () => {
         "C:\\Program Files\\Koala\\resources\\sandbox-runtime\\document-runtime-proxy.mjs",
       KOALA_DOCUMENT_RUNTIME_REQUIRE_RELEASE_READY: "true",
       KOALA_SANDBOX_WORKER_PATH: "C:\\Koala\\sandbox-worker.mjs",
-      KOALA_DISABLE_MODELS_CATALOG: "1",
       METADATA_SERVER_DETECTION: "none",
       OPENCODE_DISABLE_AUTOUPDATE: "1",
-      OPENCODE_DISABLE_MODELS_FETCH: "1",
       OPENCODE_DISABLE_SHARE: "1",
     })
   })
@@ -64,9 +62,7 @@ describe("sidecar environment", () => {
       METADATA_SERVER_DETECTION: "none",
       PATH: "/usr/bin",
       KOALA_AGENT_EXECUTION: "sandbox",
-      KOALA_DISABLE_MODELS_CATALOG: "1",
       OPENCODE_DISABLE_AUTOUPDATE: "1",
-      OPENCODE_DISABLE_MODELS_FETCH: "1",
       OPENCODE_DISABLE_SHARE: "1",
     })
   })

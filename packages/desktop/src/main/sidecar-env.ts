@@ -36,10 +36,8 @@ export function createSidecarEnv(
   env.AWS_EC2_METADATA_DISABLED = "true"
   env.METADATA_SERVER_DETECTION = "none"
   env.OPENCODE_DISABLE_AUTOUPDATE = "1"
-  env.OPENCODE_DISABLE_MODELS_FETCH = "1"
   env.OPENCODE_DISABLE_SHARE = "1"
   env.KOALA_AGENT_EXECUTION = "sandbox"
-  env.KOALA_DISABLE_MODELS_CATALOG = "1"
   if (userDataPath) {
     env.XDG_DATA_HOME = userDataPath
     env.XDG_CONFIG_HOME = userDataPath
