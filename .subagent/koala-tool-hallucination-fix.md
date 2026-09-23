@@ -103,6 +103,62 @@ implementation by the orchestrating agent.
 - `bun test test/tool/task.test.ts test/tool/registry.test.ts` from
   `packages/opencode`: 41 passed.
 
+## Follow-up: Gemma "Please provide a task" loop
+
+After the hallucination fix, a second symptom appeared: Gemma would read
+`index.html` and then reply "Please provide the task you would like me to help
+you with", then on the next turn emit an unrelated `task` subagent call such as
+"Create a fully functional US E-commerce application...". Two rounds of
+subagents reviewed whether tool results were being persisted/fed back correctly.
+
+### Findings from review round 1
+
+- `explore` subagent `ses_f30ba43feffeDa1XLFTZv9T91l` traced the tool-result
+  pipeline and identified orphan-result, async durable-write, empty `toolCallId`,
+  JSON-typed string outputs, media extraction, and lack of ID sanitization for
+  local endpoints as risk points.
+- `explore` subagent `ses_f30ba36e5ffeZWLfb09BlBaWQw` confirmed that the echoed
+  phrases are not hard-coded in the repo and pointed to:
+  - `PROMPT_DEFAULT` / `PROMPT_TRINITY` containing concrete `<example>` blocks
+    that weak local models can echo as templates.
+  - `task.txt` asking for a "highly detailed task description".
+  - Subagent descriptions appended to the `task` tool schema.
+
+### Findings from review round 2
+
+- `general` subagent `ses_f30b4758bffeXO5gL09bcr6mfq` verified empirically that
+  the second-turn HTTP request to an `@ai-sdk/openai-compatible` endpoint
+  includes `system → user → assistant tool_call → tool result`, so tool results
+  are not dropped in the normal path.
+- `general` subagent `ses_f30b46d4affezZTySdpidPPMcQ` recommended:
+  - Anchor `gemma.txt` with explicit instructions to honor the current request
+    and reply after tool results.
+  - Remove the `<example>` blocks from `default.txt` and `trinity.txt`.
+  - Replace "highly detailed task description" with "clear, specific task
+    description" in `task.txt`.
+
+### Changes made for the loop
+
+1. `packages/opencode/src/session/prompt/gemma.txt`: added anchors telling the
+   model to respond to the current request directly and to continue after tool
+   results.
+2. `packages/opencode/src/session/prompt/default.txt`: removed the entire
+   `<example>` block.
+3. `packages/opencode/src/session/prompt/trinity.txt`: removed the entire
+   `<example>` block.
+4. `packages/opencode/src/tool/task.txt`: softened "highly detailed" to "clear,
+   specific".
+
+### Verification
+
+- `bun typecheck` from `packages/opencode`: passed.
+- `bun test test/session/system.test.ts test/tool/task.test.ts test/tool/registry.test.ts`
+  from `packages/opencode`: 48 passed, 0 failed.
+
+### Commit
+
+`fix(opencode/prompts): anchor Gemma prompt and remove example templates that local models echo`
+
 ## Integration recommendation
 
 Re-test the Gemma chat flow end to end. If hallucination persists, consider

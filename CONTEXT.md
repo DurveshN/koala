@@ -870,6 +870,26 @@ Verification completed on 2026-09-23:
 - `packages/opencode`: `bun typecheck` passed.
 - `packages/opencode/test/session/system.test.ts`, `test/tool/task.test.ts`, `test/tool/registry.test.ts`: 48 passed, 0 failed.
 
+A follow-up investigation was run because Gemma still looped with
+"Please provide a task" and emitted unrelated `task` subagent descriptions.
+Two rounds of `explore`/`general` subagents confirmed the user's latest message
+and the read-tool result are present in the second-turn `@ai-sdk/openai-compatible`
+request, so the issue is not dropped tool results. The echoed phrases are not
+hard-coded; they appear to come from the concrete `<example>` blocks in
+`default.txt` and `trinity.txt` and from the task tool asking for a
+"highly detailed task description". The minimal prompt fix was:
+
+- Anchor `gemma.txt` to respond to the current request and continue after tool results.
+- Remove the `<example>` blocks from `default.txt` and `trinity.txt`.
+- Soften `task.txt` to ask for a "clear, specific task description".
+
+Commit: `fix(opencode/prompts): anchor Gemma prompt and remove example templates that local models echo`
+
+Verification completed on 2026-09-23:
+
+- `packages/opencode`: `bun typecheck` passed.
+- `packages/opencode/test/session/system.test.ts`, `test/tool/task.test.ts`, `test/tool/registry.test.ts`: 48 passed, 0 failed.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.
