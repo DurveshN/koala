@@ -12,6 +12,7 @@ export function createSidecarEnv(
   platform = process.platform,
   sandboxWorkerPath?: string,
   documentRuntime?: ResolvedDocumentRuntime,
+  userDataPath?: string,
 ) {
   const env = Object.fromEntries(
     Object.entries(source).flatMap(([key, value]) => (value === undefined ? [] : [[key, String(value)]])),
@@ -39,6 +40,11 @@ export function createSidecarEnv(
   env.OPENCODE_DISABLE_SHARE = "1"
   env.KOALA_AGENT_EXECUTION = "sandbox"
   env.KOALA_DISABLE_MODELS_CATALOG = "1"
+  if (userDataPath) {
+    env.XDG_DATA_HOME = userDataPath
+    env.XDG_CONFIG_HOME = userDataPath
+    env.XDG_CACHE_HOME = userDataPath
+  }
   if (sandboxWorkerPath) env.KOALA_SANDBOX_WORKER_PATH = sandboxWorkerPath
   if (documentRuntime) {
     env[DOCUMENT_RUNTIME_PATH] = documentRuntime.root

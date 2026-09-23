@@ -71,6 +71,13 @@ describe("sidecar environment", () => {
     })
   })
 
+  test("isolates sidecar data, config, and cache inside Electron userData when a path is provided", () => {
+    const env = createSidecarEnv({}, "win32", undefined, undefined, "C:\\Users\\user\\AppData\\Roaming\\Koala")
+    expect(env.XDG_DATA_HOME).toBe("C:\\Users\\user\\AppData\\Roaming\\Koala")
+    expect(env.XDG_CONFIG_HOME).toBe("C:\\Users\\user\\AppData\\Roaming\\Koala")
+    expect(env.XDG_CACHE_HOME).toBe("C:\\Users\\user\\AppData\\Roaming\\Koala")
+  })
+
   test("does not forward inherited document runtime configuration without a verified runtime", () => {
     const env = createSidecarEnv({
       KOALA_DOCUMENT_RUNTIME_PATH: "/untrusted/runtime",

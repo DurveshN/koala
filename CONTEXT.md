@@ -1575,3 +1575,32 @@ When opening a new session, the Desktop app still listed the public OpenCode/Ant
 - `bun test test/server/httpapi-provider.test.ts` from `packages/opencode` — 5 passed, 1 skipped.
 
 [Inference] Existing cloud `provider`/`auth` config entries could still surface in the selector; those are a separate cleanup that depends on whether the install is fresh or migrating from an older OpenCode state.
+
+## Correction: local model form save not visible and roles click shows blank popup
+
+Two follow-up issues appeared after the public model catalog was removed:
+
+1. Clicking any "Preferred role" checkbox opened a blank popup.
+2. After submitting the local/private model form, the saved model/provider did not appear anywhere in the UI.
+
+### Root causes
+
+- The blank popup was caused by the shared `<Checkbox>` component: its visually hidden `<input>` is absolutely positioned, but the checkbox root had no `position: relative`, so it could anchor against the dialog container and render a stray focus/autofill popup.
+- The backend surfaced saved Koala profiles correctly through `GET /provider` (confirmed with a focused integration test), but the App's provider-list query was not reliably refetched after a profile mutation because the server only emits `global.disposed` and the existing `updateConfig` invalidation was not enough.
+- The Desktop sidecar also stored auth and profile files under platform XDG defaults (`%APPDATA%/opencodode` / `~/.local/share/opencode`) instead of Electron's `userData`, which made the files hard to locate and shared state with any existing OpenCode CLI install.
+
+### Files changed
+
+- `packages/ui/src/components/checkbox.css` — added `position: relative` to the checkbox root.
+- `packages/app/src/components/dialog-custom-provider.tsx` — added an explicit `serverSync().refreshProviders()` call after saving a profile so the list refreshes immediately.
+- `packages/desktop/src/main/sidecar-env.ts` — sets `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME` to Electron `userData` when a path is provided.
+- `packages/desktop/src/main/server.ts` — passes `userDataPath` to `createSidecarEnv`.
+- `packages/desktop/src/main/sidecar-env.test.ts` — added XDG isolation test.
+- `packages/opencode/test/server/httpapi-koala-provider.test.ts` — added backend visibility test.
+
+### Verification
+
+- `bun typecheck` passed for `packages/ui`, `packages/desktop`, and `packages/app`.
+- `packages/desktop/src/main/sidecar-env.test.ts` — 4 passed.
+- `packages/opencode/test/server/httpapi-koala-provider.test.ts` — 1 passed.
+- `packages/app/src/components/dialog-custom-provider.test.ts` — 63 passed.

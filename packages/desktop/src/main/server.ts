@@ -78,7 +78,13 @@ export async function spawnLocalServer(
   })
   const child = utilityProcess.fork(sidecar, [], {
     cwd: process.cwd(),
-    env: createSidecarEnv(process.env, process.platform, sandboxRuntime?.workerPath, documentRuntime),
+    env: createSidecarEnv(
+      process.env,
+      process.platform,
+      sandboxRuntime?.workerPath,
+      documentRuntime,
+      options.userDataPath,
+    ),
     serviceName: SIDECAR_SERVICE_NAME,
     stdio: "pipe",
   })
