@@ -38,6 +38,7 @@ export function createSidecarEnv(
   env.OPENCODE_DISABLE_AUTOUPDATE = "1"
   env.OPENCODE_DISABLE_SHARE = "1"
   env.KOALA_AGENT_EXECUTION = "sandbox"
+  env.KOALA_ENABLE_DOCUMENT_TOOLS = "1"
   if (userDataPath) {
     env.XDG_DATA_HOME = userDataPath
     env.XDG_CONFIG_HOME = userDataPath
