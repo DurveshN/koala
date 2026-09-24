@@ -456,32 +456,43 @@ function withRuntime<A, E, R>(
 
 function verifiedRuntime(health: Health, config: Config | undefined) {
   return Effect.gen(function* () {
+    if (health.read()) {
+      return yield* failure("runtime-unavailable", "probe", false, "runtime poisoned by an earlier job")
+    }
+    if (!config) {
+      return yield* failure(
+        "runtime-unavailable",
+        "probe",
+        false,
+        "no document runtime configured (KOALA_DOCUMENT_RUNTIME_* absent)",
+      )
+    }
     if (
-      health.read() ||
-      !config ||
       !path.isAbsolute(config.runtimePath) ||
       !path.isAbsolute(config.proxyPath) ||
       !path.isAbsolute(config.proxyAssetsRoot)
     ) {
-      return yield* failure("runtime-unavailable", "probe")
+      return yield* failure("runtime-unavailable", "probe", false, "document runtime paths are not absolute")
     }
     const target = yield* hostTarget()
     const digest = yield* decodeInput(DocumentRuntimeManifest.Digest, config.manifestSha256).pipe(
-      Effect.mapError(() => failure("runtime-unavailable", "probe")),
+      Effect.mapError(() => failure("runtime-unavailable", "probe", false, "invalid manifest digest")),
     )
-    const manifest = yield* attempt(
-      () => loadAndVerifyManifest(config.runtimePath, target, digest, config.requireReleaseReady ?? false),
-      failure("runtime-unavailable", "probe"),
-    )
-    const proxy = yield* attempt(
-      () => validateProxyPaths(config.proxyPath, config.proxyAssetsRoot, manifest.root),
-      failure("runtime-unavailable", "probe"),
-    )
-    const valid = yield* attempt(
-      () => validateRuntimePaths(manifest.root, runtimePaths(manifest.root, target)),
-      failure("runtime-unavailable", "probe"),
-    )
-    if (!valid) return yield* failure("runtime-unavailable", "probe")
+    const manifest = yield* Effect.tryPromise({
+      try: () => loadAndVerifyManifest(config.runtimePath, target, digest, config.requireReleaseReady ?? false),
+      catch: (error) => failure("runtime-unavailable", "probe", false, `manifest verification: ${describe(error)}`),
+    })
+    const proxy = yield* Effect.tryPromise({
+      try: () => validateProxyPaths(config.proxyPath, config.proxyAssetsRoot, manifest.root),
+      catch: (error) => failure("runtime-unavailable", "probe", false, `proxy paths: ${describe(error)}`),
+    })
+    const valid = yield* Effect.tryPromise({
+      try: () => validateRuntimePaths(manifest.root, runtimePaths(manifest.root, target)),
+      catch: (error) => failure("runtime-unavailable", "probe", false, `runtime paths: ${describe(error)}`),
+    })
+    if (!valid) {
+      return yield* failure("runtime-unavailable", "probe", false, "runtime is missing required files")
+    }
     return {
       target,
       manifest,
@@ -1293,6 +1304,10 @@ function failure(
 
 function attempt<A>(tryPromise: () => PromiseLike<A>, error: RuntimeError) {
   return Effect.tryPromise({ try: tryPromise, catch: () => error })
+}
+
+function describe(error: unknown) {
+  return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").slice(0, 512)
 }
 
 function pendingAttempt<A>(health: Health, tryPromise: () => PromiseLike<A>) {

@@ -77,7 +77,11 @@ export async function spawnLocalServer(
     sandboxRuntime,
     releaseVersion: app.isPackaged ? app.getVersion() : undefined,
     developmentChannel: CHANNEL === "dev",
+    onUnavailable: (reason) => options.onStderr?.(`document runtime not resolved: ${reason}`),
   })
+  if (documentRuntime) {
+    options.onStdout?.(`document runtime resolved root=${documentRuntime.root} releaseReady=${documentRuntime.releaseReady}`)
+  }
   const child = utilityProcess.fork(sidecar, [], {
     cwd: process.cwd(),
     env: createSidecarEnv(
