@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import type { Configuration } from "electron-builder"
+import { hostTarget } from "./src/main/sandbox-runtime"
 const execFileAsync = promisify(execFile)
 const packageDir = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.resolve(packageDir, "../..")
@@ -71,6 +72,12 @@ execFileSync("bun", ["./scripts/document-runtime.ts", "verify-sandbox"], {
   env: process.env,
 })
 
+// Development builds ship the unattested runtime that prebuild.ts emits; the app resolves it only
+// on the dev channel and marks it releaseReady=false. Release channels ship the verified staging.
+const developmentTarget = hostTarget(process.platform, process.arch)
+const developmentDocumentRuntime =
+  channel === "dev" && developmentTarget ? `../document-runtime/dist/${developmentTarget}/` : undefined
+
 const getBase = (appId: string): Configuration => ({
   artifactName: "koala-desktop-${os}-${arch}.${ext}",
   directories: {
@@ -126,6 +133,9 @@ const getBase = (appId: string): Configuration => ({
           { from: prepared.attestation, to: "document-runtime.attestation.json" },
           { from: prepared.evidenceRoot, to: "document-confinement-evidence/", filter: ["**/*"] },
         ]
+      : []),
+    ...(developmentDocumentRuntime
+      ? [{ from: developmentDocumentRuntime, to: "document-runtime/", filter: ["**/*"] }]
       : []),
   ],
   mac: {

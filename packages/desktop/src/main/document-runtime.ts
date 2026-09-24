@@ -3,7 +3,7 @@ import {
   loadAndVerifyProductionManifest,
   loadTrustedAttestation,
 } from "@koala-ai/document-runtime/manifest"
-import { realpath } from "node:fs/promises"
+import { lstat, realpath } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { verifyConfinementResources } from "./document-confinement"
@@ -35,6 +35,8 @@ export async function resolveDocumentRuntime(input: {
   readonly architecture?: string
   readonly sandboxRuntime?: ResolvedSandboxRuntime
   readonly releaseVersion?: string
+  /** Dev-channel packages ship the unattested development runtime without confinement evidence. */
+  readonly developmentChannel?: boolean
 }): Promise<ResolvedDocumentRuntime | undefined> {
   const target = hostTarget(input.platform ?? process.platform, input.architecture ?? process.arch)
   if (!target) return undefined
@@ -51,13 +53,18 @@ export async function resolveDocumentRuntime(input: {
     ? path.join(resourcesRoot!, "document-runtime")
     : (override ?? path.resolve(desktop, "../document-runtime/dist", target))
 
+  const attestationPath = resourcesRoot ? path.join(resourcesRoot, "document-runtime.attestation.json") : undefined
+  const development =
+    !input.packaged ||
+    (input.developmentChannel === true && attestationPath !== undefined && !(await exists(attestationPath)))
+
   const verified = await Promise.all([
-    input.packaged
-      ? loadTrustedAttestation(path.join(resourcesRoot!, "document-runtime.attestation.json")).then((attestation) => {
+    development
+      ? loadAndVerifyManifest(root, target).then((runtime) => ({ runtime }))
+      : loadTrustedAttestation(attestationPath!).then((attestation) => {
           if (attestation.target !== target) throw new Error("Document runtime attestation target mismatch")
           return loadAndVerifyProductionManifest(root, target, attestation).then((runtime) => ({ runtime }))
-        })
-      : loadAndVerifyManifest(root, target).then((runtime) => ({ runtime })),
+        }),
     verifySandboxRuntimeRoot(input.sandboxRuntime.root, target),
   ]).catch(() => undefined)
   if (!verified) return undefined
@@ -75,7 +82,7 @@ export async function resolveDocumentRuntime(input: {
   ) {
     return undefined
   }
-  if (input.packaged) {
+  if (input.packaged && !development) {
     const evidence = await verifyConfinementResources({
       resourcesRoot: resourcesRoot!,
       target,
@@ -97,4 +104,11 @@ export async function resolveDocumentRuntime(input: {
 function inside(root: string, value: string) {
   const relation = path.relative(root, value)
   return relation === "" || (!relation.startsWith(`..${path.sep}`) && relation !== ".." && !path.isAbsolute(relation))
+}
+
+function exists(value: string) {
+  return lstat(value).then(
+    () => true,
+    () => false,
+  )
 }

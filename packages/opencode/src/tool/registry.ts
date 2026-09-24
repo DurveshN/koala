@@ -14,7 +14,12 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { DocxReadTool, PptxReadTool, SpreadsheetReadTool } from "./office"
-import { DocxCreateTool } from "./docx-create"
+import {
+  DocxCreateTool,
+  PptxCreateTool,
+  SpreadsheetWriteTool,
+  PdfCreateTool,
+} from "./document-create"
 import { ArtifactValidateTool } from "./artifact-validate"
 import { KnowledgeIngestTool } from "./knowledge-ingest"
 import { KnowledgeOpenTool } from "./knowledge-open"
@@ -75,6 +80,9 @@ import { ArtifactStoreLive } from "@/koala/artifact-store"
 
 const documentToolIDs = new Set([
   "docx_create",
+  "pptx_create",
+  "spreadsheet_write",
+  "pdf_create",
   "docx_read",
   "pptx_read",
   "spreadsheet_read",
@@ -82,7 +90,6 @@ const documentToolIDs = new Set([
   "ocr_extract",
   "vision_analyze",
   "document_extract",
-  "docx_create",
   "artifact_validate",
 ])
 
@@ -155,6 +162,9 @@ const layer = Layer.effect(
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
     const docxCreate = yield* DocxCreateTool
+    const pptxCreate = yield* PptxCreateTool
+    const spreadsheetWrite = yield* SpreadsheetWriteTool
+    const pdfCreate = yield* PdfCreateTool
     const docxRead = yield* DocxReadTool
     const pptxRead = yield* PptxReadTool
     const spreadsheetRead = yield* SpreadsheetReadTool
@@ -292,6 +302,9 @@ const layer = Layer.effect(
 
         const documentTools = yield* Effect.all({
           docxCreate: Tool.init(docxCreate),
+          pptxCreate: Tool.init(pptxCreate),
+          spreadsheetWrite: Tool.init(spreadsheetWrite),
+          pdfCreate: Tool.init(pdfCreate),
           docxRead: Tool.init(docxRead),
           pptxRead: Tool.init(pptxRead),
           spreadsheetRead: Tool.init(spreadsheetRead),
@@ -324,6 +337,9 @@ const layer = Layer.effect(
             tool.skill,
             tool.patch,
             documentTools.docxCreate,
+            documentTools.pptxCreate,
+            documentTools.spreadsheetWrite,
+            documentTools.pdfCreate,
             documentTools.docxRead,
             documentTools.pptxRead,
             documentTools.spreadsheetRead,

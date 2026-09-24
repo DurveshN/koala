@@ -20,9 +20,19 @@ export {
   type RenderPageOptions,
 } from "./render.ts"
 export { generateDocx, type DocxContent, type DocxSection } from "./generate/docx.ts"
+export { generatePdf } from "./generate/pdf.ts"
+export { generatePptx } from "./generate/pptx.ts"
+export { generateXlsx } from "./generate/xlsx.ts"
 export { readImageDimensions, validateOcrImage, type ImageDimensions } from "./image.ts"
 export { readPdf, type PdfOutput, type PdfPage, type PdfTextBlock, type ReadPdfOptions } from "./read/index.ts"
-export { validateOoxmlDocx, type OoxmlValidationResult } from "./validation/ooxml.ts"
+export {
+  detectOoxmlFormat,
+  validateOoxml,
+  validateOoxmlDocx,
+  type OoxmlFormat,
+  type OoxmlValidationResult,
+} from "./validation/ooxml.ts"
+export { validatePdf, type PdfValidationResult } from "./validation/pdf.ts"
 export {
   runtimeNativeBinary,
   runtimeNativePackage,

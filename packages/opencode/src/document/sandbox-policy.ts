@@ -24,16 +24,9 @@ export type UnavailableCode =
   | "sandbox-dependency-unavailable"
   | "sandbox-policy-mismatch"
 
-export type EvidenceCode =
-  | "windows-path-evidence-required"
-  | "windows-volume-evidence-required"
-  | "windows-loader-evidence-required"
-  | "windows-acl-reset-evidence-required"
-
 export type Result<A> =
   | { readonly status: "available"; readonly value: A }
   | { readonly status: "unavailable"; readonly code: UnavailableCode }
-  | { readonly status: "evidence-required"; readonly code: EvidenceCode }
 
 export interface SandboxAssets {
   readonly root: string
@@ -52,28 +45,6 @@ export interface ResolvedRuntimeAssets {
   readonly canvasEntry: string
   readonly canvasNativeRoot: string
   readonly canvasNativeBinary: string
-}
-
-export interface WindowsVolumeEvidence {
-  readonly target: "x86_64-pc-windows-msvc" | "aarch64-pc-windows-msvc"
-  readonly complete: boolean
-  readonly reparseComplete: boolean
-  readonly loaderComplete: boolean
-  readonly aclReset: "verified" | "unverified"
-  readonly executablePath: string
-  readonly systemRoot: string
-  readonly volumes: ReadonlyArray<{
-    readonly root: string
-    readonly kind: "fixed" | "network" | "removable" | "unknown"
-    readonly local: boolean
-    readonly filesystem: string | undefined
-  }>
-  readonly reparsePoints: ReadonlyArray<string>
-  readonly loaderEntries: ReadonlyArray<{
-    readonly path: string
-    readonly kind: "directory" | "file"
-    readonly identity: string
-  }>
 }
 
 export interface PathInspection {
@@ -106,7 +77,6 @@ export interface PrepareInput {
   readonly manifestSha256: DocumentRuntimeManifest.Digest
   readonly platform?: NodeJS.Platform
   readonly architecture?: string
-  readonly windowsEvidence?: WindowsVolumeEvidence
 }
 
 export interface PreparedPolicy {
@@ -208,31 +178,6 @@ export async function prepare(
   const hostHelpers = await resolveHostHelpers(input.target, dependencies)
   if (hostHelpers.status !== "available") return hostHelpers
 
-  if (platform === "win32") {
-    if (
-      !input.windowsEvidence ||
-      input.windowsEvidence.target !== input.target ||
-      !samePath(input.windowsEvidence.executablePath, roots.value.executablePath, true) ||
-      !samePath(input.windowsEvidence.systemRoot, roots.value.systemRoot ?? "", true)
-    ) {
-      return evidenceRequired("windows-loader-evidence-required")
-    }
-    const evidence = await validateWindowsEvidence(
-      [
-        roots.value.runtimeRoot,
-        roots.value.parentRoot,
-        roots.value.jobRoot,
-        roots.value.pendingRoot,
-        roots.value.sandboxAssetsRoot,
-        roots.value.executablePath,
-        roots.value.systemRoot,
-      ],
-      input.windowsEvidence,
-      dependencies,
-    )
-    if (evidence.status !== "available") return evidence
-  }
-
   const environment = dependencies.environment ?? process.env
   const config = buildConfig({
     target: input.target,
@@ -243,10 +188,6 @@ export async function prepare(
     systemRoot: roots.value.systemRoot,
     sandboxAssets,
     hostHelpers: hostHelpers.value,
-    windowsLoaderPaths: input.windowsEvidence?.loaderEntries.map((entry) => entry.path),
-    windowsVolumes: input.windowsEvidence?.volumes
-      .filter((volume) => volume.kind === "fixed")
-      .map((volume) => volume.root),
     environment,
   })
   return available({
@@ -356,11 +297,8 @@ export function fixedLoaderRoots(
   target: DocumentRuntimeTarget.Target,
   executablePath: string,
   hostHelpers: HostHelpers,
-  windowsLoaderPaths: ReadonlyArray<string> = [],
 ): ReadonlyArray<string> {
-  if (target.includes("windows")) {
-    return unique([executablePath, ...windowsLoaderPaths], true)
-  }
+  if (target.includes("windows")) return [executablePath]
   const helpers = [
     hostHelpers.shell,
     hostHelpers.env,
@@ -384,18 +322,6 @@ export function fixedLoaderRoots(
   ])
 }
 
-const windowsLoaderFiles: Partial<Record<"x86_64-pc-windows-msvc" | "aarch64-pc-windows-msvc", ReadonlyArray<string>>> =
-  {}
-
-export function windowsLoaderPolicy(
-  target: "x86_64-pc-windows-msvc" | "aarch64-pc-windows-msvc",
-  systemRoot: string,
-): Result<ReadonlyArray<string>> {
-  const files = windowsLoaderFiles[target]
-  if (!files) return evidenceRequired("windows-loader-evidence-required")
-  return available(files.map((file) => path.win32.join(systemRoot, ...file.split("/"))))
-}
-
 export function buildConfig(input: {
   readonly target: DocumentRuntimeTarget.Target
   readonly runtimeRoot: string
@@ -405,8 +331,6 @@ export function buildConfig(input: {
   readonly systemRoot?: string
   readonly sandboxAssets: SandboxAssets
   readonly hostHelpers: HostHelpers
-  readonly windowsLoaderPaths?: ReadonlyArray<string>
-  readonly windowsVolumes?: ReadonlyArray<string>
   readonly environment?: NodeJS.ProcessEnv
 }): SandboxRuntimeConfig {
   const platform = targetPlatform(input.target)
@@ -416,6 +340,13 @@ export function buildConfig(input: {
     input.sandboxAssets.seccompApplyPath,
     input.sandboxAssets.srtWinPath,
   ].filter((value): value is string => value !== undefined)
+  // On Windows, upstream turns every path below into an NTFS ACE written by this non-elevated
+  // broker in one all-or-nothing `srt-win acl grant`/`acl stamp` batch. The srt-sandbox account is
+  // a BUILTIN\Users member that already reads %SystemRoot% and Program Files but has no rights on
+  // the real user's files, so grants are needed only for user-owned paths and are impossible on
+  // machine-wide roots. Inheriting denies on %USERPROFILE%/%TEMP% would propagate across the
+  // profile and are redundant for a separate account, so Windows denies only the job siblings.
+  const grantable = (value: string) => platform !== "win32" || windowsGrantable(value, environment)
   const denyWrite = unique(
     [
       input.runtimeRoot,
@@ -423,7 +354,7 @@ export function buildConfig(input: {
       input.sandboxAssets.root,
       ...persistentCompatibilityWritePaths(platform, environment),
       ...ambientWriteRoots(platform, environment),
-    ],
+    ].filter(grantable),
     platform === "win32",
   )
 
@@ -438,14 +369,14 @@ export function buildConfig(input: {
       allowMachLookup: [],
     },
     filesystem: {
-      denyRead: platform === "win32" ? unique(input.windowsVolumes ?? [], true) : ["/"],
+      denyRead: platform === "win32" ? [] : ["/"],
       allowRead: unique(
         [
-          ...fixedLoaderRoots(input.target, input.executablePath, input.hostHelpers, input.windowsLoaderPaths),
+          ...fixedLoaderRoots(input.target, input.executablePath, input.hostHelpers),
           input.runtimeRoot,
           input.jobRoot,
           ...helperPaths,
-        ],
+        ].filter(grantable),
         platform === "win32",
       ),
       allowWrite: [input.jobRoot],
@@ -470,7 +401,18 @@ export function brokerEnvironment(
   source: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
-  const pathKeys = new Set(["HOME", "LOCALAPPDATA", "PROGRAMDATA", "TEMP", "TMP", "TMPDIR", "USERPROFILE"])
+  const pathKeys = new Set([
+    "HOME",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USERPROFILE",
+  ])
   const values: Record<string, string> = {}
   for (const key of [
     "HOME",
@@ -478,6 +420,8 @@ export function brokerEnvironment(
     "LC_ALL",
     "LOCALAPPDATA",
     "PROGRAMDATA",
+    // The proxy needs the machine-wide roots to know which paths it must not ACL-grant on Windows.
+    ...(platform === "win32" ? (["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"] as const) : []),
     "TEMP",
     "TMP",
     "TMPDIR",
@@ -628,8 +572,6 @@ export async function verifyEffectivePolicy(
   expected: SandboxRuntimeConfig,
   target: DocumentRuntimeTarget.Target,
   options: {
-    readonly windowsEvidence?: WindowsVolumeEvidence
-    readonly dependencies?: PolicyDependencies
     readonly srtDefaultWritePaths?: ReadonlyArray<string>
   } = {},
 ): Promise<Result<void>> {
@@ -670,111 +612,6 @@ export async function verifyEffectivePolicy(
     return unavailable("sandbox-policy-mismatch")
   }
 
-  if (!target.includes("windows")) return available(undefined)
-  const executablePath = expected.filesystem.allowRead?.[0]
-  if (
-    !options.windowsEvidence ||
-    options.windowsEvidence.target !== target ||
-    !executablePath ||
-    !samePath(options.windowsEvidence.executablePath, executablePath, true)
-  ) {
-    return evidenceRequired("windows-loader-evidence-required")
-  }
-  const evidence = await validateWindowsEvidence(
-    [
-      ...expected.filesystem.denyRead,
-      ...(expected.filesystem.allowRead ?? []),
-      ...expected.filesystem.allowWrite,
-      ...expected.filesystem.denyWrite,
-      expected.javaAgentJarPath,
-      expected.windows?.srtWin?.path,
-    ],
-    options.windowsEvidence,
-    options.dependencies ?? defaultDependencies,
-  )
-  if (evidence.status !== "available") return evidence
-  if (
-    !sameSet(expected.filesystem.denyRead, options.windowsEvidence?.volumes.map((volume) => volume.root) ?? [], true)
-  ) {
-    return unavailable("sandbox-policy-mismatch")
-  }
-  return available(undefined)
-}
-
-export async function validateWindowsEvidence(
-  values: ReadonlyArray<string | undefined>,
-  evidence?: WindowsVolumeEvidence,
-  dependencies: PolicyDependencies = defaultDependencies,
-): Promise<Result<void>> {
-  if (!evidence) return evidenceRequired("windows-path-evidence-required")
-  if (!evidence.target.includes("windows")) return evidenceRequired("windows-loader-evidence-required")
-  if (!evidence.complete || evidence.volumes.length === 0) {
-    return evidenceRequired("windows-volume-evidence-required")
-  }
-  if (!evidence.reparseComplete) return evidenceRequired("windows-path-evidence-required")
-  if (!evidence.loaderComplete || evidence.loaderEntries.length === 0) {
-    return evidenceRequired("windows-loader-evidence-required")
-  }
-  if (evidence.aclReset !== "verified") return evidenceRequired("windows-acl-reset-evidence-required")
-  if (!validWindowsPath(evidence.executablePath) || !validWindowsPath(evidence.systemRoot)) {
-    return unavailable("invalid-path")
-  }
-
-  const volumes = evidence.volumes.map((volume) => ({ ...volume, root: path.win32.normalize(volume.root) }))
-  if (
-    new Set(volumes.map((volume) => volume.root.toLowerCase())).size !== volumes.length ||
-    volumes.some(
-      (volume) =>
-        !/^[A-Za-z]:\\$/.test(volume.root) ||
-        volume.kind !== "fixed" ||
-        !volume.local ||
-        !["NTFS", "ReFS"].includes(volume.filesystem ?? ""),
-    )
-  ) {
-    return unavailable("invalid-path")
-  }
-  for (const value of [...values, ...evidence.loaderEntries.map((entry) => entry.path)]) {
-    if (!value || !validWindowsPath(value)) return unavailable("invalid-path")
-    const volume = volumes.find((entry) => atOrUnder(value, entry.root, true))
-    if (!volume) return unavailable("invalid-path")
-    if (evidence.reparsePoints.some((entry) => atOrUnder(value, entry, true))) return unavailable("invalid-path")
-  }
-  if (
-    new Set(evidence.loaderEntries.map((entry) => entry.path.toLowerCase())).size !== evidence.loaderEntries.length ||
-    evidence.loaderEntries.some(
-      (entry) =>
-        !entry.identity ||
-        entry.kind !== "file" ||
-        samePath(entry.path, path.win32.parse(entry.path).root, true) ||
-        samePath(entry.path, evidence.systemRoot, true) ||
-        !atOrUnder(entry.path, evidence.systemRoot, true),
-    )
-  ) {
-    return unavailable("invalid-path")
-  }
-  const loaderPolicy = windowsLoaderPolicy(evidence.target, evidence.systemRoot)
-  if (loaderPolicy.status !== "available") return loaderPolicy
-  if (
-    !sameSet(
-      evidence.loaderEntries.map((entry) => entry.path),
-      loaderPolicy.value,
-      true,
-    )
-  ) {
-    return evidenceRequired("windows-loader-evidence-required")
-  }
-  for (const entry of evidence.loaderEntries) {
-    const info = await dependencies.inspectPath(entry.path).catch(() => undefined)
-    if (
-      !info ||
-      info.kind !== entry.kind ||
-      info.reparsePoint ||
-      !samePath(info.canonicalPath, entry.path, true) ||
-      info.identity !== entry.identity
-    ) {
-      return evidenceRequired("windows-loader-evidence-required")
-    }
-  }
   return available(undefined)
 }
 
@@ -858,14 +695,22 @@ async function validateAssets(
     runtime.packageJson,
     runtime.bootstrap,
     runtime.worker,
-    runtime.tesseract,
-    pathForPlatform(platform).join(runtime.tessdata, "eng.traineddata"),
-    pathForPlatform(platform).join(runtime.tessdata, "osd.traineddata"),
     pathForPlatform(platform).join(runtime.pdfRoot, "legacy", "build", "pdf.mjs"),
     runtime.canvasEntry,
     runtime.canvasNativeBinary,
   ]
   if (!(await validateFiles(runtimeFiles, runtimeRoot, platform, dependencies))) {
+    return unavailable("runtime-asset-unavailable")
+  }
+
+  // Tesseract is optional in development runtimes; when present it must be complete.
+  const ocrFiles = [
+    runtime.tesseract,
+    pathForPlatform(platform).join(runtime.tessdata, "eng.traineddata"),
+    pathForPlatform(platform).join(runtime.tessdata, "osd.traineddata"),
+  ]
+  const ocrPresent = await Promise.all(ocrFiles.map((file) => dependencies.inspectPath(file).catch(() => undefined)))
+  if (ocrPresent.some(Boolean) && !(await validateFiles(ocrFiles, runtimeRoot, platform, dependencies))) {
     return unavailable("runtime-asset-unavailable")
   }
   const sandboxFiles = [sandbox.javaAgentJarPath, sandbox.seccompApplyPath, sandbox.srtWinPath].filter(
@@ -927,35 +772,37 @@ async function resolveExecutable(
 }
 
 function persistentCompatibilityWritePaths(platform: NodeJS.Platform, environment: NodeJS.ProcessEnv) {
+  // Upstream applies its POSIX default write paths only through seatbelt/bwrap; the Windows grant
+  // set is built verbatim from the configured filesystem rules, so nothing needs denying there.
+  if (platform === "win32") return []
   const paths = pathForPlatform(platform)
-  const home = environment.HOME ?? (platform === "win32" ? environment.USERPROFILE : undefined) ?? os.homedir()
+  const home = environment.HOME ?? os.homedir()
   return [
-    ...(platform === "win32" ? [] : ["/tmp/claude", "/private/tmp/claude"]),
+    "/tmp/claude",
+    "/private/tmp/claude",
     paths.join(home, ".npm", "_logs"),
     paths.join(home, ".claude", "debug"),
   ]
 }
 
 function ambientWriteRoots(platform: NodeJS.Platform, environment: NodeJS.ProcessEnv) {
-  const candidates =
-    platform === "win32"
-      ? [
-          environment.USERPROFILE,
-          environment.LOCALAPPDATA,
-          environment.PROGRAMDATA,
-          environment.TEMP,
-          environment.TMP,
-          environment.SystemRoot ?? environment.SYSTEMROOT,
-          environment.SystemRoot || environment.SYSTEMROOT
-            ? path.win32.join(
-                path.win32.parse(environment.SystemRoot ?? environment.SYSTEMROOT ?? "").root,
-                "Users",
-                "Public",
-              )
-            : undefined,
-        ]
-      : [environment.HOME, environment.TMPDIR]
-  return candidates.filter((value): value is string => Boolean(value) && validPath(value as string, platform))
+  if (platform === "win32") return []
+  return [environment.HOME, environment.TMPDIR].filter(
+    (value): value is string => Boolean(value) && validPath(value as string, platform),
+  )
+}
+
+function windowsGrantable(value: string, environment: NodeJS.ProcessEnv) {
+  const systemRoot = environment.SystemRoot ?? environment.SYSTEMROOT
+  const roots = [
+    systemRoot,
+    environment.ProgramFiles,
+    environment["ProgramFiles(x86)"],
+    environment.ProgramW6432,
+    environment.ProgramData ?? environment.PROGRAMDATA,
+    systemRoot ? path.win32.join(path.win32.parse(systemRoot).root, "Users", "Public") : undefined,
+  ].filter((root): root is string => Boolean(root) && validWindowsPath(root as string))
+  return !roots.some((root) => atOrUnder(value, root, true))
 }
 
 function samePolicy(actual: SandboxRuntimeConfig, expected: SandboxRuntimeConfig) {
@@ -968,12 +815,9 @@ function reviewedDeviceWrite(value: string) {
   )
 }
 
-function nonApplicableWindowsDefault(value: string) {
-  return value === "/tmp/claude" || value === "/private/tmp/claude" || value.startsWith("/dev/")
-}
-
 function defaultWriteRequiresDeny(value: string, target: DocumentRuntimeTarget.Target) {
-  if (target.includes("windows")) return !nonApplicableWindowsDefault(value)
+  // See persistentCompatibilityWritePaths: Windows never grants the upstream POSIX defaults.
+  if (target.includes("windows")) return false
   return !reviewedDeviceWrite(value)
 }
 
@@ -1066,10 +910,6 @@ function available<A>(value: A): Result<A> {
 
 function unavailable(code: UnavailableCode): Result<never> {
   return { status: "unavailable", code }
-}
-
-function evidenceRequired(code: EvidenceCode): Result<never> {
-  return { status: "evidence-required", code }
 }
 
 export * as DocumentSandboxPolicy from "./sandbox-policy"

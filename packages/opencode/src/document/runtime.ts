@@ -109,6 +109,13 @@ export interface CreateDocxInput {
   readonly contents: typeof DocumentGenerate.DocxContent.Type
 }
 
+export type CreateDocumentInput = {
+  readonly [Format in DocumentGenerate.Format]: {
+    readonly format: Format
+    readonly contents: (typeof DocumentGenerate.ContentInput)[Format]["Type"]["contents"]
+  }
+}[DocumentGenerate.Format]
+
 export interface CreateDocxResult {
   readonly path: string
   readonly bytes: Uint8Array
@@ -155,6 +162,7 @@ export interface Interface {
   readonly readOffice: (input: ReadOfficeInput) => Effect.Effect<ReadOfficeResult, RuntimeError>
   readonly readPdf: (input: ReadPdfInput) => Effect.Effect<ReadPdfResult, RuntimeError>
   readonly createDocx: (input: CreateDocxInput) => Effect.Effect<CreateDocxResult, RuntimeError>
+  readonly createDocument: (input: CreateDocumentInput) => Effect.Effect<CreateDocxResult, RuntimeError>
   readonly renderAndOcr: <A, E, R>(
     input: RenderInput,
     callback: (page: ScopedPage) => Effect.Effect<A, E, R>,
@@ -298,13 +306,13 @@ export function layer(config: Config | undefined) {
     ),
   )
 
-  const createDocx: Interface["createDocx"] = Effect.fn("DocumentRuntime.createDocx")((input) =>
+  const createDocument: Interface["createDocument"] = Effect.fn("DocumentRuntime.createDocument")((input) =>
     limited(
       Effect.gen(function* () {
         const runtime = yield* verifiedRuntime(health, policy)
         return yield* withJob(health, (job) =>
           Effect.gen(function* () {
-            const content = yield* decodeInput(DocumentGenerate.DocxCreate.Input, { contents: input.contents })
+            const content = yield* decodeInput(DocumentGenerate.ContentInput[input.format], { contents: input.contents })
             const contentBytes = Buffer.from(JSON.stringify(content), "utf8")
             const contentPath = "input/content.json"
             const absoluteContentPath = path.join(job.path, ...contentPath.split("/"))
@@ -318,16 +326,19 @@ export function layer(config: Config | undefined) {
             const request = yield* decodeInput(DocumentRuntimeProtocol.CreateDocxRequest, {
               protocolVersion: 1,
               type: "create-docx",
+              format: input.format,
               jobID: jobID(),
               inputPath: DocumentRuntimeManifest.RelativePath.make(contentPath),
               inputBytes: contentBytes.byteLength,
             })
-            return yield* runProxy(health, runtime, job, request, (session) => docxWorker(session))
+            return yield* runProxy(health, runtime, job, request, (session) => docxWorker(session, input.format))
           }),
         )
       }),
     ),
   )
+
+  const createDocx: Interface["createDocx"] = (input) => createDocument({ format: "docx", contents: input.contents })
 
   return Layer.succeed(
     Service,
@@ -342,6 +353,7 @@ export function layer(config: Config | undefined) {
       readOffice,
       readPdf,
       createDocx,
+      createDocument,
       renderAndOcr,
     }),
   )
@@ -510,20 +522,24 @@ async function validateRuntimePaths(root: string, paths: ReturnType<typeof runti
     path.join(root, "package.json"),
     paths.bootstrap,
     paths.worker,
-    paths.tesseract,
-    path.join(paths.tessdata, "eng.traineddata"),
-    path.join(paths.tessdata, "osd.traineddata"),
     path.join(paths.pdfRoot, "legacy", "build", "pdf.mjs"),
     paths.canvasEntry,
   ]
   const directories = [
-    paths.tessdata,
     path.join(paths.pdfRoot, "cmaps"),
     path.join(paths.pdfRoot, "iccs"),
     path.join(paths.pdfRoot, "standard_fonts"),
     path.join(paths.pdfRoot, "wasm"),
     paths.canvasNativeRoot,
   ]
+  // Development runtimes may omit Tesseract; OCR then fails per request while other operations work.
+  const ocr = await Promise.all([
+    safeInfo(root, paths.tesseract, "file"),
+    safeInfo(root, path.join(paths.tessdata, "eng.traineddata"), "file"),
+    safeInfo(root, path.join(paths.tessdata, "osd.traineddata"), "file"),
+    safeInfo(root, paths.tessdata, "directory"),
+  ])
+  if (ocr.some(Boolean) && !ocr.every(Boolean)) return false
   if (!(await Promise.all(files.map((file) => safeInfo(root, file, "file")))).every(Boolean)) return false
   return (await Promise.all(directories.map((directory) => safeInfo(root, directory, "directory")))).every(Boolean)
 }
@@ -870,10 +886,13 @@ function pdfWorker(session: Session): Effect.Effect<ReadPdfResult, RuntimeError>
   })
 }
 
-function docxWorker(session: Session): Effect.Effect<CreateDocxResult, RuntimeError> {
+function docxWorker(
+  session: Session,
+  format: DocumentGenerate.Format,
+): Effect.Effect<CreateDocxResult, RuntimeError> {
   return Effect.gen(function* () {
     yield* expectType(session, "started", (event) => event.operation === "create-docx")
-    const ready = yield* expectType(session, "docx-ready", () => true)
+    const ready = yield* expectType(session, "docx-ready", (event) => event.outputPath.endsWith(`.${format}`))
     const output = yield* resolveOutput(
       session.health,
       pendingEvidence(session.job),
@@ -935,7 +954,13 @@ function nextEvent(session: Session): Effect.Effect<DocumentRuntimeProtocol.Work
       event.type === "pdf-info"
     ) {
       const extension =
-        event.type === "page-ready" ? ".png" : event.type === "ocr-result" ? ".tsv" : event.type === "docx-ready" ? ".docx" : ".json"
+        event.type === "page-ready"
+          ? ".png"
+          : event.type === "ocr-result"
+            ? ".tsv"
+            : event.type === "docx-ready"
+              ? (/\.(?:docx|pptx|xlsx|pdf)$/.exec(event.outputPath)?.[0] ?? ".docx")
+              : ".json"
       if (
         !event.outputPath.endsWith(extension) ||
         session.outputIDs.has(event.outputID) ||

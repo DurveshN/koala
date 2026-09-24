@@ -23,6 +23,21 @@ export const DocxCreateEngine = Schema.decodeUnknownSync(IndustrialTool.Engine)(
   version: "1",
 })
 
+export const PptxCreateEngine = Schema.decodeUnknownSync(IndustrialTool.Engine)({
+  name: "pptx-writer",
+  version: "1",
+})
+
+export const XlsxCreateEngine = Schema.decodeUnknownSync(IndustrialTool.Engine)({
+  name: "xlsx-writer",
+  version: "1",
+})
+
+export const PdfCreateEngine = Schema.decodeUnknownSync(IndustrialTool.Engine)({
+  name: "pdf-writer",
+  version: "1",
+})
+
 export const VisionEngine = Schema.decodeUnknownSync(IndustrialTool.Engine)({
   name: "local-vision-model",
   version: "1",

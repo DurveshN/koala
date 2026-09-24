@@ -60,6 +60,8 @@ const officePackages = [
   { name: "xlsx", version: "0.18.5", licenseFile: "LICENSE" },
   { name: "jszip", version: "3.10.1", licenseFile: "LICENSE.markdown" },
   { name: "fast-xml-parser", version: "4.5.0", licenseFile: "LICENSE" },
+  { name: "pptxgenjs", version: "4.0.1", licenseFile: "LICENSE" },
+  { name: "pdf-lib", version: "1.17.1", licenseFile: "LICENSE.md" },
 ] as const
 await Promise.all([
   verifyPackageLock("pdfjs-dist", pdfRoot),
@@ -107,6 +109,8 @@ const officeLicensePaths = await Promise.all(
   }),
 )
 
+const tesseract = await bundleTesseract()
+
 const filePaths = await listFiles(output)
 const files: DocumentRuntimeManifest.File[] = []
 for (let offset = 0; offset < filePaths.length; offset += HashConcurrency) {
@@ -147,6 +151,24 @@ const officeDependencies = officePackages.map((pkg) => {
     licenseFiles: [licensePath],
   }
 })
+const ocrComponents = tesseract
+  ? [
+      {
+        name: "tesseract",
+        version: tesseract.version,
+        sourceRevision: tesseract.version,
+        sourceSha256: DocumentRuntimeManifest.Digest.make(componentHash(files, "tesseract")),
+        licenseFiles: tesseract.licensePaths,
+      },
+      ...(["eng", "osd"] as const).map((language) => ({
+        name: `tessdata-fast-${language}`,
+        version: tesseract.tessdataRevision,
+        sourceRevision: tesseract.tessdataRevision,
+        sourceSha256: DocumentRuntimeManifest.Digest.make(componentHash(files, `tessdata-fast-${language}`)),
+        licenseFiles: [],
+      })),
+    ]
+  : []
 const manifest = Schema.decodeUnknownSync(DocumentRuntimeManifest.Manifest)({
   manifestVersion: 1,
   protocolVersion: 1,
@@ -184,6 +206,7 @@ const manifest = Schema.decodeUnknownSync(DocumentRuntimeManifest.Manifest)({
       licenseFiles: [],
     },
     ...officeComponents,
+    ...ocrComponents,
   ],
   files,
   dependencies: [
@@ -209,6 +232,17 @@ const manifest = Schema.decodeUnknownSync(DocumentRuntimeManifest.Manifest)({
       licenseFiles: [],
     },
     ...officeDependencies,
+    ...(tesseract
+      ? [
+          {
+            name: "tesseract",
+            version: tesseract.version,
+            component: "document-runtime",
+            linkage: "dynamic" as const,
+            licenseFiles: tesseract.licensePaths,
+          },
+        ]
+      : []),
   ],
 })
 await writeFile(path.join(output, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, {
@@ -314,10 +348,61 @@ function component(file: string, nativePackage: string) {
   if (file.startsWith("node_modules/pdfjs-dist/")) return "pdfjs-dist"
   if (file.startsWith(`node_modules/${nativePackage}/`)) return nativePackage
   if (file.startsWith("node_modules/@napi-rs/canvas/")) return "@napi-rs/canvas"
+  if (file.startsWith("bin/") || file.startsWith("licenses/tesseract-")) return "tesseract"
+  if (file === "tessdata/eng.traineddata") return "tessdata-fast-eng"
+  if (file === "tessdata/osd.traineddata") return "tessdata-fast-osd"
   for (const pkg of officePackages) {
     if (file === `licenses/${pkg.name}-${pkg.licenseFile}`) return pkg.name
   }
   return "document-runtime"
+}
+
+// Development builds bundle a locally installed Tesseract when KOALA_TESSERACT_ROOT names its
+// directory (for example the UB Mannheim install under Program Files). Without it the runtime
+// still serves Office, PDF, and DOCX generation; only OCR reports unavailable.
+async function bundleTesseract() {
+  const source = process.env.KOALA_TESSERACT_ROOT
+  if (!source) return undefined
+  if (!path.isAbsolute(source)) throw new Error("KOALA_TESSERACT_ROOT must be an absolute path")
+  const windows = target.includes("windows")
+  const executableName = windows ? "tesseract.exe" : "tesseract"
+  const tessdata = path.join(source, "tessdata")
+  for (const file of [
+    path.join(source, executableName),
+    path.join(tessdata, "eng.traineddata"),
+    path.join(tessdata, "osd.traineddata"),
+  ]) {
+    if (!existsSync(file)) throw new Error(`KOALA_TESSERACT_ROOT is missing ${file}`)
+  }
+  const entries = await readdir(source)
+  // Windows builds resolve their DLLs from the executable directory.
+  const binaries = windows ? entries.filter((entry) => /\.(?:exe|dll)$/i.test(entry)) : [executableName]
+  await copyEntries(source, path.join(output, "bin"), binaries)
+  await copyEntries(tessdata, path.join(output, "tessdata"), ["eng.traineddata", "osd.traineddata"])
+  const licensePaths = await Promise.all(
+    entries
+      .filter((entry) => isLicense(entry) && !entry.includes("/"))
+      .map(async (entry) => {
+        const destination = `licenses/tesseract-${entry}`
+        await cp(path.join(source, entry), path.join(output, ...destination.split("/")))
+        return destination
+      }),
+  )
+  const probe = Bun.spawnSync([path.join(source, executableName), "--version"], {
+    env: { TESSDATA_PREFIX: tessdata, ...(windows ? { SystemRoot: process.env.SystemRoot ?? "" } : {}) },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  // The worker probe requires the first `--version` line to equal `tesseract <component version>`.
+  const version = `${probe.stdout.toString()}\n${probe.stderr.toString()}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("tesseract "))
+    ?.slice("tesseract ".length)
+  if (!version || !/^[a-z0-9][a-z0-9._+-]{0,127}$/i.test(version)) {
+    throw new Error("Could not determine the Tesseract version from KOALA_TESSERACT_ROOT")
+  }
+  return { version, licensePaths, tessdataRevision: process.env.KOALA_TESSDATA_REVISION ?? "local" }
 }
 
 function executable(file: string) {

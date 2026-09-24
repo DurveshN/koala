@@ -24,11 +24,12 @@ import {
   type PrepareInput,
   type PreparedPolicy,
   type Result as PolicyResult,
-  type WindowsVolumeEvidence,
   type WrappedCommand,
 } from "./sandbox-policy"
 
-const TeardownTimeoutMs = 2_000
+// Windows teardown enumerates descendants through PowerShell CIM after taskkill, which needs a
+// larger budget than the POSIX process-group sweep while staying inside the parent's 10 s watchdog.
+const TeardownTimeoutMs = process.platform === "win32" ? 6_000 : 2_000
 
 export interface ProxySandboxManager extends InspectableSandboxManager {
   readonly initialize: (
@@ -72,7 +73,6 @@ export interface ProxyDependencies {
   readonly architecture: string
   readonly executablePath: string
   readonly sandboxAssetsRoot: string
-  readonly windowsEvidence?: WindowsVolumeEvidence
   readonly verifyRuntime: (
     root: string,
     target: DocumentRuntimeTarget.Target,
@@ -594,7 +594,6 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
         manifestSha256: message.manifestSha256,
         platform: dependencies.platform,
         architecture: dependencies.architecture,
-        windowsEvidence: dependencies.windowsEvidence,
       })
       .catch(() => undefined)
     if (stopStarting()) return shutdownPromise
@@ -649,9 +648,7 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
     }
     if (stopStarting()) return shutdownPromise
     const effective = await dependencies
-      .verifyEffectivePolicy(dependencies.manager, policy.config, policy.target, {
-        windowsEvidence: dependencies.windowsEvidence,
-      })
+      .verifyEffectivePolicy(dependencies.manager, policy.config, policy.target)
       .catch(() => undefined)
     if (stopStarting()) return shutdownPromise
     if (!effective || effective.status !== "available") {

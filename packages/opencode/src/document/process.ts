@@ -17,7 +17,6 @@ export interface ObservedExit {
 
 export type ExitResult =
   | { readonly status: "exited"; readonly exit: ObservedExit }
-  | { readonly status: "evidence-required"; readonly code: "windows-tree-evidence-required" }
   | {
       readonly status: "unavailable"
       readonly code:
@@ -35,6 +34,7 @@ export interface TerminationDependencies {
   readonly signalProcessGroup: (pid: number, signal: "SIGTERM" | "SIGKILL") => void
   readonly probeProcessGroup: (pid: number) => void
   readonly spawnTreeKiller: SpawnTreeKiller
+  readonly listWindowsProcesses?: (systemRoot: string) => Promise<ReadonlyArray<readonly [number, number]>>
   readonly now?: () => number
   readonly sleep?: (milliseconds: number) => Promise<void>
 }
@@ -43,6 +43,7 @@ const defaultDependencies: TerminationDependencies = {
   signalProcessGroup: (pid, signal) => process.kill(-pid, signal),
   probeProcessGroup: (pid) => process.kill(-pid, 0),
   spawnTreeKiller: (executable, args, options) => spawn(executable, args, options),
+  listWindowsProcesses,
 }
 
 export async function terminateProcessTree(
@@ -75,52 +76,115 @@ export async function terminateProcessTree(
     return { status: "unavailable", code: "tree-termination-failed" }
   }
 
-  let killer: ProcessHandle
-  try {
-    killer = dependencies.spawnTreeKiller(
-      path.win32.join(options.systemRoot, "System32", "taskkill.exe"),
-      ["/pid", String(child.pid), "/T", "/F"],
-      {
-        env: { SystemRoot: options.systemRoot, WINDIR: options.systemRoot },
-        shell: false,
-        stdio: "ignore",
-        windowsHide: true,
-      },
-    )
-  } catch {
-    tryKill(child)
-    await observeBefore(child, deadline)
-    return { status: "unavailable", code: "tree-termination-failed" }
+  const systemRoot = options.systemRoot
+
+  const verify =
+    options.verifyWindowsTreeEmpty ??
+    ((pid: number) =>
+      windowsDescendantsAbsent(pid, systemRoot, dependencies.listWindowsProcesses ?? listWindowsProcesses))
+
+  // A leader that already exited normally is not re-killed; only its descendants are verified.
+  if (!observed) {
+    let killer: ProcessHandle
+    try {
+      killer = dependencies.spawnTreeKiller(
+        path.win32.join(systemRoot, "System32", "taskkill.exe"),
+        ["/pid", String(child.pid), "/T", "/F"],
+        {
+          env: { SystemRoot: systemRoot, WINDIR: systemRoot },
+          shell: false,
+          stdio: "ignore",
+          windowsHide: true,
+        },
+      )
+    } catch {
+      tryKill(child)
+      await observeBefore(child, deadline)
+      return { status: "unavailable", code: "tree-termination-failed" }
+    }
+
+    const killerExit = await waitForTreeKiller(killer, Math.max(1, Math.floor(options.timeoutMs / 2)))
+    if (killerExit.status !== "exited") {
+      const helperWait = waitForTreeKiller(killer, remaining(deadline))
+      const childWait = waitForObservedExit(child, remaining(deadline))
+      const helperSignaled = tryKill(killer)
+      tryKill(child)
+      const [helperObserved] = await Promise.all([helperWait, childWait])
+      if (!helperSignaled || helperObserved.status !== "exited") {
+        return { status: "unavailable", code: "helper-exit-not-observed" }
+      }
+      return { status: "unavailable", code: "tree-termination-failed" }
+    }
+
+    // taskkill exits 128 when the leader raced to exit and 1 when it cannot open descendants that
+    // run as srt-sandbox; the observed exit plus the descendant sweep below is the containment proof.
+    if (killerExit.exit.code !== 0 || killerExit.exit.signal !== null) tryKill(child)
   }
 
-  const killerExit = await waitForTreeKiller(killer, Math.max(1, Math.floor(options.timeoutMs / 2)))
-  if (killerExit.status !== "exited") {
-    const helperWait = waitForTreeKiller(killer, remaining(deadline))
-    const childWait = waitForObservedExit(child, remaining(deadline))
-    const helperSignaled = tryKill(killer)
-    tryKill(child)
-    const [helperObserved] = await Promise.all([helperWait, childWait])
-    if (!helperSignaled || helperObserved.status !== "exited") {
-      return { status: "unavailable", code: "helper-exit-not-observed" }
-    }
-    return { status: "unavailable", code: "tree-termination-failed" }
-  }
-  if (killerExit.exit.code !== 0 || killerExit.exit.signal !== null) {
-    const childWait = waitForObservedExit(child, remaining(deadline))
-    tryKill(child)
-    await childWait
-    return { status: "unavailable", code: "tree-termination-failed" }
-  }
   const result = await observeBefore(child, deadline)
-  if (result.status !== "exited") tryKill(child)
-  if (result.status !== "exited") return result
-  if (!options.verifyWindowsTreeEmpty) {
-    return { status: "evidence-required", code: "windows-tree-evidence-required" }
+  if (result.status !== "exited") {
+    tryKill(child)
+    return result
   }
-  const empty = await settleBefore(options.verifyWindowsTreeEmpty(child.pid), remaining(deadline)).catch(
-    () => undefined,
+
+  while (true) {
+    const empty = await settleBefore(verify(child.pid), remaining(deadline)).catch(() => undefined)
+    if (empty === true) return result
+    if (now() >= deadline) return { status: "unavailable", code: "tree-containment-unconfirmed" }
+    await sleep(Math.min(100, remaining(deadline)))
+  }
+}
+
+export async function windowsDescendantsAbsent(
+  pid: number,
+  systemRoot: string,
+  list: (systemRoot: string) => Promise<ReadonlyArray<readonly [number, number]>> = listWindowsProcesses,
+) {
+  const processes = await list(systemRoot)
+  const tree = new Set([pid])
+  // Descendants keep the parent id of an exited ancestor, so one pass over the snapshot closes the tree.
+  for (let grow = true; grow; ) {
+    grow = false
+    for (const [child, parent] of processes) {
+      if (tree.has(parent) && !tree.has(child)) {
+        tree.add(child)
+        grow = true
+      }
+    }
+  }
+  return tree.size === 1
+}
+
+async function listWindowsProcesses(systemRoot: string): Promise<ReadonlyArray<readonly [number, number]>> {
+  const lister = spawn(
+    path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId),$($_.ParentProcessId)\" }",
+    ],
+    {
+      env: { SystemRoot: systemRoot, WINDIR: systemRoot },
+      shell: false,
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    },
   )
-  return empty === true ? result : { status: "unavailable", code: "tree-containment-unconfirmed" }
+  const chunks: Buffer[] = []
+  lister.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk))
+  const code = await new Promise<number | null>((resolve, reject) => {
+    lister.once("error", reject)
+    lister.once("close", resolve)
+  })
+  if (code !== 0) throw new Error("process enumeration failed")
+  return Buffer.concat(chunks)
+    .toString("utf8")
+    .split(/\r?\n/)
+    .flatMap((line) => {
+      const match = /^(\d+),(\d+)$/.exec(line.trim())
+      return match ? [[Number(match[1]), Number(match[2])] as const] : []
+    })
 }
 
 export async function terminateProcessGroup(pid: number, timeoutMs: number) {

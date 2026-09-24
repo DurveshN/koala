@@ -34,8 +34,8 @@ export const OutputSourcePath = DocumentRuntimeManifest.RelativePath.check(
       (value.startsWith("pages/") && value.endsWith(".png")) || (value.startsWith("ocr/") && value.endsWith(".tsv"))
     const validOffice = value.startsWith("office/") && value.endsWith(".json")
     const validPdf = value.startsWith("pdf/") && value.endsWith(".json")
-    const validDocx = value.startsWith("generate/") && value.endsWith(".docx")
-    if ((validDocument || validOffice || validPdf || validDocx) && !value.includes("\\") && !value.includes(":")) return undefined
+    const validGenerated = value.startsWith("generate/") && /\.(?:docx|pptx|xlsx|pdf)$/.test(value)
+    if ((validDocument || validOffice || validPdf || validGenerated) && !value.includes("\\") && !value.includes(":")) return undefined
     return "Expected a canonical document output path"
   }),
 ).pipe(Schema.brand("DocumentRuntimeProtocol.OutputSourcePath"))
@@ -181,9 +181,14 @@ export const ReadPdfRequest = Schema.Struct({
   ),
 )
 
+// One request type covers every generated deliverable; `format` defaults to docx for older callers.
+export const GeneratedFormat = Schema.Literals(["docx", "pptx", "xlsx", "pdf"])
+export type GeneratedFormat = typeof GeneratedFormat.Type
+
 export const CreateDocxRequest = Schema.Struct({
   ...CommonRequest,
   type: Schema.Literal("create-docx"),
+  format: Schema.optionalKey(GeneratedFormat),
   inputPath: DocumentRuntimeManifest.RelativePath,
   inputBytes: DocxInputBytes,
 })
@@ -370,6 +375,7 @@ export const FailureCode = Schema.Literals([
   "office-output-limit-exceeded",
   "pdf-output-limit-exceeded",
   "docx-generation-failed",
+  "pdf-generation-failed",
   "worker-failed",
 ])
 export type FailureCode = typeof FailureCode.Type

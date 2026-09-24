@@ -1,7 +1,7 @@
 import { Artifact } from "@koala-ai/core/artifact/artifact"
 import { DocumentEngine } from "@koala-ai/core/document/engine"
 import { DocumentValidation } from "@koala-ai/core/document/validation"
-import { validateOoxmlDocx } from "@koala-ai/document-runtime"
+import { detectOoxmlFormat, validateOoxml, validatePdf } from "@koala-ai/document-runtime"
 import { IndustrialInput } from "@koala-ai/core/industrial/input"
 import { IndustrialProjection } from "@koala-ai/core/industrial/projection"
 import { IndustrialResult } from "@koala-ai/core/industrial/result"
@@ -29,7 +29,7 @@ export const ArtifactValidateTool = Tool.define<
     const artifactInput = yield* ArtifactInput.Service
 
     return {
-      description: "Validate a DOCX artifact with the OOXML basic profile.",
+      description: "Validate a DOCX, PPTX, XLSX, or PDF artifact with the basic structural profile.",
       parameters: DocumentValidation.ArtifactValidate.Input,
       execute: (params, context) =>
         Effect.gen(function* () {
@@ -59,26 +59,33 @@ export const ArtifactValidateTool = Tool.define<
                   const bytes = yield* Effect.promise(() => Bun.file(resolved.snapshotPath).bytes())
                   if (signal.aborted) return makeErrorResult("cancelled", "Validation was cancelled", runID)
                   const validation = yield* Effect.tryPromise({
-                    try: () => validateOoxmlDocx(bytes),
-                    catch: (error) => new Error(error instanceof Error ? error.message : "OOXML validation failed"),
+                    try: async () => {
+                      if (Buffer.from(bytes.subarray(0, 5)).toString("latin1") === "%PDF-") {
+                        const pdf = await validatePdf(bytes)
+                        return { code: "pdf-basic", message: `Validated; ${pdf.pageCount} page(s)` }
+                      }
+                      const format = await detectOoxmlFormat(bytes)
+                      if (!format) throw new Error("Unsupported artifact format")
+                      const ooxml = await validateOoxml(bytes, format)
+                      return {
+                        code: "ooxml-basic",
+                        message: `Validated ${format}; ${ooxml.sectionCount} ${format === "docx" ? "section" : format === "pptx" ? "slide" : "sheet"}(s)`,
+                      }
+                    },
+                    catch: (error) => new Error(error instanceof Error ? error.message : "Artifact validation failed"),
                   })
 
                   return makeSuccess(
                     resolved.artifact,
                     true,
-                    [
-                      {
-                        code: "ooxml-basic",
-                        message: `Validated; extracted ${validation.sectionCount} section(s)`,
-                      },
-                    ],
+                    [validation],
                     runID,
                   )
                 }).pipe(
                   Effect.catch((error) =>
                     Effect.succeed(
                       makeErrorResult(
-                        error instanceof Error && error.message.includes("macro")
+                        error instanceof Error && /macro|Unsupported artifact format/.test(error.message)
                           ? "unsupported-format"
                           : "engine-failed",
                         error instanceof Error ? error.message : "Artifact validation failed",

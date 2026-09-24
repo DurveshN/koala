@@ -10,10 +10,14 @@ import { access, lstat, open, rm, writeFile } from "node:fs/promises"
 import type { FileHandle } from "node:fs/promises"
 import path from "node:path"
 import { generateDocx } from "./generate/docx.ts"
+import { generatePdf } from "./generate/pdf.ts"
+import { generatePptx } from "./generate/pptx.ts"
+import { generateXlsx } from "./generate/xlsx.ts"
 import { RuntimeFailure, runtimeFailure } from "./error.ts"
 import { validateOcrImage } from "./image.ts"
 import { readDocx, readPptx, readXlsx } from "./office/index.ts"
-import { validateOoxmlDocx } from "./validation/ooxml.ts"
+import { validateOoxml } from "./validation/ooxml.ts"
+import { validatePdf } from "./validation/pdf.ts"
 import { readPdf } from "./read/pdf.ts"
 import { loadAndVerifyManifest } from "./manifest.ts"
 import { makePrivateDirectory, resolveInRoot, validateInputFile, validatePrivateJobRoot } from "./path.ts"
@@ -299,16 +303,18 @@ async function execute(
 
   await send({ protocolVersion: 1, type: "started", jobID: request.jobID, operation: request.type })
   if (request.type === "probe") {
+    // Development runtimes may omit Tesseract; OCR requests then fail individually.
     const tesseract = verified.manifest.components.find((component) => component.name === "tesseract")
-    if (!tesseract) throw new RuntimeFailure("runtime-unavailable", "probe")
-    await validateRuntimeTool(paths.tesseract, paths.tessdata)
-    await probeTesseract({
-      executablePath: paths.tesseract,
-      tessdataPath: paths.tessdata,
-      jobRoot: root,
-      expectedVersion: tesseract.version,
-      signal,
-    })
+    if (tesseract) {
+      await validateRuntimeTool(paths.tesseract, paths.tessdata, "probe")
+      await probeTesseract({
+        executablePath: paths.tesseract,
+        tessdataPath: paths.tessdata,
+        jobRoot: root,
+        expectedVersion: tesseract.version,
+        signal,
+      })
+    }
     await probeRenderer({
       pdfEntry: path.join(paths.pdfRoot, "legacy", "build", "pdf.mjs"),
       canvasEntry: paths.canvasEntry,
@@ -429,6 +435,7 @@ async function executeRender(
         const tsvPath = `ocr/page-${page}-${resultID}.tsv`
         const absoluteTsv = resolveInRoot(jobRoot, tsvPath)
         generated.add(absoluteTsv)
+        await validateRuntimeTool(runtime.tesseract, runtime.tessdata, "ocr")
         const result = await runTesseract({
           executablePath: runtime.tesseract,
           tessdataPath: runtime.tessdata,
@@ -645,13 +652,13 @@ async function executeCreateDocx(
   const input = resolveInRoot(jobRoot, request.inputPath)
   await validateInputFile(jobRoot, input, request.inputBytes)
   signal.throwIfAborted()
-  const content = await readDocxContent(input)
+  const format = request.format ?? "docx"
+  const content = await readGenerateContent(input, format)
   await makePrivateDirectory(jobRoot, "generate")
-  const sourcePath = DocumentRuntimeProtocol.OutputSourcePath.make("generate/output.docx")
+  const sourcePath = DocumentRuntimeProtocol.OutputSourcePath.make(`generate/output.${format}`)
   const output = resolveInRoot(jobRoot, sourcePath)
   generated.add(output)
-  const buffer = await generateDocx(content.contents)
-  await validateOoxmlDocx(new Uint8Array(buffer), buffer.byteLength)
+  const buffer = await generateDocument(content, format)
   await writeFileAtomic(output, new Uint8Array(buffer))
   const pageID = DocumentRuntimeProtocol.PageID.make(`page_${randomUUID()}`)
   const transfer = await streamOutput({
@@ -687,13 +694,37 @@ async function executeCreateDocx(
   })
 }
 
-async function readDocxContent(inputPath: string): Promise<typeof DocumentGenerate.DocxCreate.Input.Type> {
+type GenerateContent = {
+  readonly [Format in DocumentGenerate.Format]: (typeof DocumentGenerate.ContentInput)[Format]["Type"]
+}
+
+async function readGenerateContent(
+  inputPath: string,
+  format: DocumentGenerate.Format,
+): Promise<GenerateContent[DocumentGenerate.Format]> {
   const json = await Bun.file(inputPath).json()
   try {
-    return Schema.decodeUnknownSync(DocumentGenerate.DocxCreate.Input)(json)
+    return Schema.decodeUnknownSync(DocumentGenerate.ContentInput[format])(json)
   } catch {
     throw new RuntimeFailure("invalid-request", "input")
   }
+}
+
+// Each generator's output is validated before it leaves the sandbox.
+async function generateDocument(content: GenerateContent[DocumentGenerate.Format], format: DocumentGenerate.Format) {
+  if (format === "pdf") {
+    const buffer = await generatePdf((content as GenerateContent["pdf"]).contents)
+    await validatePdf(new Uint8Array(buffer), buffer.byteLength)
+    return buffer
+  }
+  const buffer =
+    format === "pptx"
+      ? await generatePptx((content as GenerateContent["pptx"]).contents)
+      : format === "xlsx"
+        ? generateXlsx((content as GenerateContent["xlsx"]).contents)
+        : await generateDocx((content as GenerateContent["docx"]).contents)
+  await validateOoxml(new Uint8Array(buffer), format, buffer.byteLength)
+  return buffer
 }
 
 async function writeFileAtomic(file: string, bytes: Uint8Array) {
@@ -726,6 +757,7 @@ async function executeOcr(
   const tsvPath = `ocr/page-${request.page}-${resultID}.tsv`
   const output = resolveInRoot(jobRoot, tsvPath)
   generated.add(output)
+  await validateRuntimeTool(runtime.tesseract, runtime.tessdata, "ocr")
   const result = await runTesseract({
     executablePath: runtime.tesseract,
     tessdataPath: runtime.tessdata,
@@ -875,21 +907,25 @@ function makeOutputStart(
   return { ...common, kind: input.kind, resultID: input.resultID }
 }
 
-async function validateRuntimeTool(tesseractExecutable: string, tessdataPath: string) {
+async function validateRuntimeTool(
+  tesseractExecutable: string,
+  tessdataPath: string,
+  stage: "probe" | "ocr",
+) {
   const executable = await lstat(tesseractExecutable).catch(() => undefined)
   const tessdata = await lstat(tessdataPath).catch(() => undefined)
   if (!executable?.isFile() || executable.isSymbolicLink() || !tessdata?.isDirectory() || tessdata.isSymbolicLink()) {
-    throw new RuntimeFailure("runtime-unavailable", "probe")
+    throw new RuntimeFailure("runtime-unavailable", stage)
   }
   const data = await Promise.all(
     ["eng.traineddata", "osd.traineddata"].map((file) => lstat(path.join(tessdataPath, file)).catch(() => undefined)),
   )
   if (data.some((info) => !info?.isFile() || info.isSymbolicLink())) {
-    throw new RuntimeFailure("runtime-unavailable", "probe")
+    throw new RuntimeFailure("runtime-unavailable", stage)
   }
   if (process.platform !== "win32") {
     await access(tesseractExecutable, constants.X_OK).catch(() => {
-      throw new RuntimeFailure("runtime-unavailable", "probe")
+      throw new RuntimeFailure("runtime-unavailable", stage)
     })
   }
 }

@@ -5,13 +5,38 @@ import { RuntimeFailure } from "../error.ts"
 
 const MaxCompressionRatio = 100
 
+export type OoxmlFormat = "docx" | "pptx" | "xlsx"
+
+const requiredParts: Record<OoxmlFormat, ReadonlyArray<string>> = {
+  docx: ["word/document.xml"],
+  pptx: ["ppt/presentation.xml"],
+  xlsx: ["xl/workbook.xml"],
+}
+
 export interface OoxmlValidationResult {
   readonly text: string
   readonly sectionCount: number
 }
 
-export async function validateOoxmlDocx(
+export function validateOoxmlDocx(
   bytes: Uint8Array,
+  expectedBytes?: number,
+): Promise<OoxmlValidationResult> {
+  return validateOoxml(bytes, "docx", expectedBytes)
+}
+
+/** Detects the OOXML package kind from its main part; undefined for anything else. */
+export async function detectOoxmlFormat(bytes: Uint8Array): Promise<OoxmlFormat | undefined> {
+  const zip = await JSZip.loadAsync(bytes).catch(() => undefined)
+  if (!zip) return undefined
+  return (Object.keys(requiredParts) as OoxmlFormat[]).find((format) =>
+    requiredParts[format].every((part) => Boolean(zip.files[part])),
+  )
+}
+
+export async function validateOoxml(
+  bytes: Uint8Array,
+  format: OoxmlFormat,
   expectedBytes?: number,
 ): Promise<OoxmlValidationResult> {
   if (expectedBytes !== undefined && bytes.byteLength !== expectedBytes) {
@@ -19,13 +44,21 @@ export async function validateOoxmlDocx(
   }
   const zip = await JSZip.loadAsync(bytes)
   const files = zip.files
-  if (!files["[Content_Types].xml"]) throw new RuntimeFailure("docx-generation-failed", "worker")
-  if (!files["_rels/.rels"]) throw new RuntimeFailure("docx-generation-failed", "worker")
-  if (!files["word/document.xml"]) throw new RuntimeFailure("docx-generation-failed", "worker")
+  for (const part of ["[Content_Types].xml", "_rels/.rels", ...requiredParts[format]]) {
+    if (!files[part]) throw new RuntimeFailure("docx-generation-failed", "worker")
+  }
   rejectMacroContentTypes(await readText(zip, "[Content_Types].xml"))
-  await rejectExternalAndMacroRelations(zip, "_rels/.rels")
-  await rejectExternalAndMacroRelations(zip, "word/_rels/document.xml.rels")
+  // Every relationship part in the package is checked, so slide and sheet parts are covered too.
+  for (const part of Object.keys(files).filter((name) => name.endsWith(".rels"))) {
+    await rejectExternalAndMacroRelations(zip, part)
+  }
   assertCompressionRatio(bytes, zip)
+  if (format !== "docx") {
+    const pattern = format === "pptx" ? /^ppt\/slides\/slide\d+\.xml$/ : /^xl\/worksheets\/sheet\d+\.xml$/
+    const sectionCount = Object.keys(files).filter((name) => pattern.test(name)).length
+    if (sectionCount === 0) throw new RuntimeFailure("docx-generation-failed", "worker")
+    return { text: "", sectionCount }
+  }
   const extracted = await mammoth.extractRawText({ buffer: Buffer.from(bytes) })
   const text = extracted.value
   const sectionCount = Math.max(1, text.split(/\n{2,}/).filter((section) => section.trim().length > 0).length)
