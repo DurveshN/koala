@@ -136,7 +136,8 @@ async function exchange(input: unknown, options: Options = {}): Promise<SandboxP
     }
 
     child.stdout?.resume()
-    child.stderr?.resume()
+    // Worker diagnostics reach the Koala desktop log through the sidecar's stderr.
+    child.stderr?.on("data", (chunk: Buffer | string) => process.stderr.write(chunk))
     child.once("error", fail)
     child.once("exit", (code) => {
       if (!responseReceived || code !== 0 || !workerResponse) return fail()
