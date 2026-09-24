@@ -1,47 +1,25 @@
-import { SandboxManager } from "@anthropic-ai/sandbox-runtime"
+import { SandboxWorker } from "./src/sandbox/worker.ts"
 
-console.log("Checking sandbox configuration...\n")
+console.log("Checking sandbox availability (full flow)...\n")
 
-// Check platform support
-console.log("1. Platform Support:")
-const supported = SandboxManager.isSupportedPlatform()
-console.log(`   Platform: ${process.platform}`)
-console.log(`   Supported: ${supported}`)
+// This tests the actual availability check that the app uses
+const result = await SandboxWorker.availability()
 
-if (!supported) {
-  console.log("\n❌ Platform not supported")
-  process.exit(1)
-}
+console.log("Sandbox Availability Result:")
+console.log(JSON.stringify(result, null, 2))
 
-// Check dependencies
-console.log("\n2. Checking Dependencies:")
-try {
-  const deps = await SandboxManager.checkDependenciesAsync()
+if (result.availability.status === "available") {
+  console.log("\n✅ SANDBOX IS AVAILABLE!")
+} else {
+  console.log(`\n❌ SANDBOX IS NOT AVAILABLE`)
+  console.log(`   Reason: ${result.availability.reason}`)
   
-  if (deps.errors.length > 0) {
-    console.log("   ❌ Errors found:")
-    for (const error of deps.errors) {
-      console.log(`      - ${error}`)
-    }
-  } else {
-    console.log("   ✅ No errors")
+  if (result.availability.reason === "initialization-failed") {
+    console.log("\n   This usually means:")
+    console.log("   - srt-win.exe path could not be resolved")
+    console.log("   - Sandbox user not created")
+    console.log("   - Windows Filtering Platform not configured")
+    console.log("\n   To fix, run as Administrator:")
+    console.log("   npx sandbox-runtime windows-install")
   }
-  
-  if (deps.warnings && deps.warnings.length > 0) {
-    console.log("   ⚠️  Warnings:")
-    for (const warning of deps.warnings) {
-      console.log(`      - ${warning}`)
-    }
-  }
-  
-  if (deps.errors.length === 0 && (!deps.warnings || deps.warnings.length === 0)) {
-    console.log("\n✅ SANDBOX IS AVAILABLE!")
-  } else if (deps.errors.length > 0) {
-    console.log("\n❌ SANDBOX IS NOT AVAILABLE - Errors must be resolved")
-  } else {
-    console.log("\n⚠️  SANDBOX MAY HAVE ISSUES - Check warnings")
-  }
-} catch (error) {
-  console.log(`   ❌ Error checking dependencies: ${error}`)
-  process.exit(1)
 }

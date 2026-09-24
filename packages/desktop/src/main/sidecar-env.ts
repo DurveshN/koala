@@ -37,9 +37,12 @@ export function createSidecarEnv(
   env.METADATA_SERVER_DETECTION = "none"
   env.OPENCODE_DISABLE_AUTOUPDATE = "1"
   env.OPENCODE_DISABLE_SHARE = "1"
-  // Use "both" mode which allows sandbox if available, but falls back to host execution
-  // This ensures the app works even if sandbox setup failed during installation
-  env.KOALA_AGENT_EXECUTION = "both"
+  // Sandbox mode: requires proper installation via NSIS installer
+  // The installer runs `srt-win.exe install` with admin privileges to set up:
+  // - Sandbox user account (srt-sandbox)
+  // - Windows Filtering Platform (WFP) filters
+  // - ACL permissions on runtime paths
+  env.KOALA_AGENT_EXECUTION = "sandbox"
   env.KOALA_ENABLE_DOCUMENT_TOOLS = "1"
   if (userDataPath) {
     env.XDG_DATA_HOME = userDataPath
