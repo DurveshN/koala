@@ -1,4 +1,4 @@
-import xlsx from "xlsx"
+import * as xlsx from "xlsx"
 import { RuntimeFailure } from "../error.ts"
 import {
   encodeStructuredText,

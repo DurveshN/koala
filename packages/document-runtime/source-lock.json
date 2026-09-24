@@ -22,11 +22,11 @@
     },
     "pptxgenjs": {
       "version": "4.0.1",
-      "integrity": "sha512-TeJISrSwouAuXw4C1F/mC33xbZs/FuEG6nH9FG1Zj+nuPcGMPSYRH16X+j3HSUnS1f3at6k75ZZXPMZ1A5Lj9A=="
+      "integrity": "sha512-TeJISr8wouAuXw4C1F/mC33xbZs/FuEG6nH9FG1Zj+nuPcGMP5YRHl6X+j3HSUnS1f3at6k75ZZXPMZlA5Lj9A=="
     },
     "pdf-lib": {
       "version": "1.17.1",
-      "integrity": "sha512-V/mpyJAoTsN4cnP3lvc0wfNA1+p20evqqnap0kLoRUN0Yk/p3wNS20OEsL4o8FcLdb76h1pKPTzJIgo67j/XLw=="
+      "integrity": "sha512-V/mpyJAoTsN4cnP31vc0wfNA1+p20evqqnap0KLoRUN0Yk/p3wN52DOEsL4oBFcLdb76hlpKPtzJIgo67j/XLw=="
     },
     "pdfjs-dist": {
       "version": "6.3.289",

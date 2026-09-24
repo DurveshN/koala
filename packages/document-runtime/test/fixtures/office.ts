@@ -1,4 +1,4 @@
-import xlsx from "xlsx"
+import * as xlsx from "xlsx"
 import JSZip from "jszip"
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises"
 import os from "node:os"

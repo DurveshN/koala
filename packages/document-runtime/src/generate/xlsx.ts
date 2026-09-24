@@ -1,4 +1,4 @@
-import xlsx from "xlsx"
+import * as xlsx from "xlsx"
 import { DocumentGenerate } from "@koala-ai/core/document/generate"
 import { RuntimeFailure } from "../error.ts"
 
