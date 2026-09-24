@@ -60,6 +60,7 @@ const prepared =
           },
         ).trim(),
       ) as {
+        readonly resourcesRoot: string
         readonly root: string
         readonly attestation: string
         readonly evidenceRoot: string
@@ -74,9 +75,13 @@ execFileSync("bun", ["./scripts/document-runtime.ts", "verify-sandbox"], {
 
 // Development builds ship the unattested runtime that prebuild.ts emits; the app resolves it only
 // on the dev channel and marks it releaseReady=false. Release channels ship the verified staging.
+// electron-builder drops a top-level `node_modules` directory from every copied file set, so both
+// copies start one directory above the runtime root to keep `<root>/node_modules/**/*` intact.
 const developmentTarget = hostTarget(process.platform, process.arch)
 const developmentDocumentRuntime =
-  channel === "dev" && developmentTarget ? `../document-runtime/dist/${developmentTarget}/` : undefined
+  channel === "dev" && developmentTarget
+    ? { from: "../document-runtime/dist/", to: "document-runtime/", filter: [`${developmentTarget}/**/*`] }
+    : undefined
 
 const getBase = (appId: string): Configuration => ({
   artifactName: "koala-desktop-${os}-${arch}.${ext}",
@@ -129,14 +134,18 @@ const getBase = (appId: string): Configuration => ({
     },
     ...(prepared
       ? [
-          { from: prepared.root, to: "document-runtime/", filter: ["**/*"] },
-          { from: prepared.attestation, to: "document-runtime.attestation.json" },
-          { from: prepared.evidenceRoot, to: "document-confinement-evidence/", filter: ["**/*"] },
+          {
+            from: prepared.resourcesRoot,
+            to: "",
+            filter: [
+              "document-runtime/**/*",
+              "document-runtime.attestation.json",
+              "document-confinement-evidence/**/*",
+            ],
+          },
         ]
       : []),
-    ...(developmentDocumentRuntime
-      ? [{ from: developmentDocumentRuntime, to: "document-runtime/", filter: ["**/*"] }]
-      : []),
+    ...(developmentDocumentRuntime ? [developmentDocumentRuntime] : []),
   ],
   mac: {
     category: "public.app-category.developer-tools",

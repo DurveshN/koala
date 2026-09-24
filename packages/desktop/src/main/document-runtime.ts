@@ -57,14 +57,14 @@ export async function resolveDocumentRuntime(input: {
   const desktop = path.resolve(path.dirname(fileURLToPath(input.moduleURL)), "../..")
   const resourcesRoot = input.packaged ? await realpath(input.resourcesPath).catch(() => undefined) : undefined
   if (input.packaged && !resourcesRoot) return unavailable(`resources path is unreadable: ${input.resourcesPath}`)
-  const root = input.packaged
-    ? path.join(resourcesRoot!, "document-runtime")
-    : (override ?? path.resolve(desktop, "../document-runtime/dist", target))
-
   const attestationPath = resourcesRoot ? path.join(resourcesRoot, "document-runtime.attestation.json") : undefined
   const development =
     !input.packaged ||
     (input.developmentChannel === true && attestationPath !== undefined && !(await exists(attestationPath)))
+  // Dev packages nest the runtime under its target so electron-builder keeps `node_modules` when copying.
+  const root = input.packaged
+    ? path.join(resourcesRoot!, "document-runtime", ...(development ? [target] : []))
+    : (override ?? path.resolve(desktop, "../document-runtime/dist", target))
 
   const verified = await Promise.all([
     development
