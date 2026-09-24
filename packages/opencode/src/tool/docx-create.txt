@@ -1,0 +1,24 @@
+Creates a Microsoft Word document (.docx) from structured content.
+
+Usage:
+- Use this tool to generate professional Word documents with headings, paragraphs, tables, and formatted text.
+- The document is created from a structured JSON specification defining the content hierarchy.
+- Supports document metadata (title, author), headings, body text, bullet lists, and tables.
+- Generated documents are validated before delivery to ensure they can be opened in Microsoft Word.
+- Do NOT attempt to create .docx files using code execution - use this tool instead.
+
+Document Structure:
+- `title`: Optional document title (appears in file properties)
+- `author`: Optional author name (appears in file properties)
+- `sections`: Array of content sections, each with:
+  - `type`: "heading" | "paragraph" | "list" | "table"
+  - `level`: For headings (1-6), determines heading level
+  - `text`: The content text
+  - `items`: For lists, array of bullet points
+  - `rows`: For tables, 2D array of cell values
+
+Best Practices:
+- Structure content logically with clear headings
+- Use tables for tabular data rather than trying to format with spaces
+- Keep paragraphs focused and concise
+- Use appropriate heading levels to create a document outline

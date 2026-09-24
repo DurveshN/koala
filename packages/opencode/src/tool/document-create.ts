@@ -155,7 +155,7 @@ function defineDocumentCreateTool(definition: Definition) {
                         return Effect.succeed(
                           makeErrorResult(
                             mapRuntimeError(error),
-                            `${definition.label} creation failed: ${error.code}`,
+                            `${definition.label} creation failed: ${error.code}${error.detail ? ` (${error.detail})` : ""}`,
                             runID,
                           ),
                         )

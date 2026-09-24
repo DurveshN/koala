@@ -77,6 +77,8 @@ export interface PrepareInput {
   readonly manifestSha256: DocumentRuntimeManifest.Digest
   readonly platform?: NodeJS.Platform
   readonly architecture?: string
+  /** Windows fallback: grant only the job root and deny only the pending root. */
+  readonly minimalGrants?: boolean
 }
 
 export interface PreparedPolicy {
@@ -188,6 +190,7 @@ export async function prepare(
     systemRoot: roots.value.systemRoot,
     sandboxAssets,
     hostHelpers: hostHelpers.value,
+    minimalGrants: input.minimalGrants,
     environment,
   })
   return available({
@@ -331,6 +334,7 @@ export function buildConfig(input: {
   readonly systemRoot?: string
   readonly sandboxAssets: SandboxAssets
   readonly hostHelpers: HostHelpers
+  readonly minimalGrants?: boolean
   readonly environment?: NodeJS.ProcessEnv
 }): SandboxRuntimeConfig {
   const platform = targetPlatform(input.target)
@@ -346,7 +350,11 @@ export function buildConfig(input: {
   // the real user's files, so grants are needed only for user-owned paths and are impossible on
   // machine-wide roots. Inheriting denies on %USERPROFILE%/%TEMP% would propagate across the
   // profile and are redundant for a separate account, so Windows denies only the job siblings.
-  const grantable = (value: string) => platform !== "win32" || windowsGrantable(value, environment)
+  // `minimalGrants` keeps just the job roots for installs outside the known machine-wide roots.
+  const jobPaths = new Set([input.jobRoot, input.pendingRoot])
+  const grantable = (value: string) =>
+    platform !== "win32" ||
+    (input.minimalGrants === true ? jobPaths.has(value) : windowsGrantable(value, environment))
   const denyWrite = unique(
     [
       input.runtimeRoot,

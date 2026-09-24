@@ -127,10 +127,23 @@ export async function terminateProcessTree(
     return result
   }
 
+  let lastError: unknown
   while (true) {
-    const empty = await settleBefore(verify(child.pid), remaining(deadline)).catch(() => undefined)
+    const empty = await settleBefore(
+      verify(child.pid).catch((error: unknown) => {
+        lastError = error
+        return undefined
+      }),
+      remaining(deadline),
+    )
     if (empty === true) return result
-    if (now() >= deadline) return { status: "unavailable", code: "tree-containment-unconfirmed" }
+    if (now() >= deadline) {
+      if (lastError !== undefined) {
+        const detail = lastError instanceof Error ? lastError.message : String(lastError)
+        process.stderr.write(`document process: Windows descendant check failed: ${detail}\n`)
+      }
+      return { status: "unavailable", code: "tree-containment-unconfirmed" }
+    }
     await sleep(Math.min(100, remaining(deadline)))
   }
 }
@@ -156,8 +169,14 @@ export async function windowsDescendantsAbsent(
 }
 
 async function listWindowsProcesses(systemRoot: string): Promise<ReadonlyArray<readonly [number, number]>> {
+  // PowerShell needs the caller's profile locations to start; only a fixed allowlist is forwarded.
+  const inherited = Object.fromEntries(
+    ["USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "HOMEDRIVE", "HOMEPATH", "ProgramData", "SystemDrive", "COMSPEC", "PATHEXT"]
+      .flatMap((key) => (process.env[key] === undefined ? [] : [[key, process.env[key] as string]])),
+  )
+  const powershell = path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0")
   const lister = spawn(
-    path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    path.win32.join(powershell, "powershell.exe"),
     [
       "-NoProfile",
       "-NonInteractive",
@@ -165,19 +184,30 @@ async function listWindowsProcesses(systemRoot: string): Promise<ReadonlyArray<r
       "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId),$($_.ParentProcessId)\" }",
     ],
     {
-      env: { SystemRoot: systemRoot, WINDIR: systemRoot },
+      env: {
+        ...inherited,
+        SystemRoot: systemRoot,
+        WINDIR: systemRoot,
+        PATH: `${path.win32.join(systemRoot, "System32")};${powershell}`,
+      },
       shell: false,
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     },
   )
   const chunks: Buffer[] = []
+  const errors: Buffer[] = []
   lister.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk))
+  lister.stderr?.on("data", (chunk: Buffer) => errors.push(chunk))
   const code = await new Promise<number | null>((resolve, reject) => {
     lister.once("error", reject)
     lister.once("close", resolve)
   })
-  if (code !== 0) throw new Error("process enumeration failed")
+  if (code !== 0) {
+    throw new Error(
+      `process enumeration exited ${code}: ${Buffer.concat(errors).toString("utf8").replace(/\s+/g, " ").slice(0, 512)}`,
+    )
+  }
   return Buffer.concat(chunks)
     .toString("utf8")
     .split(/\r?\n/)

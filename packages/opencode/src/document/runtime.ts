@@ -149,9 +149,10 @@ export class RuntimeError extends Schema.TaggedErrorClass<RuntimeError>()("Docum
   code: DocumentRuntimeProtocol.FailureCode,
   stage: DocumentRuntimeProtocol.FailureStage,
   retryable: Schema.Boolean,
+  detail: Schema.optionalKey(Schema.String),
 }) {
   override get message() {
-    return `Document runtime failed: ${this.code}`
+    return `Document runtime failed: ${this.code}${this.detail ? ` (${this.detail})` : ""}`
   }
 }
 
@@ -346,7 +347,12 @@ export function layer(config: Config | undefined) {
       availability: () =>
         probe().pipe(
           Effect.map((available): Availability => available),
-          Effect.catch(() => Effect.succeed({ status: "unavailable", code: "runtime-unavailable" } as const)),
+          Effect.catch((error) =>
+            Effect.sync(() => {
+              process.stderr.write(`document runtime unavailable: ${error.message} [stage ${error.stage}]\n`)
+              return { status: "unavailable", code: "runtime-unavailable" } as const
+            }),
+          ),
         ),
       probe,
       ocr,
@@ -680,7 +686,11 @@ function spawnProxy(
         return
       }
       session.diagnosticBytes = Math.min(DiagnosticBytes + 1, session.diagnosticBytes + Buffer.byteLength(chunk))
-      if (session.diagnosticBytes <= DiagnosticBytes || session.overflowed) return
+      if (session.diagnosticBytes <= DiagnosticBytes || session.overflowed) {
+        // Proxy diagnostics reach the desktop log through the sidecar's stderr.
+        if (session.diagnosticBytes <= DiagnosticBytes) process.stderr.write(chunk)
+        return
+      }
       session.overflowed = true
       health.poison()
       try {
@@ -1260,23 +1270,25 @@ function stageInput(jobRoot: string, source: string, relative: string, maximumBy
 }
 
 function proxyFailure(message: typeof DocumentSandboxProtocol.FailureEvent.Type) {
-  if (message.code === "protocol-mismatch") return failure("protocol-mismatch", "worker")
+  const detail = `proxy reported ${message.code} during ${message.stage}`
+  if (message.code === "protocol-mismatch") return failure("protocol-mismatch", "worker", false, detail)
   if (message.code === "sandbox-unavailable" || message.code === "dependency-failed") {
-    return failure("runtime-unavailable", "probe")
+    return failure("runtime-unavailable", "probe", false, detail)
   }
-  return failure("worker-failed", message.stage === "worker" ? "worker" : "cleanup")
+  return failure("worker-failed", message.stage === "worker" ? "worker" : "cleanup", false, detail)
 }
 
 function closureFailure() {
-  return failure("worker-failed", "cleanup")
+  return failure("worker-failed", "cleanup", false, "proxy closure was not clean")
 }
 
 function failure(
   code: DocumentRuntimeProtocol.FailureCode,
   stage: DocumentRuntimeProtocol.FailureStage,
   retryable = false,
+  detail?: string,
 ) {
-  return new RuntimeError({ code, stage, retryable })
+  return new RuntimeError({ code, stage, retryable, ...(detail ? { detail } : {}) })
 }
 
 function attempt<A>(tryPromise: () => PromiseLike<A>, error: RuntimeError) {

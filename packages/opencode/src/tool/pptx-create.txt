@@ -1,0 +1,27 @@
+Creates a PowerPoint presentation (.pptx) from structured slides.
+
+Usage:
+- Use this tool to generate professional PowerPoint presentations with multiple slides.
+- Each slide can contain a title, subtitle, bullet points, paragraphs, tables, and speaker notes.
+- Slides are created from a structured JSON specification defining the slide content.
+- Generated presentations are validated before delivery to ensure they can be opened in Microsoft PowerPoint.
+- Do NOT attempt to create .pptx files using code execution - use this tool instead.
+
+Presentation Structure:
+- `title`: Optional presentation title (appears in file properties)
+- `author`: Optional author name (appears in file properties)
+- `slides`: Array of slide objects, each with:
+  - `title`: Slide title (appears at top)
+  - `subtitle`: Optional subtitle below title
+  - `bullets`: Array of bullet point text
+  - `paragraphs`: Array of paragraph text (for body content)
+  - `table`: Optional 2D array for tabular data (first row is header)
+  - `notes`: Optional speaker notes for the slide
+
+Best Practices:
+- Keep slide content concise - avoid text-heavy slides
+- Use bullet points to highlight key information
+- First slide should introduce the topic
+- Use tables sparingly and keep them simple
+- Include speaker notes to provide context and talking points
+- Limit to 5-7 bullet points per slide for readability
