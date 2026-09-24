@@ -15,6 +15,7 @@ import { generatePptx } from "./generate/pptx.ts"
 import { generateXlsx } from "./generate/xlsx.ts"
 import { RuntimeFailure, runtimeFailure } from "./error.ts"
 import { validateOcrImage } from "./image.ts"
+import { createInboxReadable, InboxDirectoryName } from "./inbox.ts"
 import { readDocx, readPptx, readXlsx } from "./office/index.ts"
 import { validateOoxml } from "./validation/ooxml.ts"
 import { validatePdf } from "./validation/pdf.ts"
@@ -941,7 +942,11 @@ function isOutputFrame(event: DocumentRuntimeProtocol.WorkerOutput): event is Do
 }
 
 export function startWorkerProcess(environment: NodeJS.ProcessEnv = process.env) {
-  return startWorker(workerConfigFromEnvironment(environment), createNodeStreamTransport(process.stdin, process.stdout))
+  const config = workerConfigFromEnvironment(environment)
+  // srt-win never forwards stdin to the sandboxed child, so Windows workers read the job inbox instead.
+  const input =
+    process.platform === "win32" ? createInboxReadable(path.join(config.jobRoot, InboxDirectoryName)) : process.stdin
+  return startWorker(config, createNodeStreamTransport(input, process.stdout))
 }
 
 function protocolMismatch(input: unknown) {

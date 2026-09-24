@@ -14,6 +14,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./manifest": "./src/manifest.ts",
+    "./inbox": "./src/inbox.ts",
     "./render": "./src/render.ts",
     "./runtime": "./src/runtime.ts",
     "./tesseract": "./src/tesseract.ts",

@@ -4,12 +4,14 @@ import { DocumentRuntimeProtocol } from "@koala-ai/core/document-runtime/protoco
 import { DocumentSandboxProtocol } from "@koala-ai/core/document-runtime/sandbox-protocol"
 import type { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
 import { loadAndVerifyManifest } from "@koala-ai/document-runtime/manifest"
+import { createInboxWritable, InboxDirectoryName } from "@koala-ai/document-runtime/inbox"
 import {
   createNodeStreamTransport,
   type NodeStreamTransport,
   type TransportError,
 } from "@koala-ai/document-runtime/transport"
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
+import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import type { Readable, Writable } from "node:stream"
 import { pathToFileURL } from "node:url"
@@ -292,17 +294,29 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       }
     }
     void innerTail.then(() => {
-      if (!terminal && !selectedFailure) fail("worker-crashed", "worker")
+      if (!terminal && !selectedFailure) {
+        report(
+          `worker closed before a terminal event (exit code ${leaderExit?.code ?? "unknown"}, signal ${leaderExit?.signal ?? "none"}, messages received ${innerMessages}, stderr bytes ${stderrBytes})`,
+        )
+        fail("worker-crashed", "worker")
+      }
       void shutdown()
     })
   }
   const onInnerDisconnect = (error?: TransportError) => {
     if (phase === "closed" || streamsClosing) return
     if (!error && terminal) return
+    report(
+      error
+        ? `worker transport error: ${error.message}`
+        : `worker stdout ended before a terminal event (messages received ${innerMessages})`,
+    )
     fail(error ? "transport-overflow" : "worker-crashed", error ? "transport" : "worker")
     void shutdown()
   }
+  let innerMessages = 0
   const handleInnerMessage = async (input: unknown) => {
+    innerMessages++
     if (phase !== "active" || !launch || !order || terminal) {
       fail("protocol-mismatch", "transport")
       await shutdown()
@@ -749,6 +763,17 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       fail("spawn-failed", "spawn")
       return shutdown()
     }
+    // srt-win never forwards stdin to the sandboxed child; Windows workers read frames from a job inbox.
+    const inbox = dependencies.platform === "win32" ? path.win32.join(policy.jobRoot, InboxDirectoryName) : undefined
+    if (inbox) {
+      try {
+        await mkdir(inbox, { mode: 0o700 })
+      } catch (error) {
+        report("inbox creation failed", error)
+        fail("spawn-failed", "spawn")
+        return shutdown()
+      }
+    }
     try {
       child = dependencies.spawnCommand(executable, wrapped.argv.slice(1), {
         cwd: policy.jobRoot,
@@ -756,13 +781,15 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
         shell: false,
         detached: dependencies.platform !== "win32",
         windowsHide: true,
-        stdio: ["pipe", "pipe", "pipe"],
+        stdio: [inbox ? "ignore" : "pipe", "pipe", "pipe"],
       })
-    } catch {
+    } catch (error) {
+      report("worker spawn failed", error)
       fail("spawn-failed", "spawn")
       return shutdown()
     }
-    if (!child.stdin || !child.stdout || !child.stderr) {
+    const commandSink = inbox ? createInboxWritable(inbox) : child.stdin
+    if (!commandSink || !child.stdout || !child.stderr) {
       fail("spawn-failed", "spawn")
       return shutdown()
     }
@@ -772,7 +799,7 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       child.once("close", onChildClose)
       child.stderr.on("data", onStderr)
       child.stderr.on("error", onStderrError)
-      transport = dependencies.createTransport(child.stdout, child.stdin)
+      transport = dependencies.createTransport(child.stdout, commandSink)
       transport.onMessage(onInnerMessage)
       transport.onDisconnect(onInnerDisconnect)
     } catch {
