@@ -118,6 +118,7 @@ type ReadDef = Tool.InferDef<typeof ReadTool>
 type State = {
   custom: Tool.Def[]
   builtin: Tool.Def[]
+  documentsEnabled: boolean
   task: TaskDef
   read: ReadDef
 }
@@ -365,6 +366,7 @@ const layer = Layer.effect(
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],
+          documentsEnabled,
           task: tool.task,
           read: tool.read,
         }
@@ -373,10 +375,8 @@ const layer = Layer.effect(
 
     const all: Interface["all"] = Effect.fn("ToolRegistry.all")(function* () {
       const s = yield* InstanceState.get(state)
-      const documentsEnabled =
-        availability.status === "available" || process.env.KOALA_ENABLE_DOCUMENT_TOOLS === "1"
       return [
-        ...s.builtin.filter((tool) => !documentToolIDs.has(tool.id) || documentsEnabled),
+        ...s.builtin.filter((tool) => !documentToolIDs.has(tool.id) || s.documentsEnabled),
         ...s.custom,
       ] as Tool.Def[]
     })

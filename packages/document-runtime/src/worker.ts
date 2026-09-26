@@ -33,6 +33,10 @@ const encodeOutput = Schema.encodeSync(DocumentRuntimeProtocol.WorkerOutput)
 const decodeOutput = DocumentRuntimeProtocol.decodeWorkerOutput
 const decodeTarget = Schema.decodeUnknownSync(DocumentRuntimeTarget.Target)
 const decodeDigest = Schema.decodeUnknownSync(DocumentRuntimeManifest.Digest)
+const ExitGraceMs = 500
+// interrupt() cannot cancel an await that ignores the abort signal (for example a stuck dynamic
+// import), so a job that outlives its deadline by this much is failed explicitly.
+const DeadlineGraceMs = 5_000
 
 export type WorkerConfig = {
   readonly runtimeRoot: string
@@ -195,15 +199,23 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport, de
           : message.type === "read-office" || message.type === "read-pdf" || message.type === "create-docx"
             ? DocumentRuntimeLimits.MaxJobDeadlineMs
             : message.limits.jobDeadlineMs
-      const jobDeadline = setTimeout(
-        () => interrupt(new RuntimeFailure("job-deadline-exceeded", "worker", true)),
-        jobDeadlineMs,
-      )
+      const deadlineFailure = new RuntimeFailure("job-deadline-exceeded", "worker", true)
+      let deadlineGrace: ReturnType<typeof setTimeout> | undefined
+      const jobDeadline = setTimeout(() => {
+        interrupt(deadlineFailure)
+        deadlineGrace = setTimeout(() => {
+          if (!terminal) void fail(deadlineFailure)
+        }, DeadlineGraceMs)
+      }, jobDeadlineMs)
+      const settleDeadline = () => {
+        clearTimeout(jobDeadline)
+        if (deadlineGrace) clearTimeout(deadlineGrace)
+      }
       void execute(message, config, abort.signal, generated, cleanup, send, nextCommand, openOutput)
         .then(
-          () => clearTimeout(jobDeadline),
+          () => settleDeadline(),
           async (error: unknown) => {
-            clearTimeout(jobDeadline)
+            settleDeadline()
             if (disconnected) {
               terminal = true
               await cleanup().catch(() => undefined)
@@ -948,7 +960,17 @@ export function startWorkerProcess(environment: NodeJS.ProcessEnv = process.env)
   const inbox = process.platform === "win32" ? path.join(config.jobRoot, InboxDirectoryName) : undefined
   process.stderr.write(`document worker: started, commands from ${inbox ?? "stdin"}\n`)
   const input = inbox ? createInboxReadable(inbox) : process.stdin
-  return startWorker(config, createNodeStreamTransport(input, process.stdout))
+  const transport = createNodeStreamTransport(input, process.stdout)
+  return startWorker(config, {
+    ...transport,
+    close() {
+      transport.close()
+      // Any handle a library leaves behind would keep the process alive after the job is over, and the
+      // proxy only tears down after the child exits. Sends have completed by now (pipe writes are
+      // synchronous on Windows), so a forced exit loses nothing.
+      setTimeout(() => process.exit(process.exitCode ?? 0), ExitGraceMs).unref()
+    },
+  })
 }
 
 function protocolMismatch(input: unknown) {

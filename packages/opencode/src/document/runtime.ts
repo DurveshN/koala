@@ -28,7 +28,9 @@ import { DocumentTeardownReceipt } from "./teardown-receipt"
 
 const DiagnosticBytes = DocumentRuntimeLimits.MaxInnerStderrBytes
 const SignalCapacity = DocumentRuntimeLimits.MaxOuterPendingMessages
-const CleanupWatchdogMs = 10_000
+// The proxy's Windows teardown (process sweep plus SRT cleanup/reset) is bounded at 6 s + 6 s; the
+// parent's closure window must stay above that worst case or a slow teardown poisons the runtime.
+const CleanupWatchdogMs = process.platform === "win32" ? 20_000 : 10_000
 const DeletionReserveMs = 2_000
 // A probe only verifies the runtime and loads the renderer; anything longer indicates a stuck worker.
 const ProbeDeadlineMs = 60_000

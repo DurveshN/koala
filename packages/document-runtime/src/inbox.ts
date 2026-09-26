@@ -24,12 +24,22 @@ export function createInboxReadable(directory: string): Readable {
     read() {
       void scan()
     },
+    // transport.close() destroys the input; the timer and watcher must go with it or the worker
+    // process never exits and the proxy waits for a child close that never comes.
+    destroy(error, callback) {
+      release()
+      callback(error)
+    },
   })
-  const finish = (error?: Error) => {
+  const release = () => {
     if (finished) return
     finished = true
     clearInterval(timer)
     watcher?.close()
+  }
+  const finish = (error?: Error) => {
+    if (finished) return
+    release()
     if (error) readable.destroy(error)
     else readable.push(null)
   }
