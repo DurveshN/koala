@@ -93,7 +93,7 @@ function defineDocumentCreateTool(definition: Definition) {
                       contents: params.contents,
                     } as DocumentRuntime.CreateDocumentInput)
                     yield* Effect.tryPromise({
-                      try: () => validate(generated.bytes),
+                      try: () => validate(generated.bytes) as Promise<OoxmlValidationResult>,
                       catch: (error) =>
                         new Error(
                           `${definition.label} validation failed: ${error instanceof Error ? error.message : String(error)}`,

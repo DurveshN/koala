@@ -818,8 +818,8 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       accepted = true
       await transport.send(DocumentRuntimeProtocol.decodeInitialRequest(message.start))
       report(`start request delivered via ${inbox ? "inbox" : "stdin"} (worker pid ${child.pid})`)
-    } catch {
-      report("start request delivery failed", error)
+    } catch (e) {
+      report("start request delivery failed", e)
       fail("transport-overflow", "transport")
       return shutdown()
     }

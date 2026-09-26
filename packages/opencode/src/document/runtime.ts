@@ -317,7 +317,18 @@ export function layer(config: Config | undefined) {
         const runtime = yield* verifiedRuntime(health, policy)
         return yield* withJob(health, (job) =>
           Effect.gen(function* () {
-            const content = yield* decodeInput(DocumentGenerate.ContentInput[input.format], { contents: input.contents })
+            let content: unknown
+            if (input.format === "docx") {
+              content = yield* decodeInput(DocumentGenerate.ContentInput.docx, { contents: input.contents })
+            } else if (input.format === "pptx") {
+              content = yield* decodeInput(DocumentGenerate.ContentInput.pptx, { contents: input.contents })
+            } else if (input.format === "xlsx") {
+              content = yield* decodeInput(DocumentGenerate.ContentInput.xlsx, { contents: input.contents })
+            } else if (input.format === "pdf") {
+              content = yield* decodeInput(DocumentGenerate.ContentInput.pdf, { contents: input.contents })
+            } else {
+              return yield* failure("invalid-request", "input")
+            }
             const contentBytes = Buffer.from(JSON.stringify(content), "utf8")
             const contentPath = "input/content.json"
             const absoluteContentPath = path.join(job.path, ...contentPath.split("/"))

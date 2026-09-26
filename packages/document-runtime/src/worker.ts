@@ -6,7 +6,7 @@ import { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
 import { Schema } from "effect"
 import { createHash, randomUUID } from "node:crypto"
 import { constants } from "node:fs"
-import { access, lstat, open, rm, writeFile } from "node:fs/promises"
+import { access, lstat, open, readFile, rm, writeFile } from "node:fs/promises"
 import type { FileHandle } from "node:fs/promises"
 import path from "node:path"
 import { generateDocx } from "./generate/docx.ts"
@@ -223,6 +223,10 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport, de
               return
             }
             if (abort.signal.aborted && !forcedFailure) return cancel()
+            if (!(error instanceof RuntimeFailure) && !forcedFailure) {
+              const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+              process.stderr.write(`document worker: unexpected error: ${detail.replace(/\s+/g, " ").slice(0, 1024)}\n`)
+            }
             return fail(runtimeFailure(forcedFailure ?? error, new RuntimeFailure("worker-failed", "worker")))
           },
         )
@@ -716,8 +720,9 @@ async function readGenerateContent(
   inputPath: string,
   format: DocumentGenerate.Format,
 ): Promise<GenerateContent[DocumentGenerate.Format]> {
-  const json = await Bun.file(inputPath).json()
+  // The worker runs under Node (Electron as Node), so only Node APIs are available here.
   try {
+    const json: unknown = JSON.parse(await readFile(inputPath, "utf8"))
     return Schema.decodeUnknownSync(DocumentGenerate.ContentInput[format])(json)
   } catch {
     throw new RuntimeFailure("invalid-request", "input")
