@@ -589,7 +589,7 @@ function withJob<A, E, R>(health: Health, use: (job: DocumentJobRoot.Root) => Ef
       try: () => DocumentJobRoot.create(),
       catch: (error) => {
         if (error instanceof DocumentJobRoot.LifecycleError && error.unhealthy) health.poison()
-        return failure("worker-failed", "cleanup")
+        return failure("worker-failed", "cleanup", false, `job root creation: ${describe(error)}`)
       },
     }),
     use,
@@ -601,9 +601,9 @@ function withJob<A, E, R>(health: Health, use: (job: DocumentJobRoot.Root) => Ef
           }
           return DocumentJobRoot.remove(job, { deadline: job.cleanupDeadline ?? Date.now() + CleanupWatchdogMs })
         },
-        catch: () => {
+        catch: (error) => {
           health.poison()
-          return failure("worker-failed", "cleanup")
+          return failure("worker-failed", "cleanup", false, `job root removal: ${describe(error)}`)
         },
       }),
   )
@@ -662,9 +662,9 @@ function spawnProxy(
   return Effect.gen(function* () {
     yield* Effect.tryPromise({
       try: () => DocumentJobRoot.verifyForLaunch(job),
-      catch: () => {
+      catch: (error) => {
         health.poison()
-        return failure("worker-failed", "cleanup")
+        return failure("worker-failed", "cleanup", false, `job root verification: ${describe(error)}`)
       },
     })
     const queue = yield* Queue.bounded<Signal>(SignalCapacity)
@@ -678,7 +678,7 @@ function spawnProxy(
           serialization: "json",
           stdio: ["ignore", "pipe", "pipe", "ipc"],
         }),
-      catch: () => failure("worker-failed", "worker"),
+      catch: (error) => failure("worker-failed", "worker", false, `proxy spawn: ${describe(error)}`),
     })
     const session: Session = {
       health,
@@ -1042,8 +1042,8 @@ function sendParent(session: Session, input: unknown) {
         input,
         timeoutMs,
       ),
-    catch: () => failure("worker-failed", "cleanup"),
-  })
+    catch: (error) => failure("worker-failed", "cleanup", false, `parent channel: ${describe(error)}`),
+    })
 }
 
 function nextProxyMessage(session: Session): Effect.Effect<DocumentSandboxProtocol.ProxyEvent, RuntimeError> {
@@ -1329,7 +1329,7 @@ function pendingAttempt<A>(health: Health, tryPromise: () => PromiseLike<A>) {
     try: tryPromise,
     catch: (error) => {
       if (error instanceof DocumentPendingRoot.EvidenceError) health.poison()
-      return failure("worker-failed", "cleanup")
+      return failure("worker-failed", "cleanup", false, `output handoff: ${describe(error)}`)
     },
   })
 }
