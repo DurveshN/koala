@@ -202,9 +202,36 @@ export class WriteError extends Schema.TaggedErrorClass<WriteError>()("Industria
   }
 }
 
+export const DefaultListLimit = 50
+export const MaxListLimit = 200
+
+export const ListQuery = Schema.Struct({
+  limit: Schema.optionalKey(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(MaxListLimit)),
+  ),
+  cursor: Schema.optionalKey(Timestamp),
+  sessionID: Schema.optionalKey(Identifier),
+}).annotate({ identifier: "IndustrialAudit.ListQuery" })
+export type ListQuery = typeof ListQuery.Type
+
+export interface ListResult extends Schema.Schema.Type<typeof ListResult> {}
+export const ListResult = Schema.Struct({
+  records: Schema.Array(Record),
+  nextCursor: Schema.optionalKey(Timestamp),
+}).annotate({ identifier: "IndustrialAudit.ListResult" })
+
+export class ReadError extends Schema.TaggedErrorClass<ReadError>()("IndustrialAuditReadError", {
+  code: Schema.Literals(["unavailable"]),
+}) {
+  override get message() {
+    return `Industrial audit read failed: ${this.code}`
+  }
+}
+
 export interface Interface {
   readonly begin: (input: BeginInput) => Effect.Effect<Running, WriteError>
   readonly complete: (input: CompleteInput) => Effect.Effect<Completed, WriteError>
+  readonly list: (query: ListQuery) => Effect.Effect<typeof ListResult.Type, ReadError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@koala-ai/core/IndustrialAudit") {}

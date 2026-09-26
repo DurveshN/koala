@@ -5,7 +5,8 @@ import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ToolAuditTable } from "@opencode-ai/core/tool-audit/sql"
 import { sql } from "drizzle-orm"
-import { Effect, Schema } from "effect"
+import { Effect, Layer, Schema } from "effect"
+import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { IndustrialAuditLive } from "../../src/koala/industrial-audit"
 import { tmpdir } from "../fixture/fixture"
 import { it } from "../lib/effect"
@@ -70,6 +71,7 @@ const withAudit = <A, E>(body: () => Effect.Effect<A, E, IndustrialAudit.Service
         Effect.provide(
           LayerNode.compile(LayerNode.group([IndustrialAuditLive.node, Database.node]), [
             [Database.node, Database.layerFromPath(path.join(tmp.path, "industrial-audit.db"))],
+            [EventV2Bridge.node, Layer.mock(EventV2Bridge.Service, { publish: () => Effect.succeed(undefined as never) })],
           ]),
         ),
       ),

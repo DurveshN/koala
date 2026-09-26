@@ -10,6 +10,10 @@ import type {
   AppLogResponses,
   AppSkillsErrors,
   AppSkillsResponses,
+  AuditNetworkErrors,
+  AuditNetworkResponses,
+  AuditToolsErrors,
+  AuditToolsResponses,
   Auth as Auth3,
   AuthRemoveErrors,
   AuthRemoveResponses,
@@ -1539,6 +1543,72 @@ export class ModelProfile extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+}
+
+export class Audit extends HeyApiClient {
+  /**
+   * List tool-call audit records
+   *
+   * Paginated durable, redacted audit records for industrial tool calls.
+   */
+  public tools<ThrowOnError extends boolean = false>(
+    parameters?: {
+      limit?: number
+      cursor?: number
+      sessionID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "limit" },
+            { in: "query", key: "cursor" },
+            { in: "query", key: "sessionID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<AuditToolsResponses, AuditToolsErrors, ThrowOnError>({
+      url: "/global/audit/tools",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * List network decision audit records
+   *
+   * Paginated durable, redacted audit records for outbound network policy decisions.
+   */
+  public network<ThrowOnError extends boolean = false>(
+    parameters?: {
+      limit?: number
+      cursor?: number
+      decision?: "allowed" | "denied"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "limit" },
+            { in: "query", key: "cursor" },
+            { in: "query", key: "decision" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<AuditNetworkResponses, AuditNetworkErrors, ThrowOnError>({
+      url: "/global/audit/network",
+      ...options,
+      ...params,
     })
   }
 }
@@ -7266,6 +7336,11 @@ export class OpencodeClient extends HeyApiClient {
   private _modelProfile?: ModelProfile
   get modelProfile(): ModelProfile {
     return (this._modelProfile ??= new ModelProfile({ client: this.client }))
+  }
+
+  private _audit?: Audit
+  get audit(): Audit {
+    return (this._audit ??= new Audit({ client: this.client }))
   }
 
   private _event?: Event
