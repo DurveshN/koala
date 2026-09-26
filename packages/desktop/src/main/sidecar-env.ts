@@ -44,6 +44,11 @@ export function createSidecarEnv(
   // - ACL permissions on runtime paths
   env.KOALA_AGENT_EXECUTION = "sandbox"
   env.KOALA_ENABLE_DOCUMENT_TOOLS = "1"
+  // TEST-ONLY: permit public/cloud API model endpoints while local models are too
+  // slow for iteration. Every such call is still recorded in the network audit
+  // (rule "public-test-allowed"). Remove this line to enforce sovereign local-only
+  // networking before shipping / for the sovereignty demo.
+  env.KOALA_NETWORK_ALLOW_PUBLIC = "1"
   if (userDataPath) {
     env.XDG_DATA_HOME = userDataPath
     env.XDG_CONFIG_HOME = userDataPath

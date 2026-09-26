@@ -102,6 +102,11 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const resolver = yield* NetworkResolver.Service
     const audit = yield* NetworkAudit.Service
+    // TEST-ONLY escape hatch: when KOALA_NETWORK_ALLOW_PUBLIC=1 the policy still
+    // parses/records every request but permits public destinations so a fast cloud
+    // API can be used during development. Leave it UNSET for sovereign local-only
+    // operation; every allowed public call is still recorded in the network audit.
+    const allowPublic = process.env.KOALA_NETWORK_ALLOW_PUBLIC === "1"
     // Fire-and-forget: audit persistence must never fail or slow an outbound request.
     const write = (input: NetworkAudit.RecordInput) =>
       void Effect.runPromise(audit.record(input)).catch(() => {})
@@ -150,7 +155,7 @@ export const layer = Layer.effect(
 
           if (endpoint.kind === "literal") {
             const authorized = EndpointPolicy.authorizeResolution(endpoint, [endpoint.address])
-            if (!authorized.ok) throw new PolicyError({ rule: authorized.code, origin: endpoint.origin })
+            if (!authorized.ok && !allowPublic) throw new PolicyError({ rule: authorized.code, origin: endpoint.origin })
           }
 
           const requestBytes = contentLength(request.headers)
@@ -166,11 +171,22 @@ export const layer = Layer.effect(
                   Effect.runPromise(resolver.resolve(hostname)).then(
                     (addresses) => {
                       const authorized = EndpointPolicy.authorizeResolution(endpoint, addresses)
-                      if (!authorized.ok) {
-                        callback(new PolicyError({ rule: authorized.code, origin: endpoint.origin }), "", 0)
+                      const address = authorized.ok
+                        ? authorized.value.addresses[0]
+                        : allowPublic && addresses.length > 0
+                          ? addresses[0]
+                          : undefined
+                      if (!address) {
+                        callback(
+                          new PolicyError({
+                            rule: authorized.ok ? "empty-resolution" : authorized.code,
+                            origin: endpoint.origin,
+                          }),
+                          "",
+                          0,
+                        )
                         return
                       }
-                      const address = authorized.value.addresses[0]
                       callback(
                         null,
                         lookupOptions.all ? [{ address: address.address, family: address.family }] : address.address,
@@ -188,7 +204,7 @@ export const layer = Layer.effect(
             destination,
             method,
             decision: "allowed",
-            rule: endpoint.localhost ? "loopback" : "private-allowed",
+            rule: endpoint.localhost ? "loopback" : allowPublic ? "public-test-allowed" : "private-allowed",
             status: response.status,
             durationMs: Date.now() - timeStarted,
             requestBytes,
