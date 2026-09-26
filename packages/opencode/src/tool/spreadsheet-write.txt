@@ -1,17 +1,18 @@
-Creates an Excel workbook (.xlsx) from structured sheets and data.
+Creates an Excel workbook (.xlsx) from structured sheets and saves it inside the current project.
 
 Usage:
-- Use this tool to generate Excel spreadsheets with one or more worksheets.
-- Each sheet contains rows and columns of data defined as 2D arrays.
+- Use this tool to produce spreadsheet deliverables such as inspection registers, cost tables, and calculation sheets.
+- `path` is the project-relative location of the finished file, for example "deliverables/inspection-summary.xlsx". Use forward slashes; the file is written inside the project directory and an existing file at that path is replaced.
 - Cells are written as literal text, numbers, or booleans - formulas are NOT evaluated.
-- Generated workbooks are validated before delivery to ensure they can be opened in Microsoft Excel.
+- The workbook is validated before delivery so it opens in Microsoft Excel.
+- After the tool succeeds, tell the user the saved path from the result.
 - Do NOT attempt to create .xlsx files using code execution - use this tool instead.
 
-Workbook Structure:
+Workbook Structure (`contents`):
 - `title`: Optional workbook title (appears in file properties)
-- `author`: Optional author name (appears in file properties)  
-- `sheets`: Array of worksheet objects, each with:
-  - `name`: Worksheet name (appears on sheet tab)
+- `author`: Optional author name (appears in file properties)
+- `sheets`: Array of worksheet objects (at least one), each with:
+  - `name`: Worksheet name (1-31 characters, unique, no \ / ? * [ ] :)
   - `header`: Optional array of column header values (first row)
   - `rows`: 2D array of cell values (each row is an array of cell values)
   - `columnWidths`: Optional array of column widths in character units
@@ -21,7 +22,7 @@ Cell Values:
 - Numbers: Written as numeric cells
 - Booleans: Written as boolean cells (TRUE/FALSE)
 - null: Written as empty cells
-- DO NOT include formulas (e.g., "=SUM(A1:A10)") - they will be written as literal text
+- DO NOT include formulas (e.g., "=SUM(A1:A10)") - they will be written as literal text; compute values first
 
 Best Practices:
 - Use descriptive sheet names (e.g., "Sales Data", "Summary")
@@ -29,4 +30,3 @@ Best Practices:
 - Keep data organized in tabular format
 - Use null for intentionally empty cells
 - Set appropriate column widths for readability
-- Sheet names must be unique within the workbook

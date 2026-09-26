@@ -59,40 +59,55 @@ export const XlsxContent = Schema.Struct({
   ).check(Schema.isMinLength(1)),
 }).annotate({ identifier: "DocumentGenerate.XlsxContent" })
 
+/** Worker-side content schema for each generated format; the confined worker never sees the path. */
+export const ContentInput = {
+  docx: Schema.Struct({ contents: DocxContent }),
+  pptx: Schema.Struct({ contents: PptxContent }),
+  xlsx: Schema.Struct({ contents: XlsxContent }),
+  pdf: Schema.Struct({ contents: PdfContent }),
+} as const
+
+function deliverablePath(format: Format) {
+  return Schema.String.annotate({
+    description: `Project-relative path for the finished file using forward slashes, for example "deliverables/approval-note.${format}". The file is saved inside the current project at this path and overwrites an existing file with the same name.`,
+  })
+}
+
+// Deliverables record where they were saved so callers can hand the user a real file path.
+const Delivered = Schema.Struct({ artifact: Artifact.Reference, path: Schema.String })
+
 export const DocxCreate = {
-  Input: Schema.Struct({ contents: DocxContent }).annotate({ identifier: "DocumentGenerate.DocxCreate.Input" }),
-  Result: IndustrialResult.make("docx_create", Schema.Struct({ artifact: Artifact.Reference })).annotate({
+  Input: Schema.Struct({ path: deliverablePath("docx"), contents: DocxContent }).annotate({
+    identifier: "DocumentGenerate.DocxCreate.Input",
+  }),
+  Result: IndustrialResult.make("docx_create", Delivered).annotate({
     identifier: "DocumentGenerate.DocxCreate.Result",
   }),
 }
 
 export const PptxCreate = {
-  Input: Schema.Struct({ contents: PptxContent }).annotate({ identifier: "DocumentGenerate.PptxCreate.Input" }),
-  Result: IndustrialResult.make("pptx_create", Schema.Struct({ artifact: Artifact.Reference })).annotate({
+  Input: Schema.Struct({ path: deliverablePath("pptx"), contents: PptxContent }).annotate({
+    identifier: "DocumentGenerate.PptxCreate.Input",
+  }),
+  Result: IndustrialResult.make("pptx_create", Delivered).annotate({
     identifier: "DocumentGenerate.PptxCreate.Result",
   }),
 }
 
 export const SpreadsheetWrite = {
-  Input: Schema.Struct({ contents: XlsxContent }).annotate({
+  Input: Schema.Struct({ path: deliverablePath("xlsx"), contents: XlsxContent }).annotate({
     identifier: "DocumentGenerate.SpreadsheetWrite.Input",
   }),
-  Result: IndustrialResult.make("spreadsheet_write", Schema.Struct({ artifact: Artifact.Reference })).annotate({
+  Result: IndustrialResult.make("spreadsheet_write", Delivered).annotate({
     identifier: "DocumentGenerate.SpreadsheetWrite.Result",
   }),
 }
 
 export const PdfCreate = {
-  Input: Schema.Struct({ contents: PdfContent }).annotate({ identifier: "DocumentGenerate.PdfCreate.Input" }),
-  Result: IndustrialResult.make("pdf_create", Schema.Struct({ artifact: Artifact.Reference })).annotate({
+  Input: Schema.Struct({ path: deliverablePath("pdf"), contents: PdfContent }).annotate({
+    identifier: "DocumentGenerate.PdfCreate.Input",
+  }),
+  Result: IndustrialResult.make("pdf_create", Delivered).annotate({
     identifier: "DocumentGenerate.PdfCreate.Result",
   }),
 }
-
-/** Worker-side content schema for each generated format. */
-export const ContentInput = {
-  docx: DocxCreate.Input,
-  pptx: PptxCreate.Input,
-  xlsx: SpreadsheetWrite.Input,
-  pdf: PdfCreate.Input,
-} as const
