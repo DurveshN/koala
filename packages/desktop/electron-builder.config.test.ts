@@ -3,10 +3,7 @@ import type { Configuration } from "electron-builder"
 import { cp, mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import {
-  prepareReleaseDocumentRuntime,
-  verifyPreparedSandboxRuntime,
-} from "./scripts/document-runtime"
+import { prepareReleaseDocumentRuntime, verifyPreparedSandboxRuntime } from "./scripts/document-runtime"
 import { confinementEvidenceFixture, productionRuntimeFixture } from "./test/fixture/document-runtime"
 
 const legacyDesktopEntry = "resources/linux/opencode-desktop.desktop"
@@ -47,9 +44,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  await Promise.all([
-    rm(path.dirname(releaseSource), { recursive: true, force: true }),
-  ])
+  await Promise.all([rm(path.dirname(releaseSource), { recursive: true, force: true })])
   if (previousRustTarget === undefined) delete process.env.RUST_TARGET
   else process.env.RUST_TARGET = previousRustTarget
   if (previousStagingRoot === undefined) delete process.env.KOALA_DOCUMENT_RUNTIME_STAGING_ROOT
@@ -63,9 +58,9 @@ afterAll(async () => {
 })
 
 const channels = [
-  { channel: "dev", appId: "ai.opencode.desktop.dev" },
-  { channel: "beta", appId: "ai.opencode.desktop.beta" },
-  { channel: "prod", appId: "ai.opencode.desktop" },
+  { channel: "dev", appId: "ai.koala.desktop.dev" },
+  { channel: "beta", appId: "ai.koala.desktop.beta" },
+  { channel: "prod", appId: "ai.koala.desktop" },
 ] as const
 
 for (const channel of channels) {
@@ -110,9 +105,9 @@ test("keeps a hidden prod launcher for old Linux pins", async () => {
   ).toBe(true)
 
   const desktop = await Bun.file(legacyDesktopEntry).text()
-  expect(desktop).toContain("Exec=/opt/OpenCode/ai.opencode.desktop %U")
-  expect(desktop).toContain("Icon=ai.opencode.desktop")
-  expect(desktop).toContain("StartupWMClass=ai.opencode.desktop")
+  expect(desktop).toContain("Exec=/opt/Koala/ai.koala.desktop %U")
+  expect(desktop).toContain("Icon=ai.koala.desktop")
+  expect(desktop).toContain("StartupWMClass=ai.koala.desktop")
   expect(desktop).toContain("NoDisplay=true")
 })
 
@@ -124,11 +119,11 @@ test("bundles the CLI outside the dev app archive", async () => {
   if (previous === undefined) delete process.env.OPENCODE_CHANNEL
   else process.env.OPENCODE_CHANNEL = previous
 
-  expect(config.files).toContain("!resources/opencode-cli*")
+  expect(config.files).toContain("!resources/koala-cli*")
   expect(config.extraResources).toContainEqual({
     from: "resources/",
     to: "",
-    filter: ["opencode-cli*"],
+    filter: ["koala-cli*"],
   })
 })
 
@@ -137,7 +132,7 @@ test("bundles the sandbox worker and native assets outside the app archive", asy
   const config = module.default as Configuration
 
   expect(config.extraResources).toContainEqual({
-      from: "../opencode/dist/node/sandbox-runtime/",
+    from: "../opencode/dist/node/sandbox-runtime/",
     to: "sandbox-runtime/",
     filter: [
       "sandbox-worker.mjs",
@@ -164,7 +159,9 @@ test("bundles the sandbox worker and native assets outside the app archive", asy
 test("verifies confinement evidence before evaluating package resources", async () => {
   const config = await Bun.file("electron-builder.config.ts").text()
   const staging = await Bun.file("scripts/document-runtime.ts").text()
-  expect(config).toContain('confinementCandidate ? "./scripts/document-runtime-evidence.ts" : "./scripts/document-runtime.ts"')
+  expect(config).toContain(
+    'confinementCandidate ? "./scripts/document-runtime-evidence.ts" : "./scripts/document-runtime.ts"',
+  )
   expect(config).toContain('confinementCandidate ? "verify-candidate" : "verify"')
   expect(staging).toContain("verifyConfinementResources")
   expect(staging).toContain("Document runtime staging root must be fresh")
@@ -182,7 +179,7 @@ for (const channel of ["beta", "prod"] as const) {
     expect(config.extraResources).not.toContainEqual({
       from: "resources/",
       to: "",
-      filter: ["opencode-cli*"],
+      filter: ["koala-cli*"],
     })
   })
 

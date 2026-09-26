@@ -14,7 +14,23 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { DocxReadTool, PptxReadTool, SpreadsheetReadTool } from "./office"
+import {
+  DocxCreateTool,
+  PptxCreateTool,
+  SpreadsheetWriteTool,
+  PdfCreateTool,
+} from "./document-create"
+import { ArtifactValidateTool } from "./artifact-validate"
+import { KnowledgeIngestTool } from "./knowledge-ingest"
+import { KnowledgeOpenTool } from "./knowledge-open"
+import { KnowledgeSearchTool } from "./knowledge-search"
+import { PdfReadTool } from "./pdf-read"
+import { OcrExtractTool } from "./ocr-extract"
+import { VisionAnalyzeTool } from "./vision-analyze"
+import { DocumentExtractTool } from "./document-extract"
 import { TaskTool } from "./task"
+import { ArtifactInput } from "@/koala/artifact-input"
+import { Auth } from "@/auth"
 import { Database } from "@opencode-ai/core/database/database"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
@@ -33,6 +49,7 @@ import { Provider } from "@/provider/provider"
 import { WebSearchTool } from "./websearch"
 import { LspTool } from "./lsp"
 import * as Truncate from "./truncate"
+import * as ToolJsonSchema from "./json-schema"
 import { ApplyPatchTool } from "./apply_patch"
 import { Glob } from "@opencode-ai/core/util/glob"
 import path from "path"
@@ -60,8 +77,30 @@ import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
 import { ArtifactStoreLive } from "@/koala/artifact-store"
+
+// Bounded startup check used only when the host does not enable the document tools explicitly.
+const DocumentAvailabilityCheckMs = 15_000
+
+const documentToolIDs = new Set([
+  "docx_create",
+  "pptx_create",
+  "spreadsheet_write",
+  "pdf_create",
+  "docx_read",
+  "pptx_read",
+  "spreadsheet_read",
+  "pdf_read",
+  "ocr_extract",
+  "vision_analyze",
+  "document_extract",
+  "artifact_validate",
+])
+
 import { IndustrialAuditLive } from "@/koala/industrial-audit"
 import { IndustrialExecution } from "@/koala/industrial-execution"
+import { KnowledgeStore } from "@/koala/knowledge-store"
+import { ModelEndpointClient } from "@/koala/model-endpoint-client"
+import { ModelProfileStore } from "@/koala/model-profile-store"
 import { SandboxRuntime } from "@/sandbox/runtime"
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
@@ -79,6 +118,7 @@ type ReadDef = Tool.InferDef<typeof ReadTool>
 type State = {
   custom: Tool.Def[]
   builtin: Tool.Def[]
+  documentsEnabled: boolean
   task: TaskDef
   read: ReadDef
 }
@@ -125,13 +165,37 @@ const layer = Layer.effect(
     const edit = yield* EditTool
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
+    const docxCreate = yield* DocxCreateTool
+    const pptxCreate = yield* PptxCreateTool
+    const spreadsheetWrite = yield* SpreadsheetWriteTool
+    const pdfCreate = yield* PdfCreateTool
     const docxRead = yield* DocxReadTool
     const pptxRead = yield* PptxReadTool
     const spreadsheetRead = yield* SpreadsheetReadTool
+    const pdfRead = yield* PdfReadTool
+    const ocrExtract = yield* OcrExtractTool
+    const visionAnalyze = yield* VisionAnalyzeTool
+    const documentExtract = yield* DocumentExtractTool
+    const artifactValidate = yield* ArtifactValidateTool
+    const knowledgeIngest = yield* KnowledgeIngestTool
+    const knowledgeSearch = yield* KnowledgeSearchTool
+    const knowledgeOpen = yield* KnowledgeOpenTool
     const skilltool = yield* SkillTool
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
     const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
+
+    const documentRuntime = yield* DocumentRuntime.Service
+    // The probe launches a full sandbox job; never let it gate sidecar startup. The desktop enables
+    // the tools explicitly, and other hosts get a bounded check.
+    const documentsEnabled =
+      process.env.KOALA_ENABLE_DOCUMENT_TOOLS === "1" ||
+      (yield* documentRuntime.availability().pipe(
+        Effect.timeoutOrElse({
+          duration: DocumentAvailabilityCheckMs,
+          orElse: () => Effect.succeed({ status: "unavailable", code: "runtime-unavailable" } as const),
+        }),
+      )).status === "available"
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -238,13 +302,28 @@ const layer = Layer.effect(
           search: Tool.init(websearch),
           skill: Tool.init(skilltool),
           patch: Tool.init(patchtool),
-          docxRead: Tool.init(docxRead),
-          pptxRead: Tool.init(pptxRead),
-          spreadsheetRead: Tool.init(spreadsheetRead),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
+          knowledgeIngest: Tool.init(knowledgeIngest),
+          knowledgeSearch: Tool.init(knowledgeSearch),
+          knowledgeOpen: Tool.init(knowledgeOpen),
           ...(codeModeTool ? { execute: Tool.init(codeModeTool) } : {}),
+        })
+
+        const documentTools = yield* Effect.all({
+          docxCreate: Tool.init(docxCreate),
+          pptxCreate: Tool.init(pptxCreate),
+          spreadsheetWrite: Tool.init(spreadsheetWrite),
+          pdfCreate: Tool.init(pdfCreate),
+          docxRead: Tool.init(docxRead),
+          pptxRead: Tool.init(pptxRead),
+          spreadsheetRead: Tool.init(spreadsheetRead),
+          pdfRead: Tool.init(pdfRead),
+          ocrExtract: Tool.init(ocrExtract),
+          visionAnalyze: Tool.init(visionAnalyze),
+          documentExtract: Tool.init(documentExtract),
+          artifactValidate: Tool.init(artifactValidate),
         })
 
         return {
@@ -262,19 +341,32 @@ const layer = Layer.effect(
             tool.grep,
             tool.edit,
             tool.write,
-            tool.docxRead,
-            tool.pptxRead,
-            tool.spreadsheetRead,
             tool.task,
             tool.fetch,
             tool.todo,
             tool.search,
             tool.skill,
             tool.patch,
+            documentTools.docxCreate,
+            documentTools.pptxCreate,
+            documentTools.spreadsheetWrite,
+            documentTools.pdfCreate,
+            documentTools.docxRead,
+            documentTools.pptxRead,
+            documentTools.spreadsheetRead,
+            documentTools.pdfRead,
+            documentTools.ocrExtract,
+            documentTools.visionAnalyze,
+            documentTools.documentExtract,
+            documentTools.artifactValidate,
+            tool.knowledgeIngest,
+            tool.knowledgeSearch,
+            tool.knowledgeOpen,
             ...(tool.execute ? [tool.execute] : []),
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],
+          documentsEnabled,
           task: tool.task,
           read: tool.read,
         }
@@ -283,19 +375,29 @@ const layer = Layer.effect(
 
     const all: Interface["all"] = Effect.fn("ToolRegistry.all")(function* () {
       const s = yield* InstanceState.get(state)
-      return [...s.builtin, ...s.custom] as Tool.Def[]
+      return [
+        ...s.builtin.filter((tool) => !documentToolIDs.has(tool.id) || s.documentsEnabled),
+        ...s.custom,
+      ] as Tool.Def[]
     })
 
     const ids: Interface["ids"] = Effect.fn("ToolRegistry.ids")(function* () {
       return (yield* all()).map((tool) => tool.id)
     })
 
-    const describeTask = Effect.fn("ToolRegistry.describeTask")(function* (agent: Agent.Info) {
+    const subagentOptions = Effect.fn("ToolRegistry.subagentOptions")(function* (agent: Agent.Info) {
       const items = (yield* agents.list()).filter((item) => item.mode !== "primary")
-      const filtered = items.filter(
-        (item) => Permission.evaluate("task", item.name, agent.permission).action !== "deny",
-      )
-      const list = filtered.toSorted((a, b) => a.name.localeCompare(b.name))
+      return items
+        .filter((item) => Permission.evaluate("task", item.name, agent.permission).action !== "deny")
+        .toSorted((a, b) => a.name.localeCompare(b.name))
+    })
+
+    const subagentNames = Effect.fn("ToolRegistry.subagentNames")(function* (agent: Agent.Info) {
+      return (yield* subagentOptions(agent)).map((item) => item.name)
+    })
+
+    const describeTask = Effect.fn("ToolRegistry.describeTask")(function* (agent: Agent.Info) {
+      const list = yield* subagentOptions(agent)
       const description = list
         .map(
           (item) =>
@@ -347,6 +449,29 @@ const layer = Layer.effect(
             jsonSchema: tool.jsonSchema,
           }
           yield* plugin.trigger("tool.definition", { toolID: tool.id }, output)
+
+          if (tool.id === TaskTool.id) {
+            const names = yield* subagentNames(input.agent)
+            const base = ToolJsonSchema.fromTool({ ...tool, jsonSchema: output.jsonSchema })
+            if (typeof base === "object" && base !== null) {
+              const existing = base.properties?.subagent_type
+              output.jsonSchema = {
+                ...base,
+                properties: {
+                  ...base.properties,
+                  subagent_type: {
+                    ...(typeof existing === "object" && existing !== null ? existing : {}),
+                    enum: names,
+                    description:
+                      names.length === 0
+                        ? "No subagent types are currently available."
+                        : `The type of specialized agent to use for this task; must be one of: ${names.join(", ")}`,
+                  },
+                },
+              }
+            }
+          }
+
           const jsonSchema =
             output.parameters === tool.parameters || output.jsonSchema !== tool.jsonSchema
               ? output.jsonSchema
@@ -481,10 +606,15 @@ export const node = LayerNode.make({
     Database.node,
     Ripgrep.node,
     ArtifactStoreLive.node,
+    KnowledgeStore.node,
     IndustrialAuditLive.node,
     IndustrialExecution.node,
     SandboxRuntime.node,
     DocumentRuntime.node,
+    ArtifactInput.node,
+    ModelProfileStore.node,
+    ModelEndpointClient.node,
+    Auth.node,
   ],
 })
 

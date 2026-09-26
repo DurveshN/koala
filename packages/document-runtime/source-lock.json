@@ -1,5 +1,9 @@
 {
   "packages": {
+    "docx": {
+      "version": "9.7.1",
+      "integrity": "sha512-ilXFf9Moz47ABjFpDiA5s1w9lpb4EFSp7+5iiJSbfyYDM+bpZdAgLlSr7fW4aXhVe/E+F6QCv0EvRVFEd5CsWg=="
+    },
     "fast-xml-parser": {
       "version": "4.5.0",
       "integrity": "sha512-/PlTQCI96+fZMAOLMZK4CWG1ItCbfZ/0jx7UIJFChPNrx7tcEgerUgWbeieCM9MfHInUDyK8DWYZ+YrywDJuTg=="
@@ -15,6 +19,14 @@
     "xlsx": {
       "version": "0.18.5",
       "integrity": "sha512-dmg3LCjBPHZnQp5/F/+nnTa+miPJxUXB6vtk42YjBBKayDNagxGEeIdWApkYPOf3Z3pm3k62Knjzp7lMeTEtFQ=="
+    },
+    "pptxgenjs": {
+      "version": "4.0.1",
+      "integrity": "sha512-TeJISr8wouAuXw4C1F/mC33xbZs/FuEG6nH9FG1Zj+nuPcGMP5YRHl6X+j3HSUnS1f3at6k75ZZXPMZlA5Lj9A=="
+    },
+    "pdf-lib": {
+      "version": "1.17.1",
+      "integrity": "sha512-V/mpyJAoTsN4cnP31vc0wfNA1+p20evqqnap0KLoRUN0Yk/p3wN52DOEsL4oBFcLdb76hlpKPtzJIgo67j/XLw=="
     },
     "pdfjs-dist": {
       "version": "6.3.289",

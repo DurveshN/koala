@@ -24,7 +24,7 @@ dist-ssr
 *.sw?
 out/
 
-resources/opencode-cli*
+resources/koala-cli*
 resources/document-runtime/
 resources/document-runtime.attestation.json
 resources/icons

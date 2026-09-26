@@ -1,5 +1,16 @@
 import { type ComponentProps } from "solid-js"
 
+// Koala mark icon from Twemoji (https://twemoji.twitter.com/), CC-BY 4.0.
+const koalaIcon = (
+  <>
+    <path fill="#99AAB5" d="M36 13.533C36 8.867 32.866 7 29 7c-1.621 0-3.285.354-4.676 1.027C22.523 6.798 20.405 6.062 18 6.062s-4.523.736-6.324 1.965C10.285 7.354 8.621 7 7 7c-3.866 0-7 1.867-7 6.533 0 3.844 2.128 6.417 5.038 7.206-.043.536-.068 1.073-.068 1.611 0 5.729 4.52 7.675 8.581 8.326C14.649 31.487 16.232 32 18 32s3.351-.513 4.449-1.323c4.062-.651 8.581-2.597 8.581-8.326 0-.538-.025-1.075-.068-1.611 2.91-.79 5.038-3.363 5.038-7.207z" />
+    <path fill="#66757F" d="M9.554 9.854C9.236 9.821 8.917 9.8 8.6 9.8 5.507 9.8 3 11.293 3 15.026c0 2.154.838 3.808 2.138 4.824.473-3.797 2.005-7.416 4.416-9.996zM27.4 9.8c-.317 0-.637.021-.955.054 2.412 2.58 3.943 6.199 4.416 9.997C32.162 18.834 33 17.181 33 15.026c0-3.733-2.507-5.226-5.6-5.226z" />
+    <path fill="#292F33" d="M21.728 24.807C21.728 28.152 20 29 18 29s-3.727-.848-3.727-4.193c0-3.345 1.727-6.057 3.727-6.057s3.728 2.712 3.728 6.057z" />
+    <circle fill="#292F33" cx="12.5" cy="19.875" r="1.5" />
+    <circle fill="#292F33" cx="23.5" cy="19.875" r="1.5" />
+  </>
+)
+
 export const Mark = (props: { class?: string }) => {
   return (
     <svg
@@ -9,8 +20,9 @@ export const Mark = (props: { class?: string }) => {
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
     >
-      <path data-slot="logo-logo-mark-shadow" d="M12 16H4V8H12V16Z" fill="var(--icon-weak-base)" />
-      <path data-slot="logo-logo-mark-o" d="M12 4H4V16H12V4ZM16 20H0V0H16V20Z" fill="var(--icon-strong-base)" />
+      <g transform="translate(0, 2) scale(0.4444)">
+        {koalaIcon}
+      </g>
     </svg>
   )
 }
@@ -25,8 +37,9 @@ export const Splash = (props: Pick<ComponentProps<"svg">, "ref" | "class">) => {
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
     >
-      <path d="M60 80H20V40H60V80Z" fill="var(--icon-base)" />
-      <path d="M60 20H20V80H60V20ZM80 100H0V0H80V100Z" fill="var(--icon-strong-base)" />
+      <g transform="translate(0, 10) scale(2.2222)">
+        {koalaIcon}
+      </g>
     </svg>
   )
 }
@@ -39,24 +52,19 @@ export const Logo = (props: { class?: string }) => {
       fill="none"
       classList={{ [props.class ?? ""]: !!props.class }}
     >
-      <g>
-        <path d="M18 30H6V18H18V30Z" fill="var(--icon-weak-base)" />
-        <path d="M18 12H6V30H18V12ZM24 36H0V6H24V36Z" fill="var(--icon-base)" />
-        <path d="M48 30H36V18H48V30Z" fill="var(--icon-weak-base)" />
-        <path d="M36 30H48V12H36V30ZM54 36H36V42H30V6H54V36Z" fill="var(--icon-base)" />
-        <path d="M84 24V30H66V24H84Z" fill="var(--icon-weak-base)" />
-        <path d="M84 24H66V30H84V36H60V6H84V24ZM66 18H78V12H66V18Z" fill="var(--icon-base)" />
-        <path d="M108 36H96V18H108V36Z" fill="var(--icon-weak-base)" />
-        <path d="M108 12H96V36H90V6H108V12ZM114 36H108V12H114V36Z" fill="var(--icon-base)" />
-        <path d="M144 30H126V18H144V30Z" fill="var(--icon-weak-base)" />
-        <path d="M144 12H126V30H144V36H120V6H144V12Z" fill="var(--icon-strong-base)" />
-        <path d="M168 30H156V18H168V30Z" fill="var(--icon-weak-base)" />
-        <path d="M168 12H156V30H168V12ZM174 36H150V6H174V36Z" fill="var(--icon-strong-base)" />
-        <path d="M198 30H186V18H198V30Z" fill="var(--icon-weak-base)" />
-        <path d="M198 12H186V30H198V12ZM204 36H180V6H198V0H204V36Z" fill="var(--icon-strong-base)" />
-        <path d="M234 24V30H216V24H234Z" fill="var(--icon-weak-base)" />
-        <path d="M216 12V18H228V12H216ZM234 24H216V30H234V36H210V6H234V24Z" fill="var(--icon-strong-base)" />
-      </g>
+      <text
+        x="50%"
+        y="50%"
+        dominant-baseline="central"
+        text-anchor="middle"
+        font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+        font-size="28"
+        font-weight="700"
+        letter-spacing="0.04em"
+        fill="var(--text-base)"
+      >
+        Koala
+      </text>
     </svg>
   )
 }

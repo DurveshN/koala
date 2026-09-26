@@ -6,9 +6,11 @@ export type TransportErrorCode = "input-failed" | "output-failed" | "queue-overf
 
 export class TransportError extends Error {
   override readonly name = "TransportError"
+  readonly code: TransportErrorCode
 
-  constructor(readonly code: TransportErrorCode) {
+  constructor(code: TransportErrorCode) {
     super(code)
+    this.code = code
   }
 }
 

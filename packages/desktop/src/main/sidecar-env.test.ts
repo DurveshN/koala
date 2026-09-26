@@ -42,7 +42,8 @@ describe("sidecar environment", () => {
     expect(env).toEqual({
       AWS_EC2_METADATA_DISABLED: "true",
       KOALA_LOCAL_MODEL: "http://127.0.0.1:8000/v1",
-      KOALA_AGENT_EXECUTION: "sandbox",
+      KOALA_AGENT_EXECUTION: "host",
+      KOALA_ENABLE_DOCUMENT_TOOLS: "1",
       KOALA_DOCUMENT_RUNTIME_MANIFEST_SHA256: "a".repeat(64),
       KOALA_DOCUMENT_RUNTIME_PATH: "C:\\Program Files\\Koala\\resources\\document-runtime",
       KOALA_DOCUMENT_RUNTIME_PROXY_ASSETS_ROOT: "C:\\Program Files\\Koala\\resources\\sandbox-runtime",
@@ -62,9 +63,17 @@ describe("sidecar environment", () => {
       METADATA_SERVER_DETECTION: "none",
       PATH: "/usr/bin",
       KOALA_AGENT_EXECUTION: "sandbox",
+      KOALA_ENABLE_DOCUMENT_TOOLS: "1",
       OPENCODE_DISABLE_AUTOUPDATE: "1",
       OPENCODE_DISABLE_SHARE: "1",
     })
+  })
+
+  test("isolates sidecar data, config, and cache inside Electron userData when a path is provided", () => {
+    const env = createSidecarEnv({}, "win32", undefined, undefined, "C:\\Users\\user\\AppData\\Roaming\\Koala")
+    expect(env.XDG_DATA_HOME).toBe("C:\\Users\\user\\AppData\\Roaming\\Koala")
+    expect(env.XDG_CONFIG_HOME).toBe("C:\\Users\\user\\AppData\\Roaming\\Koala")
+    expect(env.XDG_CACHE_HOME).toBe("C:\\Users\\user\\AppData\\Roaming\\Koala")
   })
 
   test("does not forward inherited document runtime configuration without a verified runtime", () => {

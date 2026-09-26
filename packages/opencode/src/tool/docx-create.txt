@@ -1,0 +1,24 @@
+Creates a Microsoft Word document (.docx) from structured content and saves it inside the current project.
+
+Usage:
+- Use this tool to produce Word deliverables such as approval notes, reports, and meeting minutes.
+- `path` is the project-relative location of the finished file, for example `deliverables/approval-note.docx`. Use forward slashes; the file is written inside the project directory and an existing file at that path is replaced.
+- The document is validated before delivery so it opens in Microsoft Word.
+- After the tool succeeds, tell the user the saved path from the result.
+- Do NOT attempt to create .docx files using code execution - use this tool instead.
+
+Document Structure (`contents`):
+- `title`: Optional document title (appears in file properties)
+- `author`: Optional author name (appears in file properties)
+- `sections`: Array of content sections, each with:
+  - `type`: "heading" | "paragraph" | "table" | "page-break"
+  - `text`: The content text for headings and paragraphs
+  - `level`: For headings, the heading level (1 is the largest)
+  - `rows`: For tables, a 2D array of cell strings (first row is the header)
+
+Best Practices:
+- Structure content logically with clear headings
+- Use tables for tabular data rather than trying to format with spaces
+- Keep paragraphs focused and concise
+- Use appropriate heading levels to create a document outline
+- Use "page-break" to start a new page before a major section

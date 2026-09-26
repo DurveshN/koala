@@ -1,7 +1,7 @@
 import type { DocumentRuntimeManifest } from "@koala-ai/core/document-runtime/manifest"
 import { lstat, mkdir, realpath } from "node:fs/promises"
 import path from "node:path"
-import { RuntimeFailure } from "./error"
+import { RuntimeFailure } from "./error.ts"
 
 export async function validatePrivateJobRoot(root: string) {
   if (!path.isAbsolute(root)) throw new RuntimeFailure("invalid-request", "input")

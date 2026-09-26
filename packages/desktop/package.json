@@ -9,6 +9,9 @@
     "name": "OpenCode",
     "email": "hello@opencode.ai"
   },
+  "electronExecArgs": [
+    "--no-experimental-strip-types"
+  ],
   "scripts": {
     "typecheck": "tsgo -b",
     "predev": "bun ./scripts/predev.ts",

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { DocumentRuntimeLimits } from "./limits"
-import { DocumentRuntimeNdjson } from "./ndjson"
+import { DocumentRuntimeLimits } from "./limits.ts"
+import { DocumentRuntimeNdjson } from "./ndjson.ts"
 
 const text = new TextEncoder()
 

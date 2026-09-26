@@ -1,5 +1,5 @@
 import { DocumentRuntimeLimits } from "@koala-ai/core/document-runtime/limits"
-import { RuntimeFailure } from "../error"
+import { RuntimeFailure } from "../error.ts"
 
 export interface Section {
   readonly type: "paragraph" | "table" | "slide" | "sheet"

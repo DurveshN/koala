@@ -4,13 +4,14 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import type { Configuration } from "electron-builder"
+import { hostTarget } from "./src/main/sandbox-runtime"
 const execFileAsync = promisify(execFile)
 const packageDir = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.resolve(packageDir, "../..")
 const signScript = path.join(rootDir, "script", "sign-windows.ps1")
 // The Electron 42 packaging update briefly installed Linux launchers/icons under
 // "opencode-desktop". Keep that hidden desktop entry around so existing GNOME/KDE
-// pins still resolve after the canonical app id changes back to ai.opencode.desktop.
+// pins still resolve after the canonical app id changes to ai.koala.desktop.
 const legacyDesktopEntry = path.join(packageDir, "resources", "linux", "opencode-desktop.desktop")
 const legacyDesktopEntryFpm = `${legacyDesktopEntry}=/usr/share/applications/opencode-desktop.desktop`
 
@@ -37,9 +38,9 @@ const channel = (() => {
 const confinementCandidate = process.env.KOALA_DOCUMENT_CONFINEMENT_CANDIDATE === "1"
 
 const APP_IDS = {
-  dev: "ai.opencode.desktop.dev",
-  beta: "ai.opencode.desktop.beta",
-  prod: "ai.opencode.desktop",
+  dev: "ai.koala.desktop.dev",
+  beta: "ai.koala.desktop.beta",
+  prod: "ai.koala.desktop",
 } as const
 
 const prepared =
@@ -59,6 +60,7 @@ const prepared =
           },
         ).trim(),
       ) as {
+        readonly resourcesRoot: string
         readonly root: string
         readonly attestation: string
         readonly evidenceRoot: string
@@ -71,15 +73,25 @@ execFileSync("bun", ["./scripts/document-runtime.ts", "verify-sandbox"], {
   env: process.env,
 })
 
+// Development builds ship the unattested runtime that prebuild.ts emits; the app resolves it only
+// on the dev channel and marks it releaseReady=false. Release channels ship the verified staging.
+// electron-builder drops a top-level `node_modules` directory from every copied file set, so both
+// copies start one directory above the runtime root to keep `<root>/node_modules/**/*` intact.
+const developmentTarget = hostTarget(process.platform, process.arch)
+const developmentDocumentRuntime =
+  channel === "dev" && developmentTarget
+    ? { from: "../document-runtime/dist/", to: "document-runtime/", filter: [`${developmentTarget}/**/*`] }
+    : undefined
+
 const getBase = (appId: string): Configuration => ({
-  artifactName: "opencode-desktop-${os}-${arch}.${ext}",
+  artifactName: "koala-desktop-${os}-${arch}.${ext}",
   directories: {
     output: confinementCandidate ? "dist-candidate" : "dist",
     buildResources: "resources",
   },
   // Linux launchers are .desktop files, so this is the desktop file name,
-  // not just the app id. For prod, app id "ai.opencode.desktop" becomes
-  // "ai.opencode.desktop.desktop".
+  // not just the app id. For prod, app id "ai.koala.desktop" becomes
+  // "ai.koala.desktop.desktop".
   // https://developer.gnome.org/documentation/guidelines/maintainer/integrating.html
   // https://www.electron.build/docs/linux/
   extraMetadata: {
@@ -88,10 +100,11 @@ const getBase = (appId: string): Configuration => ({
   files: [
     "out/**/*",
     "resources/**/*",
-    "!resources/opencode-cli*",
+    "!resources/koala-cli*",
     "!resources/document-runtime{,/**/*}",
     "!resources/document-runtime.attestation.json",
     "!resources/document-confinement-evidence{,/**/*}",
+    "!node_modules/@koala-ai/document-runtime/**/*",
   ],
   extraResources: [
     ...(channel === "dev"
@@ -99,7 +112,7 @@ const getBase = (appId: string): Configuration => ({
           {
             from: "resources/",
             to: "",
-            filter: ["opencode-cli*"],
+            filter: ["koala-cli*"],
           },
         ]
       : []),
@@ -121,11 +134,18 @@ const getBase = (appId: string): Configuration => ({
     },
     ...(prepared
       ? [
-          { from: prepared.root, to: "document-runtime/", filter: ["**/*"] },
-          { from: prepared.attestation, to: "document-runtime.attestation.json" },
-          { from: prepared.evidenceRoot, to: "document-confinement-evidence/", filter: ["**/*"] },
+          {
+            from: prepared.resourcesRoot,
+            to: "",
+            filter: [
+              "document-runtime/**/*",
+              "document-runtime.attestation.json",
+              "document-confinement-evidence/**/*",
+            ],
+          },
         ]
       : []),
+    ...(developmentDocumentRuntime ? [developmentDocumentRuntime] : []),
   ],
   mac: {
     category: "public.app-category.developer-tools",
@@ -141,7 +161,7 @@ const getBase = (appId: string): Configuration => ({
     sign: confinementCandidate || Boolean(process.env.OPENCODE_RELEASE),
   },
   protocols: {
-    name: "OpenCode",
+    name: "Koala",
     schemes: ["opencode"],
   },
   win: {
@@ -153,10 +173,15 @@ const getBase = (appId: string): Configuration => ({
     verifyUpdateCodeSignature: false,
   },
   nsis: {
-    oneClick: true,
-    perMachine: false,
+    oneClick: false,
+    perMachine: true,
     installerIcon: `resources/icons/icon.ico`,
     installerHeaderIcon: `resources/icons/icon.ico`,
+    include: "installer-setup.nsh",
+    allowToChangeInstallationDirectory: true,
+    createDesktopShortcut: true,
+    createStartMenuShortcut: true,
+    runAfterFinish: true,
   },
   linux: {
     icon: `resources/icons`,
@@ -182,31 +207,31 @@ function getConfig() {
       return {
         ...base,
         appId,
-        productName: "OpenCode Dev",
+        productName: "Koala Dev",
         deb: { fpm: [metainfoFpm(appId)] },
-        rpm: { packageName: "opencode-dev", fpm: [metainfoFpm(appId)] },
+        rpm: { packageName: "koala-dev", fpm: [metainfoFpm(appId)] },
       }
     }
     case "beta": {
       return {
         ...base,
         appId,
-        productName: "OpenCode Beta",
-        protocols: { name: "OpenCode Beta", schemes: ["opencode"] },
+        productName: "Koala Beta",
+        protocols: { name: "Koala Beta", schemes: ["opencode"] },
         publish: { provider: "github", owner: "anomalyco", repo: "opencode-beta", channel: "latest" },
         deb: { fpm: [metainfoFpm(appId)] },
-        rpm: { packageName: "opencode-beta", fpm: [metainfoFpm(appId)] },
+        rpm: { packageName: "koala-beta", fpm: [metainfoFpm(appId)] },
       }
     }
     case "prod": {
       return {
         ...base,
         appId,
-        productName: "OpenCode",
-        protocols: { name: "OpenCode", schemes: ["opencode"] },
+        productName: "Koala",
+        protocols: { name: "Koala", schemes: ["opencode"] },
         publish: { provider: "github", owner: "anomalyco", repo: "opencode", channel: "latest" },
         deb: { fpm: [metainfoFpm(appId), legacyDesktopEntryFpm] },
-        rpm: { packageName: "opencode", fpm: [metainfoFpm(appId), legacyDesktopEntryFpm] },
+        rpm: { packageName: "koala", fpm: [metainfoFpm(appId), legacyDesktopEntryFpm] },
       }
     }
   }

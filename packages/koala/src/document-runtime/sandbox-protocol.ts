@@ -1,9 +1,9 @@
-export * as DocumentSandboxProtocol from "./sandbox-protocol"
+export * as DocumentSandboxProtocol from "./sandbox-protocol.ts"
 
 import { Schema } from "effect"
-import { DocumentRuntimeManifest } from "./manifest"
-import { DocumentRuntimeProtocol } from "./protocol"
-import { DocumentRuntimeTarget } from "./target"
+import { DocumentRuntimeManifest } from "./manifest.ts"
+import { DocumentRuntimeProtocol } from "./protocol.ts"
+import { DocumentRuntimeTarget } from "./target.ts"
 
 export const ProtocolVersion = Schema.Literal(1)
 export type ProtocolVersion = typeof ProtocolVersion.Type

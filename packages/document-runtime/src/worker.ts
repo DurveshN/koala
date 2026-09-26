@@ -1,3 +1,4 @@
+import { DocumentGenerate } from "@koala-ai/core/document/generate"
 import { DocumentRuntimeLimits } from "@koala-ai/core/document-runtime/limits"
 import { DocumentRuntimeManifest } from "@koala-ai/core/document-runtime/manifest"
 import { DocumentRuntimeProtocol } from "@koala-ai/core/document-runtime/protocol"
@@ -5,18 +6,26 @@ import { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
 import { Schema } from "effect"
 import { createHash, randomUUID } from "node:crypto"
 import { constants } from "node:fs"
-import { access, lstat, open, rm, writeFile } from "node:fs/promises"
+import { access, lstat, open, readFile, rm, writeFile } from "node:fs/promises"
 import type { FileHandle } from "node:fs/promises"
 import path from "node:path"
-import { RuntimeFailure, runtimeFailure } from "./error"
-import { validateOcrImage } from "./image"
-import { readDocx, readPptx, readXlsx } from "./office"
-import { loadAndVerifyManifest } from "./manifest"
-import { makePrivateDirectory, resolveInRoot, validateInputFile, validatePrivateJobRoot } from "./path"
-import { openPdf, probeRenderer, readPdfBytes, renderPdfPage } from "./render"
-import { runtimePaths, sanitizeNativeLoaderEnvironment } from "./runtime"
-import { probeTesseract, runTesseract } from "./tesseract"
-import { createNodeStreamTransport } from "./transport"
+import { generateDocx } from "./generate/docx.ts"
+import { generatePdf } from "./generate/pdf.ts"
+import { generatePptx } from "./generate/pptx.ts"
+import { generateXlsx } from "./generate/xlsx.ts"
+import { RuntimeFailure, runtimeFailure } from "./error.ts"
+import { validateOcrImage } from "./image.ts"
+import { createInboxReadable, InboxDirectoryName } from "./inbox.ts"
+import { readDocx, readPptx, readXlsx } from "./office/index.ts"
+import { validateOoxml } from "./validation/ooxml.ts"
+import { validatePdf } from "./validation/pdf.ts"
+import { readPdf } from "./read/pdf.ts"
+import { loadAndVerifyManifest } from "./manifest.ts"
+import { makePrivateDirectory, resolveInRoot, validateInputFile, validatePrivateJobRoot } from "./path.ts"
+import { openPdf, probeRenderer, readPdfBytes, renderPdfPage } from "./render.ts"
+import { runtimePaths, sanitizeNativeLoaderEnvironment } from "./runtime.ts"
+import { probeTesseract, runTesseract } from "./tesseract.ts"
+import { createNodeStreamTransport } from "./transport.ts"
 
 const decodeInitialRequest = DocumentRuntimeProtocol.decodeInitialRequest
 const decodeRequest = DocumentRuntimeProtocol.decodeWorkerRequest
@@ -24,6 +33,10 @@ const encodeOutput = Schema.encodeSync(DocumentRuntimeProtocol.WorkerOutput)
 const decodeOutput = DocumentRuntimeProtocol.decodeWorkerOutput
 const decodeTarget = Schema.decodeUnknownSync(DocumentRuntimeTarget.Target)
 const decodeDigest = Schema.decodeUnknownSync(DocumentRuntimeManifest.Digest)
+const ExitGraceMs = 500
+// interrupt() cannot cancel an await that ignores the abort signal (for example a stuck dynamic
+// import), so a job that outlives its deadline by this much is failed explicitly.
+const DeadlineGraceMs = 5_000
 
 export type WorkerConfig = {
   readonly runtimeRoot: string
@@ -182,19 +195,27 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport, de
       outputOrder = DocumentRuntimeProtocol.beginOutputOrder(message)
       const jobDeadlineMs =
         message.type === "probe"
-          ? 10 * 60_000
-          : message.type === "read-office"
+          ? 60_000
+          : message.type === "read-office" || message.type === "read-pdf" || message.type === "create-docx"
             ? DocumentRuntimeLimits.MaxJobDeadlineMs
             : message.limits.jobDeadlineMs
-      const jobDeadline = setTimeout(
-        () => interrupt(new RuntimeFailure("job-deadline-exceeded", "worker", true)),
-        jobDeadlineMs,
-      )
+      const deadlineFailure = new RuntimeFailure("job-deadline-exceeded", "worker", true)
+      let deadlineGrace: ReturnType<typeof setTimeout> | undefined
+      const jobDeadline = setTimeout(() => {
+        interrupt(deadlineFailure)
+        deadlineGrace = setTimeout(() => {
+          if (!terminal) void fail(deadlineFailure)
+        }, DeadlineGraceMs)
+      }, jobDeadlineMs)
+      const settleDeadline = () => {
+        clearTimeout(jobDeadline)
+        if (deadlineGrace) clearTimeout(deadlineGrace)
+      }
       void execute(message, config, abort.signal, generated, cleanup, send, nextCommand, openOutput)
         .then(
-          () => clearTimeout(jobDeadline),
+          () => settleDeadline(),
           async (error: unknown) => {
-            clearTimeout(jobDeadline)
+            settleDeadline()
             if (disconnected) {
               terminal = true
               await cleanup().catch(() => undefined)
@@ -202,6 +223,10 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport, de
               return
             }
             if (abort.signal.aborted && !forcedFailure) return cancel()
+            if (!(error instanceof RuntimeFailure) && !forcedFailure) {
+              const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+              process.stderr.write(`document worker: unexpected error: ${detail.replace(/\s+/g, " ").slice(0, 1024)}\n`)
+            }
             return fail(runtimeFailure(forcedFailure ?? error, new RuntimeFailure("worker-failed", "worker")))
           },
         )
@@ -294,17 +319,20 @@ async function execute(
   sanitizeNativeLoaderEnvironment()
 
   await send({ protocolVersion: 1, type: "started", jobID: request.jobID, operation: request.type })
+  process.stderr.write(`document worker: ${request.type} started\n`)
   if (request.type === "probe") {
+    // Development runtimes may omit Tesseract; OCR requests then fail individually.
     const tesseract = verified.manifest.components.find((component) => component.name === "tesseract")
-    if (!tesseract) throw new RuntimeFailure("runtime-unavailable", "probe")
-    await validateRuntimeTool(paths.tesseract, paths.tessdata)
-    await probeTesseract({
-      executablePath: paths.tesseract,
-      tessdataPath: paths.tessdata,
-      jobRoot: root,
-      expectedVersion: tesseract.version,
-      signal,
-    })
+    if (tesseract) {
+      await validateRuntimeTool(paths.tesseract, paths.tessdata, "probe")
+      await probeTesseract({
+        executablePath: paths.tesseract,
+        tessdataPath: paths.tessdata,
+        jobRoot: root,
+        expectedVersion: tesseract.version,
+        signal,
+      })
+    }
     await probeRenderer({
       pdfEntry: path.join(paths.pdfRoot, "legacy", "build", "pdf.mjs"),
       canvasEntry: paths.canvasEntry,
@@ -325,6 +353,14 @@ async function execute(
   }
   if (request.type === "read-office") {
     await executeOffice(request, root, signal, generated, send, openOutput)
+    return
+  }
+  if (request.type === "read-pdf") {
+    await executeReadPdf(request, paths, root, signal, generated, send, openOutput)
+    return
+  }
+  if (request.type === "create-docx") {
+    await executeCreateDocx(request, root, signal, generated, send, openOutput)
     return
   }
   await executeRender(request, paths, root, signal, generated, cleanup, send, nextCommand, openOutput)
@@ -417,6 +453,7 @@ async function executeRender(
         const tsvPath = `ocr/page-${page}-${resultID}.tsv`
         const absoluteTsv = resolveInRoot(jobRoot, tsvPath)
         generated.add(absoluteTsv)
+        await validateRuntimeTool(runtime.tesseract, runtime.tessdata, "ocr")
         const result = await runTesseract({
           executablePath: runtime.tesseract,
           tessdataPath: runtime.tessdata,
@@ -543,6 +580,172 @@ async function executeOffice(
   })
 }
 
+async function executeReadPdf(
+  request: typeof DocumentRuntimeProtocol.ReadPdfRequest.Type,
+  runtime: ReturnType<typeof runtimePaths>,
+  jobRoot: string,
+  signal: AbortSignal,
+  generated: Set<string>,
+  send: (event: DocumentRuntimeProtocol.WorkerOutput) => Promise<void>,
+  openOutput: (value: string) => Promise<OutputHandle>,
+) {
+  const input = resolveInRoot(jobRoot, request.inputPath)
+  await validateInputFile(jobRoot, input, request.inputBytes)
+  signal.throwIfAborted()
+  await makePrivateDirectory(jobRoot, "pdf")
+  const sourcePath = DocumentRuntimeProtocol.OutputSourcePath.make("pdf/output.json")
+  const output = resolveInRoot(jobRoot, sourcePath)
+  generated.add(output)
+  const bytes = await readPdf(input, request.inputBytes, {
+    assets: {
+      pdfEntry: path.join(runtime.pdfRoot, "legacy", "build", "pdf.mjs"),
+      canvasEntry: runtime.canvasEntry,
+      cMapDirectory: path.join(runtime.pdfRoot, "cmaps"),
+      iccDirectory: path.join(runtime.pdfRoot, "iccs"),
+      standardFontDirectory: path.join(runtime.pdfRoot, "standard_fonts"),
+      wasmDirectory: path.join(runtime.pdfRoot, "wasm"),
+    },
+    limits: request.limits,
+    signal,
+  }).catch((error: unknown) => {
+    if (error instanceof RuntimeFailure) throw error
+    throw new RuntimeFailure("render-failed", "render")
+  })
+  await writeFileAtomic(output, bytes)
+  const pageID = DocumentRuntimeProtocol.PageID.make(`page_${randomUUID()}`)
+  const transfer = await streamOutput({
+    jobID: request.jobID,
+    kind: "pdf-text",
+    page: 1,
+    pageID,
+    sourcePath,
+    path: output,
+    declaredBytes: bytes.byteLength,
+    send,
+    signal,
+    openOutput,
+  })
+  const parsed = JSON.parse(Buffer.from(bytes).toString("utf8"))
+  await send({
+    protocolVersion: 1,
+    type: "pdf-info",
+    jobID: request.jobID,
+    pageCount: parsed.pageCount ?? 0,
+    outputPath: sourcePath,
+    outputID: transfer.outputID,
+    outputSha256: transfer.sha256,
+    outputBytes: bytes.byteLength,
+    metadata: parsed.title || parsed.author || parsed.subject || parsed.creator || parsed.producer
+      ? {
+          title: parsed.title,
+          author: parsed.author,
+          subject: parsed.subject,
+          creator: parsed.creator,
+          producer: parsed.producer,
+          creationDate: parsed.creationDate,
+          modDate: parsed.modDate,
+        }
+      : undefined,
+  })
+  await rm(output)
+  generated.delete(output)
+  await send({
+    protocolVersion: 1,
+    type: "completed",
+    jobID: request.jobID,
+    operation: "read-pdf",
+    pagesProcessed: 0,
+    temporaryBytes: 0,
+  })
+}
+
+async function executeCreateDocx(
+  request: typeof DocumentRuntimeProtocol.CreateDocxRequest.Type,
+  jobRoot: string,
+  signal: AbortSignal,
+  generated: Set<string>,
+  send: (event: DocumentRuntimeProtocol.WorkerOutput) => Promise<void>,
+  openOutput: (value: string) => Promise<OutputHandle>,
+) {
+  const input = resolveInRoot(jobRoot, request.inputPath)
+  await validateInputFile(jobRoot, input, request.inputBytes)
+  signal.throwIfAborted()
+  const format = request.format ?? "docx"
+  const content = await readGenerateContent(input, format)
+  await makePrivateDirectory(jobRoot, "generate")
+  const sourcePath = DocumentRuntimeProtocol.OutputSourcePath.make(`generate/output.${format}`)
+  const output = resolveInRoot(jobRoot, sourcePath)
+  generated.add(output)
+  const buffer = await generateDocument(content, format)
+  await writeFileAtomic(output, new Uint8Array(buffer))
+  const pageID = DocumentRuntimeProtocol.PageID.make(`page_${randomUUID()}`)
+  const transfer = await streamOutput({
+    jobID: request.jobID,
+    kind: "docx-output",
+    page: 1,
+    pageID,
+    sourcePath,
+    path: output,
+    declaredBytes: buffer.byteLength,
+    send,
+    signal,
+    openOutput,
+  })
+  await send({
+    protocolVersion: 1,
+    type: "docx-ready",
+    jobID: request.jobID,
+    outputPath: sourcePath,
+    outputID: transfer.outputID,
+    outputSha256: transfer.sha256,
+    outputBytes: buffer.byteLength,
+  })
+  await rm(output)
+  generated.delete(output)
+  await send({
+    protocolVersion: 1,
+    type: "completed",
+    jobID: request.jobID,
+    operation: "create-docx",
+    pagesProcessed: 0,
+    temporaryBytes: 0,
+  })
+}
+
+type GenerateContent = {
+  readonly [Format in DocumentGenerate.Format]: (typeof DocumentGenerate.ContentInput)[Format]["Type"]
+}
+
+async function readGenerateContent(
+  inputPath: string,
+  format: DocumentGenerate.Format,
+): Promise<GenerateContent[DocumentGenerate.Format]> {
+  // The worker runs under Node (Electron as Node), so only Node APIs are available here.
+  try {
+    const json: unknown = JSON.parse(await readFile(inputPath, "utf8"))
+    return Schema.decodeUnknownSync(DocumentGenerate.ContentInput[format])(json)
+  } catch {
+    throw new RuntimeFailure("invalid-request", "input")
+  }
+}
+
+// Each generator's output is validated before it leaves the sandbox.
+async function generateDocument(content: GenerateContent[DocumentGenerate.Format], format: DocumentGenerate.Format) {
+  if (format === "pdf") {
+    const buffer = await generatePdf((content as GenerateContent["pdf"]).contents)
+    await validatePdf(new Uint8Array(buffer), buffer.byteLength)
+    return buffer
+  }
+  const buffer =
+    format === "pptx"
+      ? await generatePptx((content as GenerateContent["pptx"]).contents)
+      : format === "xlsx"
+        ? generateXlsx((content as GenerateContent["xlsx"]).contents)
+        : await generateDocx((content as GenerateContent["docx"]).contents)
+  await validateOoxml(new Uint8Array(buffer), format, buffer.byteLength)
+  return buffer
+}
+
 async function writeFileAtomic(file: string, bytes: Uint8Array) {
   await writeFile(file, bytes, { flag: "wx", mode: 0o600 })
 }
@@ -573,6 +776,7 @@ async function executeOcr(
   const tsvPath = `ocr/page-${request.page}-${resultID}.tsv`
   const output = resolveInRoot(jobRoot, tsvPath)
   generated.add(output)
+  await validateRuntimeTool(runtime.tesseract, runtime.tessdata, "ocr")
   const result = await runTesseract({
     executablePath: runtime.tesseract,
     tessdataPath: runtime.tessdata,
@@ -623,7 +827,7 @@ async function executeOcr(
 
 async function streamOutput(input: {
   readonly jobID: DocumentRuntimeProtocol.JobID
-  readonly kind: "page-png" | "ocr-tsv" | "office-text"
+  readonly kind: "page-png" | "ocr-tsv" | "office-text" | "pdf-text" | "docx-output"
   readonly page: number
   readonly pageID: DocumentRuntimeProtocol.PageID
   readonly resultID?: DocumentRuntimeProtocol.ResultID
@@ -696,7 +900,7 @@ export async function readLogicalChunk(handle: OutputHandle, buffer: Uint8Array)
 function makeOutputStart(
   input: {
     readonly jobID: DocumentRuntimeProtocol.JobID
-    readonly kind: "page-png" | "ocr-tsv" | "office-text"
+    readonly kind: "page-png" | "ocr-tsv" | "office-text" | "pdf-text" | "docx-output"
     readonly page: number
     readonly pageID: DocumentRuntimeProtocol.PageID
     readonly resultID?: DocumentRuntimeProtocol.ResultID
@@ -716,26 +920,31 @@ function makeOutputStart(
     declaredBytes: input.declaredBytes,
   }
   if (input.kind === "page-png") return { ...common, kind: input.kind }
-  if (input.kind === "office-text") return { ...common, kind: input.kind }
+  if (input.kind === "office-text" || input.kind === "pdf-text" || input.kind === "docx-output")
+    return { ...common, kind: input.kind }
   if (!input.resultID) throw new RuntimeFailure("worker-failed", "worker")
   return { ...common, kind: input.kind, resultID: input.resultID }
 }
 
-async function validateRuntimeTool(tesseractExecutable: string, tessdataPath: string) {
+async function validateRuntimeTool(
+  tesseractExecutable: string,
+  tessdataPath: string,
+  stage: "probe" | "ocr",
+) {
   const executable = await lstat(tesseractExecutable).catch(() => undefined)
   const tessdata = await lstat(tessdataPath).catch(() => undefined)
   if (!executable?.isFile() || executable.isSymbolicLink() || !tessdata?.isDirectory() || tessdata.isSymbolicLink()) {
-    throw new RuntimeFailure("runtime-unavailable", "probe")
+    throw new RuntimeFailure("runtime-unavailable", stage)
   }
   const data = await Promise.all(
     ["eng.traineddata", "osd.traineddata"].map((file) => lstat(path.join(tessdataPath, file)).catch(() => undefined)),
   )
   if (data.some((info) => !info?.isFile() || info.isSymbolicLink())) {
-    throw new RuntimeFailure("runtime-unavailable", "probe")
+    throw new RuntimeFailure("runtime-unavailable", stage)
   }
   if (process.platform !== "win32") {
     await access(tesseractExecutable, constants.X_OK).catch(() => {
-      throw new RuntimeFailure("runtime-unavailable", "probe")
+      throw new RuntimeFailure("runtime-unavailable", stage)
     })
   }
 }
@@ -751,7 +960,22 @@ function isOutputFrame(event: DocumentRuntimeProtocol.WorkerOutput): event is Do
 }
 
 export function startWorkerProcess(environment: NodeJS.ProcessEnv = process.env) {
-  return startWorker(workerConfigFromEnvironment(environment), createNodeStreamTransport(process.stdin, process.stdout))
+  const config = workerConfigFromEnvironment(environment)
+  // srt-win never forwards stdin to the sandboxed child, so Windows workers read the job inbox instead.
+  const inbox = process.platform === "win32" ? path.join(config.jobRoot, InboxDirectoryName) : undefined
+  process.stderr.write(`document worker: started, commands from ${inbox ?? "stdin"}\n`)
+  const input = inbox ? createInboxReadable(inbox) : process.stdin
+  const transport = createNodeStreamTransport(input, process.stdout)
+  return startWorker(config, {
+    ...transport,
+    close() {
+      transport.close()
+      // Any handle a library leaves behind would keep the process alive after the job is over, and the
+      // proxy only tears down after the child exits. Sends have completed by now (pipe writes are
+      // synchronous on Windows), so a forced exit loses nothing.
+      setTimeout(() => process.exit(process.exitCode ?? 0), ExitGraceMs).unref()
+    },
+  })
 }
 
 function protocolMismatch(input: unknown) {

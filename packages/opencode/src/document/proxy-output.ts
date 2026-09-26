@@ -104,9 +104,9 @@ export function create(
 
       if (message.type === "output-start") {
         if (active) throw new Error("interleaved-output")
-        const extension =
-          message.kind === "page-png" ? ".png" : message.kind === "office-text" ? ".json" : ".tsv"
-        const relativePath = DocumentRuntimeManifest.RelativePath.make(`output-${randomUUID()}${extension}`)
+        const relativePath = DocumentRuntimeManifest.RelativePath.make(
+          `output-${randomUUID()}${outputExtension(message.kind, request)}`,
+        )
         await dependencies.verifyRoot(root)
         const absolutePath = path.join(root.pendingRoot, relativePath)
         const handle = await dependencies
@@ -215,7 +215,9 @@ export function create(
         return
       }
 
-      if (message.type === "office-ready") {
+      // Ready events name the worker's own copy, which it deletes; the parent must be pointed at
+      // the stable copy in the pending root, so every ready event is rewritten the same way.
+      if (message.type === "office-ready" || message.type === "docx-ready" || message.type === "pdf-info") {
         const output = stable.get(message.outputID)
         if (!output || output.bytes !== message.outputBytes) throw new Error("missing-stable-output")
         return {
@@ -254,6 +256,18 @@ export function create(
     },
     cleanup,
   }
+}
+
+// The parent validates each ready event's path suffix against its kind (`.png`, `.tsv`, `.json`,
+// or the generated document's own extension), so the stable copy must carry the matching suffix.
+function outputExtension(
+  kind: DocumentRuntimeProtocol.OutputStart["kind"],
+  request: DocumentRuntimeProtocol.StartRequest,
+) {
+  if (kind === "page-png") return ".png"
+  if (kind === "ocr-tsv") return ".tsv"
+  if (kind === "docx-output") return `.${request.type === "create-docx" ? (request.format ?? "docx") : "docx"}`
+  return ".json"
 }
 
 async function verifyAcquiredPath(

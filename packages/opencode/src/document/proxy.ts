@@ -4,12 +4,14 @@ import { DocumentRuntimeProtocol } from "@koala-ai/core/document-runtime/protoco
 import { DocumentSandboxProtocol } from "@koala-ai/core/document-runtime/sandbox-protocol"
 import type { DocumentRuntimeTarget } from "@koala-ai/core/document-runtime/target"
 import { loadAndVerifyManifest } from "@koala-ai/document-runtime/manifest"
+import { createInboxWritable, InboxDirectoryName } from "@koala-ai/document-runtime/inbox"
 import {
   createNodeStreamTransport,
   type NodeStreamTransport,
   type TransportError,
 } from "@koala-ai/document-runtime/transport"
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
+import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import type { Readable, Writable } from "node:stream"
 import { pathToFileURL } from "node:url"
@@ -24,11 +26,13 @@ import {
   type PrepareInput,
   type PreparedPolicy,
   type Result as PolicyResult,
-  type WindowsVolumeEvidence,
   type WrappedCommand,
 } from "./sandbox-policy"
 
-const TeardownTimeoutMs = 2_000
+// Windows teardown enumerates descendants through PowerShell CIM after taskkill, which needs a
+// larger budget than the POSIX process-group sweep while staying inside the parent's 10 s watchdog.
+const TeardownTimeoutMs = process.platform === "win32" ? 6_000 : 2_000
+const RelayedStderrBytes = 16_384
 
 export interface ProxySandboxManager extends InspectableSandboxManager {
   readonly initialize: (
@@ -72,7 +76,6 @@ export interface ProxyDependencies {
   readonly architecture: string
   readonly executablePath: string
   readonly sandboxAssetsRoot: string
-  readonly windowsEvidence?: WindowsVolumeEvidence
   readonly verifyRuntime: (
     root: string,
     target: DocumentRuntimeTarget.Target,
@@ -195,6 +198,13 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
     const next = makeFailure(code, stage)
     if (!selectedFailure || failurePriority[next.code] > failurePriority[selectedFailure.code]) selectedFailure = next
   }
+  // The parent relays the proxy's stderr to the application log; failure codes alone hide the cause.
+  const report = (reason: string, error?: unknown) => {
+    const detail = error instanceof Error ? error.message : error === undefined ? "" : String(error)
+    process.stderr.write(
+      `document proxy: ${reason}${detail ? ` : ${detail.replace(/\s+/g, " ").slice(0, 1024)}` : ""}\n`,
+    )
+  }
   const directSend = (value: DocumentSandboxProtocol.ProxyEvent) =>
     new Promise<void>((resolve, reject) => {
       if (!dependencies.parent.connected()) return reject(new Error("parent-disconnected"))
@@ -244,7 +254,11 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       return
     }
     stderrBytes += chunk.byteLength
-    if (stderrBytes <= DocumentRuntimeLimits.MaxInnerStderrBytes) return
+    if (stderrBytes <= DocumentRuntimeLimits.MaxInnerStderrBytes) {
+      // Relay a bounded prefix of the worker's stderr so bootstrap failures reach the log.
+      if (stderrBytes <= RelayedStderrBytes) process.stderr.write(chunk)
+      return
+    }
     fail("transport-overflow", "transport")
     void shutdown()
   }
@@ -265,7 +279,10 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
   }
   const onChildExit = (code: number | null, signal: NodeJS.Signals | null) => {
     leaderExit = { code, signal }
-    if ((code !== 0 || signal !== null) && !hardTerminationStarted) fail("worker-crashed", "worker")
+    if ((code !== 0 || signal !== null) && !hardTerminationStarted) {
+      report(`worker exited unexpectedly (code ${code}, signal ${signal})`)
+      fail("worker-crashed", "worker")
+    }
     if (childClosed) void shutdown()
   }
   const onChildClose = () => {
@@ -277,17 +294,30 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       }
     }
     void innerTail.then(() => {
-      if (!terminal && !selectedFailure) fail("worker-crashed", "worker")
+      if (!terminal && !selectedFailure) {
+        report(
+          `worker closed before a terminal event (exit code ${leaderExit?.code ?? "unknown"}, signal ${leaderExit?.signal ?? "none"}, messages received ${innerMessages}, stderr bytes ${stderrBytes})`,
+        )
+        fail("worker-crashed", "worker")
+      }
       void shutdown()
     })
   }
   const onInnerDisconnect = (error?: TransportError) => {
     if (phase === "closed" || streamsClosing) return
     if (!error && terminal) return
+    report(
+      error
+        ? `worker transport error: ${error.message}`
+        : `worker stdout ended before a terminal event (messages received ${innerMessages})`,
+    )
     fail(error ? "transport-overflow" : "worker-crashed", error ? "transport" : "worker")
     void shutdown()
   }
+  let innerMessages = 0
   const handleInnerMessage = async (input: unknown) => {
+    innerMessages++
+    if (innerMessages === 1) report("first worker message recevied")
     if (phase !== "active" || !launch || !order || terminal) {
       fail("protocol-mismatch", "transport")
       await shutdown()
@@ -321,6 +351,7 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
     order = next.state
     if (next.state.phase === "terminal") {
       terminal = event
+      report(`worker terminal event: ${event.type}${event.type === "failure" ? ` ${event.code} at ${event.stage}` : ""}`)
       if (childClosed) void shutdown()
       return
     }
@@ -392,7 +423,8 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
           cleanupCalls = 1
           dependencies.manager.cleanupAfterCommand()
           cleanupCompleted = true
-        } catch {
+        } catch (error) {
+          report("sandbox command cleanup failed", error)
           cleanupFailed = true
         }
         resetStarted = true
@@ -400,13 +432,15 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
           resetCalls = 1
           await dependencies.manager.reset()
           resetCompleted = true
-        } catch {
+        } catch (error) {
+          report("sandbox reset failed", error)
           resetFailed = true
         }
       },
       dependencies.teardownTimeoutMs,
       dependencies.timers,
     )
+    if (!completed) report("sandbox teardown exceeded its budget")
     if (cleanupFailed) fail("command-cleanup-failed", "command-cleanup")
     if (resetFailed || (!completed && resetStarted)) fail("reset-failed", "reset")
     else if (!completed) fail("command-cleanup-failed", "command-cleanup")
@@ -428,9 +462,14 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
           timeoutMs: dependencies.teardownTimeoutMs,
           verifyWindowsTreeEmpty: dependencies.verifyWindowsTreeEmpty,
         })
-        .catch(() => undefined)
-      if (!result || result.status !== "exited") fail("termination-failed", "termination")
-      else treeContained = true
+        .catch((error: unknown) => {
+          report("process tree sweep threw", error)
+          return undefined
+        })
+      if (!result || result.status !== "exited") {
+        if (result) report(`process tree sweep failed: ${result.code}`)
+        fail("termination-failed", "termination")
+      } else treeContained = true
     }
     if (treeContained) await teardownManager()
     if (selectedFailure || terminal?.type !== "completed") {
@@ -565,7 +604,10 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
     if (stopStarting()) return shutdownPromise
     const verified = await dependencies
       .verifyRuntime(message.runtimeRoot, message.target, message.manifestSha256)
-      .catch(() => undefined)
+      .catch((error: unknown) => {
+        report("runtime verification failed", error)
+        return undefined
+      })
     if (stopStarting()) return shutdownPromise
     if (
       !verified ||
@@ -573,51 +615,59 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       verified.manifestSha256 !== message.manifestSha256 ||
       verified.manifest.target !== message.target
     ) {
+      if (verified) report("runtime verification mismatch")
       fail("sandbox-unavailable", "sandbox")
       return shutdown()
     }
 
     if (stopStarting()) return shutdownPromise
-    const prepared = await dependencies
-      .preparePolicy({
-        target: message.target,
-        runtimeRoot: message.runtimeRoot,
-        parentRoot: message.parentRoot,
-        parentIdentity: DocumentPendingRoot.identityFromWire(message.parentIdentity),
-        parentMode: message.parentMode ?? undefined,
-        jobRoot: message.jobRoot,
-        jobRootIdentity: DocumentPendingRoot.identityFromWire(message.jobRootIdentity),
-        pendingRoot: message.pendingRoot,
-        pendingRootIdentity: DocumentPendingRoot.identityFromWire(message.pendingRootIdentity),
-        sandboxAssetsRoot: dependencies.sandboxAssetsRoot,
-        executablePath: dependencies.executablePath,
-        manifestSha256: message.manifestSha256,
-        platform: dependencies.platform,
-        architecture: dependencies.architecture,
-        windowsEvidence: dependencies.windowsEvidence,
-      })
-      .catch(() => undefined)
+    const preparePolicy = (minimalGrants: boolean) =>
+      dependencies
+        .preparePolicy({
+          target: message.target,
+          runtimeRoot: message.runtimeRoot,
+          parentRoot: message.parentRoot,
+          parentIdentity: DocumentPendingRoot.identityFromWire(message.parentIdentity),
+          parentMode: message.parentMode ?? undefined,
+          jobRoot: message.jobRoot,
+          jobRootIdentity: DocumentPendingRoot.identityFromWire(message.jobRootIdentity),
+          pendingRoot: message.pendingRoot,
+          pendingRootIdentity: DocumentPendingRoot.identityFromWire(message.pendingRootIdentity),
+          sandboxAssetsRoot: dependencies.sandboxAssetsRoot,
+          executablePath: dependencies.executablePath,
+          manifestSha256: message.manifestSha256,
+          platform: dependencies.platform,
+          architecture: dependencies.architecture,
+          ...(minimalGrants ? { minimalGrants } : {}),
+        })
+        .catch((error: unknown) => {
+          report("policy preparation threw", error)
+          return undefined
+        })
+    const echoesLaunch = (candidate: PreparedPolicy) =>
+      candidate.target === message.target &&
+      candidate.runtimeRoot === message.runtimeRoot &&
+      candidate.parentRoot === message.parentRoot &&
+      sameIdentity(candidate.parentIdentity, DocumentPendingRoot.identityFromWire(message.parentIdentity)) &&
+      candidate.parentMode === (message.parentMode ?? undefined) &&
+      candidate.jobRoot === message.jobRoot &&
+      sameIdentity(candidate.jobRootIdentity, DocumentPendingRoot.identityFromWire(message.jobRootIdentity)) &&
+      candidate.pendingRoot === message.pendingRoot &&
+      sameIdentity(candidate.pendingRootIdentity, DocumentPendingRoot.identityFromWire(message.pendingRootIdentity)) &&
+      candidate.sandboxAssets.root === dependencies.sandboxAssetsRoot &&
+      candidate.executablePath === dependencies.executablePath &&
+      candidate.runtimeAssets.bootstrap ===
+        pathForPlatform(dependencies.platform).join(message.runtimeRoot, "worker", "bootstrap.js")
+    const prepared = await preparePolicy(false)
     if (stopStarting()) return shutdownPromise
     if (!prepared || prepared.status !== "available") {
+      if (prepared) report(`policy preparation failed: ${prepared.code}`)
       fail("sandbox-unavailable", "sandbox")
       return shutdown()
     }
     policy = prepared.value
-    if (
-      policy.target !== message.target ||
-      policy.runtimeRoot !== message.runtimeRoot ||
-      policy.parentRoot !== message.parentRoot ||
-      !sameIdentity(policy.parentIdentity, DocumentPendingRoot.identityFromWire(message.parentIdentity)) ||
-      policy.parentMode !== (message.parentMode ?? undefined) ||
-      policy.jobRoot !== message.jobRoot ||
-      !sameIdentity(policy.jobRootIdentity, DocumentPendingRoot.identityFromWire(message.jobRootIdentity)) ||
-      policy.pendingRoot !== message.pendingRoot ||
-      !sameIdentity(policy.pendingRootIdentity, DocumentPendingRoot.identityFromWire(message.pendingRootIdentity)) ||
-      policy.sandboxAssets.root !== dependencies.sandboxAssetsRoot ||
-      policy.executablePath !== dependencies.executablePath ||
-      policy.runtimeAssets.bootstrap !==
-        pathForPlatform(dependencies.platform).join(message.runtimeRoot, "worker", "bootstrap.js")
-    ) {
+    if (!echoesLaunch(policy)) {
+      report("prepared policy does not echo the launch request")
       fail("sandbox-unavailable", "sandbox")
       return shutdown()
     }
@@ -636,25 +686,49 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
     initialized = true
     try {
       await dependencies.manager.initialize(policy.config, undefined, false)
-    } catch {
-      fail("sandbox-unavailable", "sandbox")
-      return shutdown()
+    } catch (error) {
+      report("sandbox initialization failed", error)
+      // A single unwritable DACL rolls back the whole Windows grant batch (for example when Koala is
+      // installed outside Program Files); upstream clears its state, so retry with the job roots only.
+      const fallback = dependencies.platform === "win32" ? await preparePolicy(true) : undefined
+      if (stopStarting()) return shutdownPromise
+      if (!fallback || fallback.status !== "available" || !echoesLaunch(fallback.value)) {
+        fail("sandbox-unavailable", "sandbox")
+        return shutdown()
+      }
+      try {
+        await dependencies.manager.initialize(fallback.value.config, undefined, false)
+        policy = fallback.value
+        report("sandbox initialized with minimal Windows grants")
+      } catch (retryError) {
+        report("sandbox initialization retry failed", retryError)
+        fail("sandbox-unavailable", "sandbox")
+        return shutdown()
+      }
     }
     if (stopStarting()) return shutdownPromise
-    const dependencyResult = await dependencies.verifyDependencies(dependencies.manager).catch(() => undefined)
+    const dependencyResult = await dependencies
+      .verifyDependencies(dependencies.manager)
+      .catch((error: unknown) => {
+        report("dependency check threw", error)
+        return undefined
+      })
     if (stopStarting()) return shutdownPromise
     if (!dependencyResult || dependencyResult.status !== "available") {
+      if (dependencyResult) report(`dependency check failed: ${dependencyResult.code}`)
       fail("dependency-failed", "dependency")
       return shutdown()
     }
     if (stopStarting()) return shutdownPromise
     const effective = await dependencies
-      .verifyEffectivePolicy(dependencies.manager, policy.config, policy.target, {
-        windowsEvidence: dependencies.windowsEvidence,
+      .verifyEffectivePolicy(dependencies.manager, policy.config, policy.target)
+      .catch((error: unknown) => {
+        report("effective policy check threw", error)
+        return undefined
       })
-      .catch(() => undefined)
     if (stopStarting()) return shutdownPromise
     if (!effective || effective.status !== "available") {
+      if (effective) report(`effective policy check failed: ${effective.code}`)
       fail("sandbox-unavailable", "sandbox")
       return shutdown()
     }
@@ -676,7 +750,8 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
         policy.brokerEnvironment,
         dependencies.platform,
       )
-    } catch {
+    } catch (error) {
+      report("sandbox command wrapping failed", error)
       if (!selectedFailure) {
         fail(cancellationSent ? "worker-crashed" : "spawn-failed", cancellationSent ? "worker" : "spawn")
       }
@@ -690,6 +765,17 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       fail("spawn-failed", "spawn")
       return shutdown()
     }
+    // srt-win never forwards stdin to the sandboxed child; Windows workers read frames from a job inbox.
+    const inbox = dependencies.platform === "win32" ? path.win32.join(policy.jobRoot, InboxDirectoryName) : undefined
+    if (inbox) {
+      try {
+        await mkdir(inbox, { mode: 0o700 })
+      } catch (error) {
+        report("inbox creation failed", error)
+        fail("spawn-failed", "spawn")
+        return shutdown()
+      }
+    }
     try {
       child = dependencies.spawnCommand(executable, wrapped.argv.slice(1), {
         cwd: policy.jobRoot,
@@ -697,13 +783,15 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
         shell: false,
         detached: dependencies.platform !== "win32",
         windowsHide: true,
-        stdio: ["pipe", "pipe", "pipe"],
+        stdio: [inbox ? "ignore" : "pipe", "pipe", "pipe"],
       })
-    } catch {
+    } catch (error) {
+      report("worker spawn failed", error)
       fail("spawn-failed", "spawn")
       return shutdown()
     }
-    if (!child.stdin || !child.stdout || !child.stderr) {
+    const commandSink = inbox ? createInboxWritable(inbox) : child.stdin
+    if (!commandSink || !child.stdout || !child.stderr) {
       fail("spawn-failed", "spawn")
       return shutdown()
     }
@@ -713,7 +801,7 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       child.once("close", onChildClose)
       child.stderr.on("data", onStderr)
       child.stderr.on("error", onStderrError)
-      transport = dependencies.createTransport(child.stdout, child.stdin)
+      transport = dependencies.createTransport(child.stdout, commandSink)
       transport.onMessage(onInnerMessage)
       transport.onDisconnect(onInnerDisconnect)
     } catch {
@@ -729,7 +817,9 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       await send({ protocolVersion: 1, type: "accepted", jobID: message.jobID, innerProcessID: child.pid })
       accepted = true
       await transport.send(DocumentRuntimeProtocol.decodeInitialRequest(message.start))
-    } catch {
+      report(`start request delivered via ${inbox ? "inbox" : "stdin"} (worker pid ${child.pid})`)
+    } catch (e) {
+      report("start request delivery failed", e)
       fail("transport-overflow", "transport")
       return shutdown()
     }

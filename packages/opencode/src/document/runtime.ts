@@ -1,3 +1,4 @@
+import { DocumentGenerate } from "@koala-ai/core/document/generate"
 import {
   loadAndVerifyManifest,
   readImageDimensions,
@@ -27,8 +28,12 @@ import { DocumentTeardownReceipt } from "./teardown-receipt"
 
 const DiagnosticBytes = DocumentRuntimeLimits.MaxInnerStderrBytes
 const SignalCapacity = DocumentRuntimeLimits.MaxOuterPendingMessages
-const CleanupWatchdogMs = 10_000
+// The proxy's Windows teardown (process sweep plus SRT cleanup/reset) is bounded at 6 s + 6 s; the
+// parent's closure window must stay above that worst case or a slow teardown poisons the runtime.
+const CleanupWatchdogMs = process.platform === "win32" ? 20_000 : 10_000
 const DeletionReserveMs = 2_000
+// A probe only verifies the runtime and loads the renderer; anything longer indicates a stuck worker.
+const ProbeDeadlineMs = 60_000
 const jobs = Semaphore.makeUnsafe(DocumentRuntimeLimits.MaxConcurrentJobs)
 const unsafeJobRoots = new Set<string>()
 
@@ -104,13 +109,54 @@ export interface ReadOfficeResult {
   readonly sections: ReadonlyArray<OfficeSection>
 }
 
+export interface CreateDocxInput {
+  readonly contents: typeof DocumentGenerate.DocxContent.Type
+}
+
+export type CreateDocumentInput = {
+  readonly [Format in DocumentGenerate.Format]: {
+    readonly format: Format
+    readonly contents: (typeof DocumentGenerate.ContentInput)[Format]["Type"]["contents"]
+  }
+}[DocumentGenerate.Format]
+
+export interface CreateDocxResult {
+  readonly path: string
+  readonly bytes: Uint8Array
+}
+
+export interface ReadPdfInput {
+  readonly inputPath: string
+  readonly limits?: DocumentRuntimeLimits.Requested
+}
+
+export interface ReadPdfPage {
+  readonly number: number
+  readonly rotation: number
+  readonly mediaBox: ReadonlyArray<number>
+  readonly blocks: ReadonlyArray<{ readonly text: string }>
+}
+
+export interface ReadPdfResult {
+  readonly title?: string
+  readonly author?: string
+  readonly subject?: string
+  readonly creator?: string
+  readonly producer?: string
+  readonly creationDate?: string
+  readonly modDate?: string
+  readonly pageCount: number
+  readonly pages: ReadonlyArray<ReadPdfPage>
+}
+
 export class RuntimeError extends Schema.TaggedErrorClass<RuntimeError>()("DocumentRuntimeError", {
   code: DocumentRuntimeProtocol.FailureCode,
   stage: DocumentRuntimeProtocol.FailureStage,
   retryable: Schema.Boolean,
+  detail: Schema.optionalKey(Schema.String),
 }) {
   override get message() {
-    return `Document runtime failed: ${this.code}`
+    return `Document runtime failed: ${this.code}${this.detail ? ` (${this.detail})` : ""}`
   }
 }
 
@@ -119,6 +165,9 @@ export interface Interface {
   readonly probe: () => Effect.Effect<Available, RuntimeError>
   readonly ocr: (input: OcrInput) => Effect.Effect<OcrResult, RuntimeError>
   readonly readOffice: (input: ReadOfficeInput) => Effect.Effect<ReadOfficeResult, RuntimeError>
+  readonly readPdf: (input: ReadPdfInput) => Effect.Effect<ReadPdfResult, RuntimeError>
+  readonly createDocx: (input: CreateDocxInput) => Effect.Effect<CreateDocxResult, RuntimeError>
+  readonly createDocument: (input: CreateDocumentInput) => Effect.Effect<CreateDocxResult, RuntimeError>
   readonly renderAndOcr: <A, E, R>(
     input: RenderInput,
     callback: (page: ScopedPage) => Effect.Effect<A, E, R>,
@@ -239,17 +288,93 @@ export function layer(config: Config | undefined) {
     ),
   )
 
+  const readPdf: Interface["readPdf"] = Effect.fn("DocumentRuntime.readPdf")((input) =>
+    limited(
+      Effect.gen(function* () {
+        const limits = yield* requestedLimits(input.limits)
+        const runtime = yield* verifiedRuntime(health, policy)
+        return yield* withJob(health, (job) =>
+          Effect.gen(function* () {
+            const staged = yield* stageInput(job.path, input.inputPath, "input/document.pdf", limits.pdfInputBytes)
+            const request = yield* decodeInput(DocumentRuntimeProtocol.ReadPdfRequest, {
+              protocolVersion: 1,
+              type: "read-pdf",
+              jobID: jobID(),
+              inputPath: DocumentRuntimeManifest.RelativePath.make("input/document.pdf"),
+              inputBytes: staged.bytes,
+              limits,
+            })
+            return yield* runProxy(health, runtime, job, request, (session) => pdfWorker(session))
+          }),
+        )
+      }),
+    ),
+  )
+
+  const createDocument: Interface["createDocument"] = Effect.fn("DocumentRuntime.createDocument")((input) =>
+    limited(
+      Effect.gen(function* () {
+        const runtime = yield* verifiedRuntime(health, policy)
+        return yield* withJob(health, (job) =>
+          Effect.gen(function* () {
+            let content: unknown
+            if (input.format === "docx") {
+              content = yield* decodeInput(DocumentGenerate.ContentInput.docx, { contents: input.contents })
+            } else if (input.format === "pptx") {
+              content = yield* decodeInput(DocumentGenerate.ContentInput.pptx, { contents: input.contents })
+            } else if (input.format === "xlsx") {
+              content = yield* decodeInput(DocumentGenerate.ContentInput.xlsx, { contents: input.contents })
+            } else if (input.format === "pdf") {
+              content = yield* decodeInput(DocumentGenerate.ContentInput.pdf, { contents: input.contents })
+            } else {
+              return yield* failure("invalid-request", "input")
+            }
+            const contentBytes = Buffer.from(JSON.stringify(content), "utf8")
+            const contentPath = "input/content.json"
+            const absoluteContentPath = path.join(job.path, ...contentPath.split("/"))
+            yield* attempt(
+              async () => {
+                await mkdir(path.dirname(absoluteContentPath), { recursive: true, mode: 0o700 })
+                await writeFile(absoluteContentPath, contentBytes, { flag: "wx", mode: 0o600 })
+              },
+              failure("invalid-request", "input"),
+            )
+            const request = yield* decodeInput(DocumentRuntimeProtocol.CreateDocxRequest, {
+              protocolVersion: 1,
+              type: "create-docx",
+              format: input.format,
+              jobID: jobID(),
+              inputPath: DocumentRuntimeManifest.RelativePath.make(contentPath),
+              inputBytes: contentBytes.byteLength,
+            })
+            return yield* runProxy(health, runtime, job, request, (session) => docxWorker(session, input.format))
+          }),
+        )
+      }),
+    ),
+  )
+
+  const createDocx: Interface["createDocx"] = (input) => createDocument({ format: "docx", contents: input.contents })
+
   return Layer.succeed(
     Service,
     Service.of({
       availability: () =>
         probe().pipe(
           Effect.map((available): Availability => available),
-          Effect.catch(() => Effect.succeed({ status: "unavailable", code: "runtime-unavailable" } as const)),
+          Effect.catch((error) =>
+            Effect.sync(() => {
+              process.stderr.write(`document runtime unavailable: ${error.message} [stage ${error.stage}]\n`)
+              return { status: "unavailable", code: "runtime-unavailable" } as const
+            }),
+          ),
         ),
       probe,
       ocr,
       readOffice,
+      readPdf,
+      createDocx,
+      createDocument,
       renderAndOcr,
     }),
   )
@@ -346,32 +471,43 @@ function withRuntime<A, E, R>(
 
 function verifiedRuntime(health: Health, config: Config | undefined) {
   return Effect.gen(function* () {
+    if (health.read()) {
+      return yield* failure("runtime-unavailable", "probe", false, "runtime poisoned by an earlier job")
+    }
+    if (!config) {
+      return yield* failure(
+        "runtime-unavailable",
+        "probe",
+        false,
+        "no document runtime configured (KOALA_DOCUMENT_RUNTIME_* absent)",
+      )
+    }
     if (
-      health.read() ||
-      !config ||
       !path.isAbsolute(config.runtimePath) ||
       !path.isAbsolute(config.proxyPath) ||
       !path.isAbsolute(config.proxyAssetsRoot)
     ) {
-      return yield* failure("runtime-unavailable", "probe")
+      return yield* failure("runtime-unavailable", "probe", false, "document runtime paths are not absolute")
     }
     const target = yield* hostTarget()
     const digest = yield* decodeInput(DocumentRuntimeManifest.Digest, config.manifestSha256).pipe(
-      Effect.mapError(() => failure("runtime-unavailable", "probe")),
+      Effect.mapError(() => failure("runtime-unavailable", "probe", false, "invalid manifest digest")),
     )
-    const manifest = yield* attempt(
-      () => loadAndVerifyManifest(config.runtimePath, target, digest, config.requireReleaseReady ?? false),
-      failure("runtime-unavailable", "probe"),
-    )
-    const proxy = yield* attempt(
-      () => validateProxyPaths(config.proxyPath, config.proxyAssetsRoot, manifest.root),
-      failure("runtime-unavailable", "probe"),
-    )
-    const valid = yield* attempt(
-      () => validateRuntimePaths(manifest.root, runtimePaths(manifest.root, target)),
-      failure("runtime-unavailable", "probe"),
-    )
-    if (!valid) return yield* failure("runtime-unavailable", "probe")
+    const manifest = yield* Effect.tryPromise({
+      try: () => loadAndVerifyManifest(config.runtimePath, target, digest, config.requireReleaseReady ?? false),
+      catch: (error) => failure("runtime-unavailable", "probe", false, `manifest verification: ${describe(error)}`),
+    })
+    const proxy = yield* Effect.tryPromise({
+      try: () => validateProxyPaths(config.proxyPath, config.proxyAssetsRoot, manifest.root),
+      catch: (error) => failure("runtime-unavailable", "probe", false, `proxy paths: ${describe(error)}`),
+    })
+    const valid = yield* Effect.tryPromise({
+      try: () => validateRuntimePaths(manifest.root, runtimePaths(manifest.root, target)),
+      catch: (error) => failure("runtime-unavailable", "probe", false, `runtime paths: ${describe(error)}`),
+    })
+    if (!valid) {
+      return yield* failure("runtime-unavailable", "probe", false, "runtime is missing required files")
+    }
     return {
       target,
       manifest,
@@ -418,20 +554,24 @@ async function validateRuntimePaths(root: string, paths: ReturnType<typeof runti
     path.join(root, "package.json"),
     paths.bootstrap,
     paths.worker,
-    paths.tesseract,
-    path.join(paths.tessdata, "eng.traineddata"),
-    path.join(paths.tessdata, "osd.traineddata"),
     path.join(paths.pdfRoot, "legacy", "build", "pdf.mjs"),
     paths.canvasEntry,
   ]
   const directories = [
-    paths.tessdata,
     path.join(paths.pdfRoot, "cmaps"),
     path.join(paths.pdfRoot, "iccs"),
     path.join(paths.pdfRoot, "standard_fonts"),
     path.join(paths.pdfRoot, "wasm"),
     paths.canvasNativeRoot,
   ]
+  // Development runtimes may omit Tesseract; OCR then fails per request while other operations work.
+  const ocr = await Promise.all([
+    safeInfo(root, paths.tesseract, "file"),
+    safeInfo(root, path.join(paths.tessdata, "eng.traineddata"), "file"),
+    safeInfo(root, path.join(paths.tessdata, "osd.traineddata"), "file"),
+    safeInfo(root, paths.tessdata, "directory"),
+  ])
+  if (ocr.some(Boolean) && !ocr.every(Boolean)) return false
   if (!(await Promise.all(files.map((file) => safeInfo(root, file, "file")))).every(Boolean)) return false
   return (await Promise.all(directories.map((directory) => safeInfo(root, directory, "directory")))).every(Boolean)
 }
@@ -449,7 +589,7 @@ function withJob<A, E, R>(health: Health, use: (job: DocumentJobRoot.Root) => Ef
       try: () => DocumentJobRoot.create(),
       catch: (error) => {
         if (error instanceof DocumentJobRoot.LifecycleError && error.unhealthy) health.poison()
-        return failure("worker-failed", "cleanup")
+        return failure("worker-failed", "cleanup", false, `job root creation: ${describe(error)}`)
       },
     }),
     use,
@@ -461,9 +601,9 @@ function withJob<A, E, R>(health: Health, use: (job: DocumentJobRoot.Root) => Ef
           }
           return DocumentJobRoot.remove(job, { deadline: job.cleanupDeadline ?? Date.now() + CleanupWatchdogMs })
         },
-        catch: () => {
+        catch: (error) => {
           health.poison()
-          return failure("worker-failed", "cleanup")
+          return failure("worker-failed", "cleanup", false, `job root removal: ${describe(error)}`)
         },
       }),
   )
@@ -501,9 +641,11 @@ function runProxy<A, E, R>(
       ).pipe(
         Effect.timeoutOrElse({
           duration:
-            request.type === "probe" || request.type === "read-office"
-              ? DocumentRuntimeLimits.MaxJobDeadlineMs
-              : request.limits.jobDeadlineMs,
+            request.type === "probe"
+              ? ProbeDeadlineMs
+              : request.type === "read-office" || request.type === "read-pdf" || request.type === "create-docx"
+                ? DocumentRuntimeLimits.MaxJobDeadlineMs
+                : request.limits.jobDeadlineMs,
           orElse: () => failure("job-deadline-exceeded", "worker", true),
         }),
       ),
@@ -520,9 +662,9 @@ function spawnProxy(
   return Effect.gen(function* () {
     yield* Effect.tryPromise({
       try: () => DocumentJobRoot.verifyForLaunch(job),
-      catch: () => {
+      catch: (error) => {
         health.poison()
-        return failure("worker-failed", "cleanup")
+        return failure("worker-failed", "cleanup", false, `job root verification: ${describe(error)}`)
       },
     })
     const queue = yield* Queue.bounded<Signal>(SignalCapacity)
@@ -536,7 +678,7 @@ function spawnProxy(
           serialization: "json",
           stdio: ["ignore", "pipe", "pipe", "ipc"],
         }),
-      catch: () => failure("worker-failed", "worker"),
+      catch: (error) => failure("worker-failed", "worker", false, `proxy spawn: ${describe(error)}`),
     })
     const session: Session = {
       health,
@@ -569,7 +711,11 @@ function spawnProxy(
         return
       }
       session.diagnosticBytes = Math.min(DiagnosticBytes + 1, session.diagnosticBytes + Buffer.byteLength(chunk))
-      if (session.diagnosticBytes <= DiagnosticBytes || session.overflowed) return
+      if (session.diagnosticBytes <= DiagnosticBytes || session.overflowed) {
+        // Proxy diagnostics reach the desktop log through the sidecar's stderr.
+        if (session.diagnosticBytes <= DiagnosticBytes) process.stderr.write(chunk)
+        return
+      }
       session.overflowed = true
       health.poison()
       try {
@@ -750,6 +896,64 @@ function officeWorker(
   })
 }
 
+function pdfWorker(session: Session): Effect.Effect<ReadPdfResult, RuntimeError> {
+  return Effect.gen(function* () {
+    yield* expectType(session, "started", (event) => event.operation === "read-pdf")
+    const ready = yield* expectType(session, "pdf-info", () => true)
+    const output = yield* resolveOutput(
+      session.health,
+      pendingEvidence(session.job),
+      ready.outputPath,
+      ready.outputBytes,
+      ready.outputSha256,
+    )
+    const bytes = yield* pendingAttempt(session.health, () => DocumentPendingOutput.read(output))
+    yield* pendingAttempt(session.health, () => DocumentPendingOutput.remove(output))
+    const parsed = yield* decodePdfOutput(bytes)
+    if (parsed.pageCount !== ready.pageCount) return yield* failure("invalid-order", "worker")
+    yield* expectType(
+      session,
+      "completed",
+      (event) => event.operation === "read-pdf" && event.pagesProcessed === 0,
+    )
+    yield* cleanExit(session)
+    return parsed
+  })
+}
+
+function docxWorker(
+  session: Session,
+  format: DocumentGenerate.Format,
+): Effect.Effect<CreateDocxResult, RuntimeError> {
+  return Effect.gen(function* () {
+    yield* expectType(session, "started", (event) => event.operation === "create-docx")
+    const ready = yield* expectType(session, "docx-ready", (event) => event.outputPath.endsWith(`.${format}`))
+    const output = yield* resolveOutput(
+      session.health,
+      pendingEvidence(session.job),
+      ready.outputPath,
+      ready.outputBytes,
+      ready.outputSha256,
+    )
+    const bytes = yield* pendingAttempt(session.health, () => DocumentPendingOutput.read(output))
+    yield* pendingAttempt(session.health, () => DocumentPendingOutput.remove(output))
+    yield* expectType(
+      session,
+      "completed",
+      (event) => event.operation === "create-docx" && event.pagesProcessed === 0,
+    )
+    yield* cleanExit(session)
+    return { path: output.path, bytes }
+  })
+}
+
+function decodePdfOutput(bytes: Uint8Array) {
+  return Effect.try({
+    try: () => JSON.parse(Buffer.from(bytes).toString("utf8")) as ReadPdfResult,
+    catch: () => failure("invalid-order", "worker"),
+  })
+}
+
 function decodeOfficeOutput(bytes: Uint8Array) {
   return Effect.try({
     try: () => JSON.parse(Buffer.from(bytes).toString("utf8")) as ReadOfficeResult,
@@ -777,8 +981,21 @@ function nextEvent(session: Session): Effect.Effect<DocumentRuntimeProtocol.Work
     if (message.type === "failure") return yield* proxyFailure(message)
     if (message.type !== "event") return yield* closureFailure()
     const event = message.event
-    if (event.type === "page-ready" || event.type === "ocr-result" || event.type === "office-ready") {
-      const extension = event.type === "page-ready" ? ".png" : event.type === "office-ready" ? ".json" : ".tsv"
+    if (
+      event.type === "page-ready" ||
+      event.type === "ocr-result" ||
+      event.type === "office-ready" ||
+      event.type === "docx-ready" ||
+      event.type === "pdf-info"
+    ) {
+      const extension =
+        event.type === "page-ready"
+          ? ".png"
+          : event.type === "ocr-result"
+            ? ".tsv"
+            : event.type === "docx-ready"
+              ? (/\.(?:docx|pptx|xlsx|pdf)$/.exec(event.outputPath)?.[0] ?? ".docx")
+              : ".json"
       if (
         !event.outputPath.endsWith(extension) ||
         session.outputIDs.has(event.outputID) ||
@@ -825,8 +1042,8 @@ function sendParent(session: Session, input: unknown) {
         input,
         timeoutMs,
       ),
-    catch: () => failure("worker-failed", "cleanup"),
-  })
+    catch: (error) => failure("worker-failed", "cleanup", false, `parent channel: ${describe(error)}`),
+    })
 }
 
 function nextProxyMessage(session: Session): Effect.Effect<DocumentSandboxProtocol.ProxyEvent, RuntimeError> {
@@ -1078,27 +1295,33 @@ function stageInput(jobRoot: string, source: string, relative: string, maximumBy
 }
 
 function proxyFailure(message: typeof DocumentSandboxProtocol.FailureEvent.Type) {
-  if (message.code === "protocol-mismatch") return failure("protocol-mismatch", "worker")
+  const detail = `proxy reported ${message.code} during ${message.stage}`
+  if (message.code === "protocol-mismatch") return failure("protocol-mismatch", "worker", false, detail)
   if (message.code === "sandbox-unavailable" || message.code === "dependency-failed") {
-    return failure("runtime-unavailable", "probe")
+    return failure("runtime-unavailable", "probe", false, detail)
   }
-  return failure("worker-failed", message.stage === "worker" ? "worker" : "cleanup")
+  return failure("worker-failed", message.stage === "worker" ? "worker" : "cleanup", false, detail)
 }
 
 function closureFailure() {
-  return failure("worker-failed", "cleanup")
+  return failure("worker-failed", "cleanup", false, "proxy closure was not clean")
 }
 
 function failure(
   code: DocumentRuntimeProtocol.FailureCode,
   stage: DocumentRuntimeProtocol.FailureStage,
   retryable = false,
+  detail?: string,
 ) {
-  return new RuntimeError({ code, stage, retryable })
+  return new RuntimeError({ code, stage, retryable, ...(detail ? { detail } : {}) })
 }
 
 function attempt<A>(tryPromise: () => PromiseLike<A>, error: RuntimeError) {
   return Effect.tryPromise({ try: tryPromise, catch: () => error })
+}
+
+function describe(error: unknown) {
+  return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").slice(0, 512)
 }
 
 function pendingAttempt<A>(health: Health, tryPromise: () => PromiseLike<A>) {
@@ -1106,7 +1329,7 @@ function pendingAttempt<A>(health: Health, tryPromise: () => PromiseLike<A>) {
     try: tryPromise,
     catch: (error) => {
       if (error instanceof DocumentPendingRoot.EvidenceError) health.poison()
-      return failure("worker-failed", "cleanup")
+      return failure("worker-failed", "cleanup", false, `output handoff: ${describe(error)}`)
     },
   })
 }

@@ -33,7 +33,7 @@ const require = __cjs_mod__.createRequire(import.meta.url);
 `,
         },
       },
-      externalizeDeps: { include: [nodePtyPkg] },
+      externalizeDeps: { include: [nodePtyPkg], exclude: ["@koala-ai/document-runtime"] },
     },
     plugins: [
       {

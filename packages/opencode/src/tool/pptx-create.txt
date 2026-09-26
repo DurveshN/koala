@@ -1,0 +1,27 @@
+Creates a PowerPoint presentation (.pptx) from structured slides and saves it inside the current project.
+
+Usage:
+- Use this tool to produce presentation deliverables such as board decks, review presentations, and briefings.
+- `path` is the project-relative location of the finished file, for example "deliverables/quarterly-review.pptx". Use forward slashes; the file is written inside the project directory and an existing file at that path is replaced.
+- The presentation is validated before delivery so it opens in Microsoft PowerPoint.
+- After the tool succeeds, tell the user the saved path from the result.
+- Do NOT attempt to create .pptx files using code execution - use this tool instead.
+
+Presentation Structure (`contents`):
+- `title`: Optional presentation title (appears in file properties)
+- `author`: Optional author name (appears in file properties)
+- `slides`: Array of slide objects (at least one), each with:
+  - `title`: Optional slide title (appears at top)
+  - `subtitle`: Optional subtitle below the title
+  - `bullets`: Optional array of bullet point text
+  - `paragraphs`: Optional array of paragraph text (for body content)
+  - `table`: Optional 2D array of cell strings (first row is the header)
+  - `notes`: Optional speaker notes for the slide
+
+Best Practices:
+- Keep slide content concise - avoid text-heavy slides
+- Use bullet points to highlight key information
+- First slide should introduce the topic
+- Use tables sparingly and keep them simple
+- Include speaker notes to provide context and talking points
+- Limit to 5-7 bullet points per slide for readability

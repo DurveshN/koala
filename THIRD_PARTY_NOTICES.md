@@ -92,6 +92,16 @@ the MIT License, with one target-specific native package per runtime artifact.
 - The staged development manifest remains `releaseReady: false` until the exact
   Skia/native dependency inventory and all required notices are included.
 
+## docx
+
+Koala's document-runtime bundles `docx` version `9.7.1` under the MIT License to
+generate `.docx` files.
+
+- Source: https://github.com/dolanmiu/docx
+- License: MIT
+- A copy of the dependency's `LICENSE` file is shipped in the document-runtime
+  artifact at `licenses/docx-LICENSE`.
+
 ## mammoth
 
 Koala's document-runtime bundles `mammoth` version `1.9.0` under the BSD-2-Clause

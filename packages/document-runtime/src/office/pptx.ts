@@ -1,7 +1,7 @@
 import { XMLParser } from "fast-xml-parser"
 import JSZip from "jszip"
 import { readFile } from "node:fs/promises"
-import { RuntimeFailure } from "../error"
+import { RuntimeFailure } from "../error.ts"
 import {
   encodeStructuredText,
   limitStructuredText,
@@ -9,7 +9,7 @@ import {
   type Section,
   type StructuredText,
   validateInputBytes,
-} from "./common"
+} from "./common.ts"
 
 export async function readPptx(inputPath: string, declaredBytes: number, limits?: Limits): Promise<Uint8Array> {
   validateInputBytes(declaredBytes, limits)

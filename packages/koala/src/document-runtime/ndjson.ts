@@ -1,6 +1,6 @@
-export * as DocumentRuntimeNdjson from "./ndjson"
+export * as DocumentRuntimeNdjson from "./ndjson.ts"
 
-import { DocumentRuntimeLimits } from "./limits"
+import { DocumentRuntimeLimits } from "./limits.ts"
 
 export type ErrorCode =
   | "line-overflow"
@@ -15,9 +15,11 @@ export type ErrorCode =
 
 export class NdjsonError extends Error {
   override readonly name = "NdjsonError"
+  readonly code: ErrorCode
 
-  constructor(readonly code: ErrorCode) {
+  constructor(code: ErrorCode) {
     super(code)
+    this.code = code
   }
 }
 

@@ -197,7 +197,7 @@ const layer = Layer.effect(
                   decodeMetadata({
                     id: decodeID(`art_${randomUUID()}`),
                     name: item.name,
-                    mime: copied[index]?.mime,
+                    mime: refineMime(copied[index]?.mime, item.name),
                     size: copied[index]?.size,
                     digest: copied[index]?.digest,
                     validation: acceptedValidation,
@@ -653,6 +653,20 @@ function detectMime(sample: Uint8Array): Artifact.MimeType {
   }
   if (isText(sample)) return decodeMimeType("text/plain")
   return decodeMimeType("application/octet-stream")
+}
+
+const ooxmlMimes: Record<string, string> = {
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+// Office deliverables are ZIP containers; the sniffed container type is narrowed by the
+// declared output name so consumers see the document type instead of application/zip.
+function refineMime(mime: Artifact.MimeType | undefined, name: Artifact.Name) {
+  if (mime !== "application/zip") return mime
+  const refined = ooxmlMimes[path.posix.extname(name).toLowerCase()]
+  return refined ? decodeMimeType(refined) : mime
 }
 
 function isText(sample: Uint8Array) {

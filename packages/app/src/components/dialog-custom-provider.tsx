@@ -300,6 +300,7 @@ export function CustomProviderForm(props: { autofocus?: boolean } = {}) {
       await serverSync().updateConfig({
         disabled_providers: disabledProviders.filter((id) => id !== profile.id),
       })
+      await serverSync().refreshProviders()
       return result
     },
     onSuccess: (result) => {

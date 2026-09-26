@@ -5,6 +5,33 @@ industrial work. It is based on an independent import of OpenCode Desktop
 `v1.18.31` at upstream commit
 `014614d35b397775e5d397a490fc72368c894ec2`.
 
+## State rebrand from opencode to koala
+
+As part of the Koala-only conversion, all local state written by Desktop and its embedded sidecar was moved from opencode-named directories/files to koala-named ones. The project-level `.opencode` directory and `opencode.json`/`opencode.jsonc` filenames are deliberately retained as a compatibility contract with existing repositories and tooling.
+
+### What changed
+
+- Core XDG root (`packages/core/src/global.ts`) is now `koala`, so platform data/config/state/cache/tmp directories become `~/.local/share/koala`, `~/.config/koala`, `~/.local/state/koala`, `~/.cache/koala`, `/tmp/koala` (and equivalent on Windows/macOS when the sidecar is not running under Desktop).
+- Default database (`packages/core/src/database/database.ts`) is now `koala.db` / `koala-<channel>.db`.
+- Default log file (`packages/core/src/observability/logging.ts`) is now `koala.log`.
+- Electron Desktop app IDs (`packages/desktop/src/main/index.ts`) changed to `ai.koala.desktop.dev`, `ai.koala.desktop.beta`, and `ai.koala.desktop`, which puts `userData` under e.g. `%AppData%\ai.koala.desktop.dev`.
+- Desktop persisted store stems (`packages/desktop/src/main/store-keys.ts`, `store-cleanup.ts`, `windows.ts`, `install-state.ts`, `updater.ts`, `logging.ts`) changed from `opencode.*` to `koala.*`, or from `opencode-updater` to `koala-updater`.
+- App renderer storage keys (`packages/app/src/utils/persist.ts`, `entry.tsx`, `context/language.tsx`) changed from `opencode.*` to `koala.*`.
+- Desktop renderer locale/last-url keys (`packages/desktop/src/renderer/index.tsx`, `renderer/i18n/index.ts`) changed to `koala.global.dat` and `koala.desktop.window.*`.
+- Electron-builder artifact/package names (`packages/desktop/electron-builder.config.ts`) changed to `koala-desktop-${os}-${arch}` and Linux rpm/deb package names `koala`, `koala-dev`, `koala-beta`.
+- Bundled CLI binary copy (`packages/desktop/scripts/utils.ts`, `background-cli.ts`, `.gitignore`) is renamed to `resources/koala-cli`.
+- Linux legacy launcher content (`packages/desktop/resources/linux/opencode-desktop.desktop`) updated to point to `ai.koala.desktop`.
+- Managed MDM/system config directory (`packages/opencode/src/config/managed.ts`) moved to `/Library/Application Support/koala`, `%ProgramData%\koala`, `/etc/koala`.
+- Nix installed icon/metainfo paths (`nix/desktop.nix`) updated to `ai.koala.desktop`.
+- Web troubleshooting docs and E2E tests were updated to reference `koala.global.dat`, `koala.window.browser.dat`, and `koala.settings.dat`.
+
+### What was left unchanged (deliberately)
+
+- Project-level `.opencode` directories and `opencode.json`/`opencode.jsonc` files remain as a public workspace config contract.
+- The global config file name defaults (`~/.config/koala/opencode.jsonc`) remain opencode-named for now because a large number of test fixtures and documentation depend on them.
+- Internal identifiers such as the `opencode://` URL protocol, the `opencode` BasicAuth service username, environment variable names, the `@opencode-ai/*` package scope, and the source npm package `opencode2` still contain `opencode`. These are identifiers, not file paths.
+- CI workflow artifacts and the Nix install prefix still reference opencode in places; they affect build packaging rather than runtime user state.
+
 ## Product Decisions
 
 - Keep OpenCode Desktop's layout and interaction model initially.
@@ -756,6 +783,113 @@ Phase 7 review-remediation verification completed on 2026-09-21:
 - `.github/workflows/publish.yml` parsed successfully with the locally installed
   Python YAML parser.
 
+Milestone 1 of Koala Phase 10 is implemented. The document-runtime protocol gained a `read-pdf` initial request and a streaming `pdf-info` terminal event. The worker now runs a pure-JS PDF text/metadata reader using the bundled `pdfjs-dist`, extracting page count, document metadata, page boxes/rotation, and text blocks while enforcing requested input-byte and page limits. The OpenCode `DocumentRuntime` service exposes a typed `readPdf(input)` method that stages the file, drives the proxy, collects the streamed JSON output, verifies size/digest, and parses the result.
+
+Files added:
+
+- `packages/document-runtime/src/read/pdf.ts`
+- `packages/document-runtime/src/read/index.ts`
+- `packages/document-runtime/test/read.test.ts`
+
+Files modified:
+
+- `packages/koala/src/document-runtime/protocol.ts` — `ReadPdfRequest`, `PdfInfoEvent`, `"read-pdf"` operation, `"pdf-text"` output frame, order/output state-machine wiring, new failure code.
+- `packages/document-runtime/src/index.ts` — export read module.
+- `packages/document-runtime/src/worker.ts` — `read-pdf` dispatch and `executeReadPdf`.
+- `packages/opencode/src/document/runtime.ts` — `ReadPdfInput`, `ReadPdfResult`, `readPdf`, `pdfWorker`.
+
+Verification completed on 2026-09-22:
+
+- `packages/koala`: `bun typecheck` passed.
+- `packages/document-runtime`: `bun typecheck` passed; full suite 88 passed, 2 skipped, 0 failed.
+- `packages/opencode`: `bun typecheck` passed; focused `test/document` suite 179 passed, 1 skipped, 0 failed.
+- The broader `packages/opencode` full test run timed out and showed pre-existing unrelated failures in `project/vcs.test.ts` (carriage-return diff parsing) and `provider/cf-ai-gateway-e2e.test.ts` (unsupported provider).
+
+Milestone 2 of Koala Phase 11 is implemented. The document-runtime side of DOCX generation and validation is wired end to end. `docx@9.7.1` is added to `packages/document-runtime`, locked in `source-lock.json`, bundled into the worker, and captured in the manifest component/dependency/license inventory. Koala owns `DocumentGenerate.DocxCreate` input/result schemas. The runtime protocol adds `create-docx` initial requests, `docx-ready` terminal events, an `awaiting-docx`/`awaiting-completed` order phase, a `docx-output` output frame, and the `docx-generation-failed` failure code. The worker generates a DOCX from a JSON content description using the `docx` library, validates the OPC package with `jszip` and `mammoth` (structural checks, macro/external-link rejection, compression ratio), streams `generate/output.docx`, then emits `docx-ready` and `completed`. OpenCode `DocumentRuntime.createDocx` writes the content JSON, drives the proxy, collects the binary output, and returns the absolute path and bytes. One-shot result events (`office-ready`, `docx-ready`, `pdf-info`) now advance the order to `awaiting-completed` so the subsequent `completed` event is accepted.
+
+Files added:
+
+- `packages/koala/src/document/generate.ts`
+- `packages/document-runtime/src/generate/docx.ts`
+- `packages/document-runtime/src/validation/ooxml.ts`
+- `packages/document-runtime/test/generate-docx.test.ts`
+- `packages/opencode/test/document/runtime-create-docx.test.ts`
+
+Files modified:
+
+- `packages/document-runtime/package.json` — `docx@9.7.1` dependency.
+- `packages/document-runtime/source-lock.json` — docx integrity.
+- `packages/document-runtime/script/build.ts` — `docx` in `officePackages`; fallback `packageRoot` for packages that do not export `package.json`.
+- `THIRD_PARTY_NOTICES.md` — MIT notice for docx.
+- `packages/koala/src/index.ts` — export `DocumentGenerate`.
+- `packages/koala/src/document-runtime/protocol.ts` — `CreateDocxRequest`, `DocxReadyEvent`, `Operation`, `FailureCode`, order/output state-machine wiring, `OutputSourcePath`, `DocxOutputStart`.
+- `packages/document-runtime/src/index.ts` — export generate/validation helpers.
+- `packages/document-runtime/src/worker.ts` — `create-docx` dispatch, `executeCreateDocx`.
+- `packages/opencode/src/document/runtime.ts` — `CreateDocxInput`, `CreateDocxResult`, `createDocx`, `docxWorker`, request timeout branch.
+
+Verification completed on 2026-09-22:
+
+- `packages/koala`: `bun typecheck` passed; full suite 598 passed.
+- `packages/document-runtime`: `bun typecheck` passed; full suite 90 passed, 2 skipped, 0 failed; build emitted the Windows x64 artifact with docx component, dependency, and license file.
+- `packages/opencode`: `bun typecheck` passed; focused `test/document` suite 182 passed, 1 skipped, 0 failed.
+- `bun.lock` reflects `docx@9.7.1` with integrity `sha512-ilXFf9Moz47ABjFpDiA5s1w9lpb4EFSp7+5iiJSbfyYDM+bpZdAgLlSr7fW4aXhVe/E+F6QCv0EvRVFEd5CsWg==`.
+
+Local model tool-calling is corrected for small/quantized OpenAI-compatible endpoints. The fallback system prompt pushed every unknown model toward the `task` tool for file searches, and the `task` tool exposed subagent names (`general`, `explore`, etc.) as free-form strings. Local Gemma-family models confused those names with tool names and emitted invalid `general`/`explore` tool calls. Fixes:
+
+- Added `packages/opencode/src/session/prompt/gemma.txt` with a terse local-model system prompt that explicitly states agent names are not tools and that simple file operations should use direct tools.
+- Updated `packages/opencode/src/session/system.ts` to route model IDs containing `gemma` to the new prompt.
+- Updated `packages/opencode/src/session/prompt/default.txt` to prefer direct `read`/`glob`/`grep`/`edit` tools for simple file work instead of delegating through `task`.
+- Updated `packages/opencode/src/tool/task.txt` to clarify that agent names are values for `subagent_type`, not tools.
+- Updated `packages/opencode/src/tool/registry.ts` to inject an `enum` of currently allowed subagent names into the `task` tool's JSON schema, giving the model a closed list instead of an unconstrained string.
+- Added `packages/opencode/test/session/system.test.ts` coverage for Gemma prompt selection.
+
+Verification completed on 2026-09-23:
+
+- `packages/opencode`: `bun typecheck` passed.
+- `packages/core`: `bun typecheck` passed.
+- `packages/app`: `bun typecheck` passed.
+- `packages/opencode/test/session/system.test.ts`: 7 passed.
+- `packages/opencode/test/tool/task.test.ts` and `packages/opencode/test/tool/registry.test.ts`: 41 passed.
+
+All shipped system, tool, command-template, and agent prompts were rebanded from
+OpenCode to Koala and stripped of upstream GitHub, public-web, and cloud-model
+references while preserving behavioral meaning. Updated files include every
+`.txt` prompt under `packages/opencode/src/session/prompt/`,
+`packages/opencode/src/tool/`, and `packages/opencode/src/command/template/`.
+The `opencode.json` / `opencode.jsonc` filenames remain as the workspace
+compatibility contract, but surrounding copy now refers to "project config".
+A tool-visibility audit confirmed that OpenCode's existing tools are still
+registered; the UI shows a truncated/filtered view because of deliberate
+filters for sandbox execution mode, document-runtime availability, provider
+web-search gating, model-specific patch handling, and experimental flags.
+
+Commit: `refactor(opencode/prompts): rebrand shipped prompts for Koala and tighten local-model tool calls`
+
+Verification completed on 2026-09-23:
+
+- `packages/opencode`: `bun typecheck` passed.
+- `packages/opencode/test/session/system.test.ts`, `test/tool/task.test.ts`, `test/tool/registry.test.ts`: 48 passed, 0 failed.
+
+A follow-up investigation was run because Gemma still looped with
+"Please provide a task" and emitted unrelated `task` subagent descriptions.
+Two rounds of `explore`/`general` subagents confirmed the user's latest message
+and the read-tool result are present in the second-turn `@ai-sdk/openai-compatible`
+request, so the issue is not dropped tool results. The echoed phrases are not
+hard-coded; they appear to come from the concrete `<example>` blocks in
+`default.txt` and `trinity.txt` and from the task tool asking for a
+"highly detailed task description". The minimal prompt fix was:
+
+- Anchor `gemma.txt` to respond to the current request and continue after tool results.
+- Remove the `<example>` blocks from `default.txt` and `trinity.txt`.
+- Soften `task.txt` to ask for a "clear, specific task description".
+
+Commit: `fix(opencode/prompts): anchor Gemma prompt and remove example templates that local models echo`
+
+Verification completed on 2026-09-23:
+
+- `packages/opencode`: `bun typecheck` passed.
+- `packages/opencode/test/session/system.test.ts`, `test/tool/task.test.ts`, `test/tool/registry.test.ts`: 48 passed, 0 failed.
+
 ## Upstream OpenCode Session Runtime
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.
@@ -1009,6 +1143,547 @@ Verification:
   pending-root path and digest, matching the existing `page-ready`/`ocr-result`
   handoff and preventing the parent from opening a sandbox-writable path.
 
+## Milestone 1 — Koala Phase 10 browser-safe document schemas
+
+Implemented the browser-safe document schema foundation for Phase 10:
+
+- Added `packages/koala/src/document/engine.ts` with decoded `IndustrialTool.Engine`
+  identities for `PdfReadEngine`, `OcrEngine`, `OfficeReadEngine`, and
+  `VisionEngine`.
+- Added `packages/koala/src/document/normalized.ts` with Effect schemas for
+  normalized document content: `OcrWord`, `OcrLine`, `PageTextBlock`,
+  `PageTextBlock`, `ImageRegion`, `VisualObservation`, `Page`, `Section`,
+  `DocumentMetadata`, and `NormalizedDocument`. Coordinates are normalized 0-1;
+  absolute dimensions live in `Page.dimensions`.
+- Added `packages/koala/src/document/tool.ts` with `PdfRead`, `OcrExtract`,
+  `VisionAnalyze`, and `DocumentExtract` input/result pairs. Result schemas use
+  `IndustrialResult.make` to produce the checked success/error/cancelled/timeout
+  union envelopes.
+- Added `packages/koala/src/document/normalized.test.ts` and
+  `packages/koala/src/document/tool.test.ts` covering round-trips, invalid
+  locators, out-of-range coordinates, inconsistent result states, mismatched tool
+  names, and bounded collections.
+- Re-exported each module with its namespace (`DocumentEngine`,
+  `DocumentNormalized`, `DocumentTool`) and added them to
+  `packages/koala/src/index.ts`.
+- Added `"./document/*"` to `packages/koala/package.json` exports.
+
+Verification:
+
+- `packages/koala`: `bun test` passed (598 tests).
+- `packages/koala`: `bun typecheck` shows two pre-existing errors in
+  `src/document-runtime/protocol.ts` unrelated to these changes; the new document
+  modules typecheck cleanly.
+
 ## Flagged ambiguities
 
 - Legacy `experimental.chat.system.transform` can mutate the assembled baseline system prompt arbitrarily, but V2 plugins do not yet expose an equivalent hook. Decide separately whether to port it, replace dynamic uses with plugin-defined **Context Sources**, or narrow its semantics.
+
+## Session Update — 2026-09-22
+
+Refactored Koala Phase 10 Office readers and registered the new document tools:
+
+- `packages/opencode/src/tool/office.ts` now defines `docx_read`, `pptx_read`, and
+  `spreadsheet_read` through `IndustrialExecution.execute`, resolving sources via
+  `ArtifactInput.Service`, invoking `DocumentRuntime.readOffice`, and returning
+  typed industrial results with the existing friendly markdown preserved as the
+  result summary.
+- Added `packages/opencode/src/tool/document-common.ts` with shared schema
+  helpers (`SourceInput`, `OfficeReadData`, result-schema factory), provenance and
+  artifact-reference builders, runtime-error mapping, and normalized-document/OCR
+  mapping helpers.
+- Added Phase 10 tool adapters in `packages/opencode/src/tool/pdf-read.ts`,
+  `ocr-extract.ts`, `vision-analyze.ts`, and `document-extract.ts`. Each wraps
+  `IndustrialExecution.execute` with the matching `DocumentTool.*` schema and
+  `DocumentRuntime` operation.
+- Updated `packages/opencode/src/tool/registry.ts` to import the adapters and
+  gate all document tools on `DocumentRuntime.availability()` or
+  `process.env.KOALA_ENABLE_DOCUMENT_TOOLS === "1"`. Added `ArtifactInput.node` to
+  the registry's dependencies. Document tools remain visible under
+  `agentExecution === "sandbox"`.
+- Added tests:
+  - `packages/opencode/test/tool/office.test.ts` verifies Office reader execution
+    and runtime-error mapping with mocked services.
+  - `packages/opencode/test/tool/tool-registry-document.test.ts` verifies document
+    tools are hidden when the runtime is unavailable and the env flag is unset,
+    appear when the env flag is set, and remain visible under sandbox execution.
+
+Verification:
+
+- `packages/opencode`: `bun typecheck` passed.
+- `packages/opencode`: targeted tests for Office readers and document-tool
+  registry passed (6 tests).
+
+## Session Update — 2026-09-22
+
+Completed the Koala Phase 10 document/vision tool adapters and focused tests:
+
+- Implemented/rewrote adapters to satisfy `IndustrialExecution.execute` contract:
+  - `packages/opencode/src/tool/pdf-read.ts` — `pdf_read` using `DocumentRuntime.readPdf`.
+  - `packages/opencode/src/tool/ocr-extract.ts` — `ocr_extract` using direct
+    `DocumentRuntime.ocr` for explicit pages/images and `renderAndOcr` for PDF ranges.
+  - `packages/opencode/src/tool/vision-analyze.ts` — `vision_analyze` using model
+    routing, `ModelEndpointClient`, and parsed JSON observations.
+  - `packages/opencode/src/tool/document-extract.ts` — `document_extract`
+    normalizing PDF, image, office, and text sources through `DocumentRuntime`.
+- Fixed `packages/opencode/src/tool/document-common.ts` to omit `undefined`
+  optional metadata fields so decoded results satisfy
+  `DocumentNormalized.DocumentMetadata` and avoid `optionalKey` decode failures.
+- Updated `packages/opencode/src/tool/registry.ts` to add `ModelProfileStore` and
+  `ModelEndpointClient` dependencies for `vision_analyze`.
+- Added focused adapter tests:
+  - `packages/opencode/test/tool/pdf-read.test.ts`
+  - `packages/opencode/test/tool/ocr-extract.test.ts`
+  - `packages/opencode/test/tool/document-extract.test.ts`
+  - `packages/opencode/test/tool/vision-analyze.test.ts`
+- Reworked `packages/opencode/test/tool/document-tool-fixture.ts` to provide the
+  `ArtifactStore.Service` mock through `LayerNode.compile` replacement of
+  `ArtifactStoreLive.node`, satisfying Industrial Execution's same-session
+  artifact authentication in tests.
+
+Verification:
+
+- `packages/opencode`: `bun run typecheck` passed.
+- `packages/opencode`: targeted document-tool tests passed (8 tests: 5 adapter + 3 registry).
+
+## Koala Phase 10 Milestone 1 completion
+
+- PDF `read-pdf`, OCR, vision analysis, and `document_extract` tool adapters are
+  implemented in `packages/opencode/src/tool/`. The Office readers were
+  refactored through `IndustrialExecution.execute` and `ArtifactInput.Service`.
+- `vision_analyze` now retrieves `Auth` credentials and sends
+  `Authorization: Bearer <key>` when the stored credential is `type: "api"`.
+- Document tools are gated in `ToolRegistry` on `DocumentRuntime.availability()`
+  or the `KOALA_ENABLE_DOCUMENT_TOOLS=1` environment override.
+- Structured JSON artifacts and citations are produced; large results are
+  promoted as JSON artifacts via `ArtifactStore.promoteBatch`.
+
+Verification completed on 2026-09-22:
+
+- `packages/koala`: `bun typecheck` passed; 598 tests passed.
+- `packages/document-runtime`: `bun typecheck` passed; 88 passed, 2 skipped.
+- `packages/opencode`: `bun typecheck` passed; `bun test test/document` 179
+  passed, 1 skipped; targeted document-tool tests 11 passed.
+- `packages/desktop`: `bun typecheck` passed; production build passed.
+- `packages/core`: `bun typecheck` passed.
+- The broader `packages/core` full test suite timed out on unrelated external
+  network activity in `test/skill-discovery.test.ts`.
+
+## Koala Phase 11 Milestone 2 completion
+
+- Updated `packages/koala/src/document/generate.ts` so `DocxCreate.Result` returns
+  an `artifact: Artifact.Reference` instead of a host `path`.
+- Added `DocumentEngine.DocxCreateEngine` (`docx-writer` v1) in
+  `packages/koala/src/document/engine.ts`.
+- Implemented the `docx_create` tool adapter in
+  `packages/opencode/src/tool/docx-create.ts`. It drives
+  `IndustrialExecution.execute`, writes generated DOCX bytes to a staged artifact,
+  runs OOXML validation via `validateOoxmlDocx`, and promotes the output through
+  `ArtifactStore.promoteBatch`.
+- Registered `DocxCreateTool` in `packages/opencode/src/tool/registry.ts`;
+  `docx_create` is gated with the other document tools and appears under the
+  `KOALA_ENABLE_DOCUMENT_TOOLS=1` override.
+- Added `packages/opencode/test/tool/docx-create.test.ts` and updated
+  `packages/opencode/test/tool/tool-registry-document.test.ts`.
+- Fixed a type-narrowing issue in the pre-existing
+  `packages/opencode/test/document/runtime-create-docx.test.ts` so the document
+  test file typechecks.
+
+Verification completed on 2026-09-22:
+
+- `packages/koala`: `bun run typecheck` passed.
+- `packages/opencode`: `bun run typecheck` passed.
+- `packages/opencode`: `bun test test/tool/docx-create.test.ts
+test/tool/tool-registry-document.test.ts --timeout 30000` passed (5 tests).
+- `packages/opencode`: `bun test test/document --timeout 30000` passed (182
+  passed, 1 skipped).
+
+## Koala Phase 11 artifact validation
+
+- Added `packages/koala/src/document/validation.ts` with `ArtifactValidate` input and
+  result schemas, plus a `DocumentEngine.ValidationEngine` identity in
+  `packages/koala/src/document/engine.ts`.
+- Added `packages/opencode/src/tool/artifact-validate.ts` implementing
+  `artifact_validate`. It resolves an artifact/path input, reads the snapshot
+  bytes, and runs the existing OOXML validator (`validateOoxmlDocx` from
+  `@koala-ai/document-runtime`) directly inside the industrial-execution
+  operation. The tool records the validation result and writes a durable
+  `koala_tool_audit` row.
+- Registered `ArtifactValidateTool` in `packages/opencode/src/tool/registry.ts` so
+  `artifact_validate` is gated alongside the other document tools.
+- Added `packages/opencode/test/tool/artifact-validate.test.ts` covering valid
+  DOCX and invalid content paths.
+
+Verification completed on 2026-09-22:
+
+- `packages/koala`: `bun run typecheck` passed.
+- `packages/document-runtime`: `bun run typecheck` passed; 90 passed, 2 skipped.
+- `packages/document-runtime`: `bun run build` passed; manifest includes the
+  `docx` component, dependency, and `licenses/docx-LICENSE`.
+- `packages/opencode`: `bun run typecheck` passed.
+- `packages/opencode`: `bun run script/build-node.ts` passed.
+- `packages/opencode`: `bun test test/document --timeout 30000` passed (182
+  passed, 1 skipped).
+- `packages/opencode`: targeted document-tool tests passed (15 tests across
+  `artifact-validate`, `docx-create`, `pdf-read`, `ocr-extract`, `vision-analyze`,
+  `document-extract`, `office`, and `tool-registry-document`).
+- `packages/desktop`: `bun run typecheck` passed.
+
+## Koala Phase 12 Milestone 3: knowledge-base schema
+
+- Added `packages/core/src/knowledge/sql.ts` with Drizzle definitions for the
+  inverted-index fallback knowledge-base tables:
+  - `koala_knowledge_entry` (FKs: `session(id)`, `koala_artifact(id)`);
+  - `koala_knowledge_term` (composite PK on `(term, entry_id)`, FK:
+    `koala_knowledge_entry(id)`).
+- Generated migration `20260922025546_koala_knowledge_base` under
+  `packages/core/src/database/migration/`.
+- Regenerated `packages/core/src/database/schema.gen.ts`,
+  `packages/core/src/database/migration.gen.ts`, and
+  `packages/core/schema.json`.
+
+Milestone 3 of Koala Phase 12 is implemented. Koala owns browser-safe `Knowledge` tool contracts (`knowledge_ingest`, `knowledge_search`, `knowledge_open`), including a branded `KnowledgeEntryID`, typed inputs, and industrial result envelopes. `DocumentEngine.KnowledgeEngine` identifies the `local-knowledge-store` engine. OpenCode provides a process-global `KnowledgeStore` service backed by the migrated `koala_knowledge_entry` and `koala_knowledge_term` tables: it chunks text (respecting newline boundaries and a 1000-character limit, with a `NormalizedDocument` path), tokenizes on lowercase alphanumeric tokens with a minimal English stop-word set, persists entries and per-entry term frequencies, and supports ranked boolean search by exact term overlap. The three knowledge tool adapters (`knowledge_ingest`, `knowledge_search`, `knowledge_open`) go through the shared `IndustrialExecution` boundary, request the correct permissions, resolve source artifacts through `ArtifactInput`, and return correlated result envelopes. The tool registry now yields all three tools and includes them in the built-in set unconditionally.
+
+Files added:
+
+- `packages/koala/src/knowledge/tool.ts`
+- `packages/koala/src/document/engine.ts` ( KnowledgeEngine line)
+- `packages/opencode/src/koala/knowledge-store.ts`
+- `packages/opencode/src/tool/knowledge-ingest.ts`
+- `packages/opencode/src/tool/knowledge-search.ts`
+- `packages/opencode/src/tool/knowledge-open.ts`
+- `packages/opencode/test/koala/knowledge-store.test.ts`
+- `packages/opencode/test/tool/knowledge-fixture.ts`
+- `packages/opencode/test/tool/knowledge-ingest.test.ts`
+- `packages/opencode/test/tool/knowledge-search.test.ts`
+- `packages/opencode/test/tool/knowledge-open.test.ts`
+
+Files modified:
+
+- `packages/koala/package.json` — added `./knowledge/*` export.
+- `packages/koala/src/index.ts` — exported `Knowledge` namespace.
+- `packages/koala/src/document/engine.ts` — added `KnowledgeEngine` constant.
+- `packages/opencode/src/tool/registry.ts` — imported, yielded, initialized, registered, and added `KnowledgeStore.node` dependency for the three knowledge tools.
+
+Verification completed on 2026-09-22:
+
+- `packages/koala`: `bun run typecheck` passed.
+- `packages/opencode`: `bun run typecheck` passed.
+- `packages/opencode`: focused knowledge tests passed:
+  - `test/koala/knowledge-store.test.ts`: 3 passed.
+  - `test/tool/knowledge-ingest.test.ts`: 1 passed.
+  - `test/tool/knowledge-search.test.ts`: 1 passed.
+  - `test/tool/knowledge-open.test.ts`: 2 passed.
+- `packages/opencode`: `bun test test/document --timeout 30000` returned 182 passed, 1 skipped, 0 failed.
+- `packages/opencode`: `bun run script/build-node.ts` completed successfully.
+
+## Final verification — Koala Phases 10-12
+
+Combined verification completed on 2026-09-22 after Milestones 1–3:
+
+- `packages/koala`: `bun run typecheck` passed.
+- `packages/document-runtime`: `bun run typecheck` passed; 90 passed, 2 skipped.
+- `packages/document-runtime`: `bun run build` passed; manifest includes `docx`
+  component/dependency and `licenses/docx-LICENSE`.
+- `packages/core`: `bun run typecheck` passed; `bun run migration --check` passed.
+- `packages/opencode`: `bun run typecheck` passed.
+- `packages/opencode`: `bun test test/document --timeout 30000` passed (182 passed,
+  1 skipped, 0 failed).
+- `packages/opencode`: targeted tool tests passed (19 tests across
+  `artifact-validate`, `docx-create`, `pdf-read`, `ocr-extract`, `vision-analyze`,
+  `document-extract`, `office`, `tool-registry-document`, `knowledge-ingest`,
+  `knowledge-search`, and `knowledge-open`).
+- `packages/opencode`: `bun run script/build-node.ts` passed.
+- `packages/desktop`: `bun run typecheck` passed.
+
+One unrelated `packages/core` effect-flock stress test has intermittent failures
+under process contention; it is not caused by the document, office, or knowledge
+changes.
+
+## Commit / push
+
+- Created `.subagent/phase-10-document-pipeline.md`,
+  `.subagent/phase-11-docx-generation.md`, and `.subagent/phase-12-knowledge-base.md`
+  to record what each phase's subagents did.
+- Fixed `packages/enterprise/src/custom-elements.d.ts`: replaced a stale symlink
+  path with a proper `/// <reference path="..." />` directive so the Husky pre-push
+  `turbo typecheck` hook can pass on Windows.
+- Committed everything as `phase-10-11-12`:
+  `feat(koala,opencode,core): implement Phases 10-12 document, docx, and knowledge tools`.
+- Pushed to `origin/phase-10-11-12`:
+  https://github.com/DurveshN/koala/pull/new/phase-10-11-12
+
+## Rebrand: OpenCode → Koala
+
+After the user updated the desktop icon, the app still showed the old
+`OpenCode` name in the window title, HTML title, app menu, updater dialogs,
+favicon meta, theme picker, and electron-builder product metadata. The
+following changes rebrand the visible product surface to **Koala** while
+keeping internal identifiers (app IDs, URL schemes, package scopes, class
+names) unchanged to avoid breaking protocols and deeplinks.
+
+### Files changed
+
+- `packages/desktop/src/main/windows.ts` — main window title `Koala`.
+- `packages/desktop/src/renderer/index.html` — page title `Koala`.
+- `packages/desktop/src/main/index.ts` — `APP_NAMES` and dev fallback to
+  `Koala Dev` / `Koala Beta` / `Koala`.
+- `packages/desktop/electron-builder.config.ts` — `productName` and protocol
+  `name` for dev/beta/prod channels.
+- `packages/desktop/scripts/copy-metainfo.ts` — generated Linux metainfo
+  product name.
+- `packages/desktop/resources/linux/opencode-desktop.desktop` — legacy hidden
+  entry name and `/opt/Koala/` install path.
+- `packages/app/src/components/windows-app-menu.tsx` — Windows app menu
+  heading.
+- `packages/ui/src/components/favicon.tsx` — `apple-mobile-web-app-title`.
+- `packages/ui/src/theme/context.tsx` — display label for the built-in
+  `opencode` theme.
+- `packages/ui/src/context/marked-theme.tsx` and
+  `marked-theme-register.tsx` — editor theme display name.
+- `packages/desktop/src/renderer/i18n/*.ts` — updater strings in all supported
+  locales (`OpenCode` → `Koala`).
+- `packages/desktop/electron-builder.config.test.ts` — updated Linux legacy
+  entry expectation to match `/opt/Koala/`.
+
+### Verification
+
+- `bun turbo typecheck` — 32/32 packages passed.
+- `bun test ./electron-builder.config.test.ts --timeout 30000` from
+  `packages/desktop` — 12 passed.
+- `bun --cwd packages/desktop dev` launched successfully; predev copied the new
+  icons (`Copied dev icons from ./icons/dev to resources/icons`) and the app
+  started without main-process JS errors.
+
+The EPERM errors seen after launch are unrelated to the rebrand; they came
+from a concurrent Electron process holding the `%AppData%\ai.opencode.desktop.dev`
+store files.
+
+## Local desktop startup
+
+Command:
+
+```bash
+bun --cwd packages/desktop dev
+```
+
+(also available as `bun dev:desktop` from the repo root).
+
+Before launching, this runs the desktop `predev` script, which:
+
+- copies dev icons,
+- rebuilds `packages/opencode` Node output,
+- runs `bun run build` in `packages/document-runtime`,
+- downloads the matching native `opencode-cli` binary to `resources/opencode-cli.exe`.
+
+Several source files were incompatible with Node's TypeScript type-stripping
+mode that Electron main process uses when loading workspace `.ts` files
+directly. Fixes applied:
+
+- `packages/document-runtime/src/error.ts`, `src/manifest.ts`,
+  `src/transport.ts` — removed TypeScript parameter properties.
+- `packages/koala/src/document-runtime/ndjson.ts` — removed parameter property.
+- Added explicit `.ts` extensions to relative imports in
+  `packages/koala/src/document-runtime/*.ts` and
+  `packages/document-runtime/src/**/*.ts`.
+- `packages/desktop/tsconfig.json` — added `allowImportingTsExtensions: true`
+  so `.ts` import extensions typecheck under `tsgo -b`.
+
+After these fixes, `bun --cwd packages/desktop dev` launched successfully:
+the Electron window opened, the sidecar started on a local port, the backend
+reported `server ready`, and first-launch onboarding completed. The command
+was left running during verification.
+
+## Rebrand follow-up: Koala wordmark, remaining visible OpenCode strings, and startup speed
+
+The desktop startup and new-session background still showed the old `opencode`
+wordmark, and several visible product strings still used `OpenCode`. Some of the
+rebranded favicon SVGs also became large base64-embedded PNGs that are fetched
+early in renderer startup, which added unnecessary decode/render work.
+
+### Files changed
+
+- `packages/ui/src/v2/components/wordmark-v2.tsx` — replaced the heavy
+  geometric `opencode` wordmark with a lightweight text-based `Koala`
+  wordmark. This removes the slow vector-geometry background from the new
+  session view.
+- `packages/ui/src/components/logo.tsx` — replaced the geometric `opencode`
+  wordmark with a lightweight text-based `Koala` wordmark (used by error pages,
+  legacy home, share pages, etc.).
+- `packages/app/index.html` — changed page title to `Koala` and removed the
+  `favicon-v3.svg` link to avoid loading the heavy base64 SVG on startup.
+- `packages/desktop/src/renderer/index.html` — removed the `favicon-v3.svg`
+  link for the same reason.
+- `packages/ui/src/assets/favicon/site.webmanifest` — `name`/`short_name`
+  changed to `Koala`.
+- `packages/ui/src/theme/themes/opencode.json` and
+  `packages/ui/src/theme/desktop-theme.schema.json` — visible theme name/label
+  updated to `Koala`.
+- `packages/ui/src/context/marked.tsx` and
+  `packages/ui/src/context/marked-parser.test.ts` — editor highlighter theme
+  references use `Koala` instead of `OpenCode`.
+- `packages/app/src/i18n/*.ts`, `packages/app/src/i18n/desktop-native.ts`,
+  and `packages/ui/src/i18n/*.ts` — remaining visible `OpenCode` product strings
+  changed to `Koala`. CLI command references (e.g. `'opencode'`) were left
+  unchanged because the binary name has not changed.
+- `packages/app/src/components/dialog-select-model-unpaid-v2.stories.tsx`,
+  `packages/ui/src/components/logo.stories.tsx` — story provider/title names
+  updated to `Koala`.
+- `packages/desktop/src/main/wsl/servers.test.ts`,
+  `packages/desktop/src/main/install-state.test.ts`,
+  `packages/desktop/src/main/sandbox-runtime.test.ts`,
+  `packages/app/src/wsl/settings-model.test.ts` — test descriptions updated to
+  match the new product name.
+
+### Verification
+
+- `bun typecheck` from `packages/ui`, `packages/app`, and `packages/desktop` —
+  all passed.
+- `bun test src/context/marked-parser.test.ts` from `packages/ui` — 3 passed.
+- `bun test src/main/wsl/servers.test.ts` from `packages/desktop` — 12 passed.
+- `bun test src/wsl/settings-model.test.ts` from `packages/app` — 10 passed.
+- `bun test electron-builder.config.test.ts --timeout 30000` from
+  `packages/desktop` — 12 passed.
+
+## Rebrand / startup follow-up: Koala splash/mark icon and faster dev startup
+
+The loading splash and small logo mark still rendered the old geometric
+`opencode` glyph, and the dev startup remained slow because `predev` re-downloaded
+the ~184 MB native `opencode-cli` binary on every run.
+
+### Files changed
+
+- `packages/ui/src/components/logo.tsx` — replaced the geometric `Mark` and
+  `Splash` SVGs with the Koala favicon PNG, so the loading splash and other
+  logo marks no longer show the old `opencode` glyph.
+- `packages/ui/src/custom-elements.d.ts` — added a `*.png` module declaration so
+  the logo component can import the PNG asset with full type safety.
+- `packages/desktop/scripts/utils.ts` — `downloadCliToResources()` now writes a
+  `resources/opencode-cli.version` sidecar and skips re-downloading when the
+  correct CLI version is already present. This removes the repeated ~184 MB
+  network fetch during `bun --cwd packages/desktop dev` restarts.
+
+### Verification
+
+- `bun typecheck` from `packages/ui`, `packages/app`, and `packages/desktop` —
+  all passed.
+- `bun test src/context/marked-parser.test.ts` from `packages/ui` — 3 passed.
+
+## Rebrand / startup follow-up: reuse OpenCode logo structure, only swap icon asset
+
+A history trace from `5db73420828f73ed031932492af58e18f9e82f47` to `HEAD` showed:
+
+- `git show 3f79784566873f04891c644cfb49d1c00eabd3f8 -- packages/ui/src/components/logo.tsx`
+  produces no output; the rebrand commit did not touch the logo component.
+- The original `Mark`/`Splash` were inline SVGs; the first replacement switched them
+  to external `<img>` sources, which resolved badly under the desktop renderer's
+  `oc://renderer/` protocol and briefly flashed or stayed blank.
+
+To honor "reuse OpenCode code, just update the icon", `Mark`/`Splash` were
+restored to their original SVG component structure. Only the inner icon content
+changed: the two `<path>` elements were replaced with a single inline SVG
+`<image>` whose `href` is a base64 data URL of the Koala favicon PNG. Because the
+image data is embedded in the component, it paints synchronously with the SVG,
+matching the timing/visibility behavior of the original OpenCode mark.
+
+### Files changed
+
+- `packages/ui/src/components/logo.tsx` — `Mark` and `Splash` are SVGs again and
+  draw the Koala favicon via a synchronous base64 SVG `<image>`.
+- `packages/ui/src/components/logo-icon.ts` — removed.
+- `packages/ui/src/custom-elements.d.ts` — reverted the temporary `*.png` module
+  declaration because the component no longer imports a PNG file.
+
+### Verification
+
+- `bun typecheck` from `packages/ui`, `packages/app`, and `packages/desktop` —
+  all passed.
+- `bun test src/context/marked-parser.test.ts` from `packages/ui` — 3 passed.
+
+## Rebrand / startup follow-up: restore SVG favicon link in index.html
+
+The upstream `packages/desktop/src/renderer/index.html` (and the equivalent
+`packages/app/index.html`) both included a `<link rel="icon" type="image/svg+xml"
+href="./favicon-v3.svg" />` favicon link. That link had been removed during the
+favicon cleanup, which could leave the page/window favicon blank in clients that
+prefer the SVG declaration.
+
+### Files changed
+
+- `packages/desktop/src/renderer/index.html` — restored the SVG favicon link.
+- `packages/app/index.html` — restored the SVG favicon link.
+
+### Verification
+
+- `bun typecheck` from `packages/ui`, `packages/app`, and `packages/desktop` —
+  all passed.
+
+## Rebrand / startup follow-up: replace logo paths with Twemoji koala vector
+
+`packages/ui/src/components/logo.tsx` now keeps the original OpenCode SVG
+component structure for `Mark` and `Splash`. The old `opencode` geometric paths
+were replaced with real vector koala paths taken from Twemoji (`assets/svg/1f428.svg`,
+CC-BY 4.0), scaled to fit the existing `16×20` and `80×100` viewboxes. This is
+pure SVG, so it paints synchronously for the whole loading period and matches the
+koala emoji favicon.
+
+### Files changed
+
+- `packages/ui/src/components/logo.tsx` — `Mark` and `Splash` now draw a vector
+  koala using the original OpenCode SVG shell; `Logo` retains the `Koala` text
+  wordmark.
+
+### Verification
+
+- `bun typecheck` from `packages/ui`, `packages/app`, and `packages/desktop` —
+  all passed.
+- `bun test src/context/marked-parser.test.ts` from `packages/ui` — 3 passed.
+
+## Correction: prevent public model catalog from leaking into Koala model selector
+
+When opening a new session, the Desktop app still listed the public OpenCode/Anthropic/etc. models because the embedded sidecar loaded the public `models.dev` catalog from cache, bundled snapshot, or `models.opencode.ai`. Koala must only show user-configured local/private models.
+
+### Files changed
+
+- `packages/core/src/flag/flag.ts` — added `KOALA_DISABLE_MODELS_CATALOG` truthy environment flag.
+- `packages/core/src/models-dev.ts` — returns an empty catalog early when the flag is set, skipping disk cache, bundled snapshots, and remote fetches; the background catalog refresh fiber is also suppressed.
+- `packages/desktop/src/main/sidecar-env.ts` — sets `OPENCODE_DISABLE_MODELS_FETCH=1` and `KOALA_DISABLE_MODELS_CATALOG=1` for the sidecar.
+- `packages/desktop/src/main/sidecar-env.test.ts` — updated expected snapshots.
+
+### Verification
+
+- `bun typecheck` from `packages/core`, `packages/desktop`, `packages/opencode`, and `packages/app` — all passed.
+- `bun test test/models.test.ts` and `bun test test/plugin/models-dev.test.ts` from `packages/core` — 11 passed.
+- `bun test src/main/sidecar-env.test.ts` from `packages/desktop` — 3 passed.
+- `bun test test/server/httpapi-provider.test.ts` from `packages/opencode` — 5 passed, 1 skipped.
+
+[Inference] Existing cloud `provider`/`auth` config entries could still surface in the selector; those are a separate cleanup that depends on whether the install is fresh or migrating from an older OpenCode state.
+
+## Correction: local model form save not visible and roles click shows blank popup
+
+Two follow-up issues appeared after the public model catalog was removed:
+
+1. Clicking any "Preferred role" checkbox opened a blank popup.
+2. After submitting the local/private model form, the saved model/provider did not appear anywhere in the UI.
+
+### Root causes
+
+- The blank popup was caused by the shared `<Checkbox>` component: its visually hidden `<input>` is absolutely positioned, but the checkbox root had no `position: relative`, so it could anchor against the dialog container and render a stray focus/autofill popup.
+- The backend surfaced saved Koala profiles correctly through `GET /provider` (confirmed with a focused integration test), but the App's provider-list query was not reliably refetched after a profile mutation because the server only emits `global.disposed` and the existing `updateConfig` invalidation was not enough.
+- The Desktop sidecar also stored auth and profile files under platform XDG defaults (`%APPDATA%/opencodode` / `~/.local/share/opencode`) instead of Electron's `userData`, which made the files hard to locate and shared state with any existing OpenCode CLI install.
+
+### Files changed
+
+- `packages/ui/src/components/checkbox.css` — added `position: relative` to the checkbox root.
+- `packages/app/src/components/dialog-custom-provider.tsx` — added an explicit `serverSync().refreshProviders()` call after saving a profile so the list refreshes immediately.
+- `packages/desktop/src/main/sidecar-env.ts` — sets `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME` to Electron `userData` when a path is provided.
+- `packages/desktop/src/main/server.ts` — passes `userDataPath` to `createSidecarEnv`.
+- `packages/desktop/src/main/sidecar-env.test.ts` — added XDG isolation test.
+- `packages/opencode/test/server/httpapi-koala-provider.test.ts` — added backend visibility test.
+
+### Verification
+
+- `bun typecheck` passed for `packages/ui`, `packages/desktop`, and `packages/app`.
+- `packages/desktop/src/main/sidecar-env.test.ts` — 4 passed.
+- `packages/opencode/test/server/httpapi-koala-provider.test.ts` — 1 passed.
+- `packages/app/src/components/dialog-custom-provider.test.ts` — 63 passed.

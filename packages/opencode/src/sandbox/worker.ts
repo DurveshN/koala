@@ -88,6 +88,7 @@ export function strictConfig(
   request: SandboxProtocol.ExecutionRequest,
   platform: NodeJS.Platform,
   assets: SandboxAssets,
+  toolRoots: ReadonlyArray<string> = runtimeReadRoots(platform),
 ): SandboxRuntimeConfig {
   return SandboxRuntimeConfigSchema.parse({
     network: {
@@ -101,7 +102,7 @@ export function strictConfig(
     },
     filesystem: {
       denyRead: broadReadRoots(platform),
-      allowRead: [...new Set([...runtimeReadRoots(platform), ...request.readRoots])],
+      allowRead: [...new Set([...toolRoots, ...request.readRoots])],
       allowWrite: [...request.writeRoots],
       denyWrite: compatibilityWritePaths(platform),
       allowGitConfig: false,
@@ -116,16 +117,28 @@ export function strictConfig(
   })
 }
 
-export function runtimeReadRoots(platform: NodeJS.Platform, environment: NodeJS.ProcessEnv = process.env) {
+export function runtimeReadRoots(
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv = process.env,
+  isDirectory: (value: string) => boolean = directoryExists,
+) {
   if (platform === "win32") {
+    // Upstream turns every allowRead entry into an NTFS ACE written by this non-elevated
+    // process in one all-or-nothing `srt-win acl grant` batch. The srt-sandbox account is a
+    // BUILTIN\Users member, so %SystemRoot%, Program Files, and the Koala executable are
+    // already readable, and granting on them fails with ACCESS_DENIED and rolls back the
+    // whole batch. Only per-user tool directories need (and can receive) an explicit grant.
+    const profile = environment.USERPROFILE ? path.win32.resolve(environment.USERPROFILE) : undefined
+    if (!profile) return []
+
     return [
-      process.execPath,
-      environment.SYSTEMROOT,
-      environment.WINDIR,
-      ...(environment.PATH?.split(path.delimiter) ?? []),
+      ...new Set(
+        (environment.PATH?.split(path.win32.delimiter) ?? [])
+          .filter((entry) => entry.trim().length > 0)
+          .map((entry) => path.win32.resolve(entry))
+          .filter((entry) => strictlyInside(profile, entry) && isDirectory(entry)),
+      ),
     ]
-      .filter((value): value is string => Boolean(value))
-      .map((value) => path.resolve(value))
   }
   return [
     process.execPath,
@@ -138,6 +151,24 @@ export function runtimeReadRoots(platform: NodeJS.Platform, environment: NodeJS.
     "/dev/null",
     "/etc/ld.so.cache",
   ].filter(fs.existsSync)
+}
+
+function strictlyInside(root: string, value: string) {
+  const relation = path.win32.relative(root, value)
+  return (
+    relation !== "" &&
+    relation !== ".." &&
+    !relation.startsWith(`..${path.win32.sep}`) &&
+    !path.win32.isAbsolute(relation)
+  )
+}
+
+function directoryExists(value: string) {
+  try {
+    return fs.statSync(value).isDirectory()
+  } catch {
+    return false
+  }
 }
 
 export function compatibilityWritePaths(platform: NodeJS.Platform, environment: NodeJS.ProcessEnv = process.env) {
@@ -223,22 +254,18 @@ export async function availability(
   let status: SandboxProtocol.AvailabilityStatus = { status: "unavailable", reason: "initialization-failed" }
   try {
     const cwd = Schema.decodeUnknownSync(SandboxProtocol.AbsolutePath)(process.cwd())
-    await dependencies.manager.initialize(
-      strictConfig(
-        {
-          command: "availability-check",
-          cwd,
-          readRoots: [],
-          writeRoots: [],
-          env: {},
-          network: [],
-          timeoutMs: 1,
-          maxOutputBytes: 1,
-        },
-        dependencies.platform,
-        dependencies.assets,
-      ),
-      undefined,
+    await initializeSandbox(
+      dependencies,
+      {
+        command: "availability-check",
+        cwd,
+        readRoots: [],
+        writeRoots: [],
+        env: {},
+        network: [],
+        timeoutMs: 1,
+        maxOutputBytes: 1,
+      },
       false,
     )
     initialized = true
@@ -277,11 +304,7 @@ export async function execute(
   let executing = false
   let result: SandboxProtocol.WorkerResponse
   try {
-    await dependencies.manager.initialize(
-      strictConfig(request.request, dependencies.platform, dependencies.assets),
-      undefined,
-      true,
-    )
+    await initializeSandbox(dependencies, request.request, true)
     initialized = true
     if (!(await dependenciesStrict(dependencies.manager, dependencies.platform))) {
       result = failure(request.runID, "sandbox-unavailable")
@@ -487,9 +510,43 @@ function assetsAvailable(dependencies: Pick<WorkerDependencies, "assets" | "plat
   }
 }
 
+export async function initializeSandbox(
+  dependencies: Pick<WorkerDependencies, "manager" | "platform" | "assets">,
+  request: SandboxProtocol.ExecutionRequest,
+  enableLogMonitor: boolean,
+  toolRoots: ReadonlyArray<string> = runtimeReadRoots(dependencies.platform),
+) {
+  try {
+    await dependencies.manager.initialize(
+      strictConfig(request, dependencies.platform, dependencies.assets, toolRoots),
+      undefined,
+      enableLogMonitor,
+    )
+  } catch (error) {
+    report("sandbox initialization failed", error)
+    if (dependencies.platform !== "win32" || toolRoots.length === 0) throw error
+    // A single unwritable DACL rolls back the whole Windows grant batch and upstream clears its
+    // state before rethrowing, so retry with only the request roots. Fewer grants is stricter.
+    await dependencies.manager
+      .initialize(strictConfig(request, dependencies.platform, dependencies.assets, []), undefined, enableLogMonitor)
+      .catch((retryError: unknown) => {
+        report("sandbox initialization retry failed", retryError)
+        throw retryError
+      })
+  }
+}
+
+function report(context: string, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  process.stderr.write(`${context}: ${message.replace(/\s+/g, " ").slice(0, 2048)}\n`)
+}
+
 async function dependenciesStrict(manager: WorkerSandboxManager, platform: NodeJS.Platform) {
   const result = await manager.checkDependenciesAsync()
-  if (result.errors.length > 0) return false
+  if (result.errors.length > 0) {
+    report("sandbox dependencies missing", result.errors.join("; "))
+    return false
+  }
   return platform !== "linux" || !result.warnings?.some((warning) => warning.toLowerCase().includes("seccomp"))
 }
 

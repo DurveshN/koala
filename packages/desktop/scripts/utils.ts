@@ -71,8 +71,17 @@ export function getCurrentCli(target = RUST_TARGET ?? nativeTarget()) {
 
 export async function downloadCliToResources() {
   const cli = getCurrentCli()
-  const directory = await mkdtemp(join(tmpdir(), "opencode-cli-"))
-  const dest = windowsify("resources/opencode-cli")
+  const dest = windowsify("resources/koala-cli")
+  const versionFile = `${dest}.version`
+  const existingVersion = await Bun.file(versionFile)
+    .text()
+    .catch(() => "")
+  if (existingVersion.trim() === CLI_VERSION && (await Bun.file(dest).exists())) {
+    console.log(`CLI already present at ${dest} (${CLI_VERSION})`)
+    return
+  }
+
+  const directory = await mkdtemp(join(tmpdir(), "koala-cli-"))
   try {
     await $`bun install --no-save --cwd ${directory} ${`${cli.package}@${CLI_VERSION}`} ${`--os=${cli.os}`} ${`--cpu=${cli.cpu}`}`
     await copyFile(
@@ -87,6 +96,7 @@ export async function downloadCliToResources() {
     await $`pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File ../../script/sign-windows.ps1 ${dest}`
   }
   if (process.platform === "darwin") await $`codesign --force --sign - ${dest}`
+  await Bun.write(versionFile, `${CLI_VERSION}\n`)
 
   console.log(`Copied ${cli.package} to ${dest}`)
 }

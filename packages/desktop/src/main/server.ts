@@ -2,6 +2,7 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { app, utilityProcess } from "electron"
 import type { Details } from "electron"
+import { CHANNEL } from "./constants" 
 import { resolveDocumentRuntime } from "./document-runtime"
 import { getLogger } from "./logging"
 import { getUserShell, loadShellEnv } from "./shell-env"
@@ -75,10 +76,21 @@ export async function spawnLocalServer(
     moduleURL: import.meta.url,
     sandboxRuntime,
     releaseVersion: app.isPackaged ? app.getVersion() : undefined,
+    developmentChannel: CHANNEL === "dev",
+    onUnavailable: (reason) => options.onStderr?.(`document runtime not resolved: ${reason}`),
   })
+  if (documentRuntime) {
+    options.onStdout?.(`document runtime resolved root=${documentRuntime.root} releaseReady=${documentRuntime.releaseReady}`)
+  }
   const child = utilityProcess.fork(sidecar, [], {
     cwd: process.cwd(),
-    env: createSidecarEnv(process.env, process.platform, sandboxRuntime?.workerPath, documentRuntime),
+    env: createSidecarEnv(
+      process.env,
+      process.platform,
+      sandboxRuntime?.workerPath,
+      documentRuntime,
+      options.userDataPath,
+    ),
     serviceName: SIDECAR_SERVICE_NAME,
     stdio: "pipe",
   })

@@ -32,10 +32,10 @@ function tauriAppId() {
 }
 
 // Migrate a single Tauri .dat file into the corresponding electron-store.
-// `opencode.settings.dat` is special: it maps to the `opencode.settings` store
+// `opencode.settings.dat` is special: it maps to the `koala.settings` store
 // (the electron-store name without the `.dat` extension). All other .dat files
 // keep their full filename as the electron-store name so they match what the
-// renderer already passes via IPC (e.g. `"default.dat"`, `"opencode.global.dat"`).
+// renderer already passes via IPC (e.g. `"default.dat"`, `"koala.global.dat"`).
 function migrateFile(datPath: string, filename: string) {
   let data: Record<string, unknown>
   try {
@@ -45,10 +45,10 @@ function migrateFile(datPath: string, filename: string) {
     return
   }
 
-  // opencode.settings.dat → the electron settings store ("opencode.settings").
+  // opencode.settings.dat → the electron settings store ("koala.settings").
   // All other .dat files keep their full filename as the store name so they match
-  // what the renderer passes via IPC (e.g. "default.dat", "opencode.global.dat").
-  const storeName = filename === "opencode.settings.dat" ? "opencode.settings" : filename
+  // what the renderer passes via IPC (e.g. "default.dat", "koala.global.dat").
+  const storeName = filename === "opencode.settings.dat" ? "koala.settings" : filename
   const target = getStore(storeName)
   const migrated: string[] = []
   const skipped: string[] = []
