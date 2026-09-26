@@ -30,6 +30,8 @@ const DiagnosticBytes = DocumentRuntimeLimits.MaxInnerStderrBytes
 const SignalCapacity = DocumentRuntimeLimits.MaxOuterPendingMessages
 const CleanupWatchdogMs = 10_000
 const DeletionReserveMs = 2_000
+// A probe only verifies the runtime and loads the renderer; anything longer indicates a stuck worker.
+const ProbeDeadlineMs = 60_000
 const jobs = Semaphore.makeUnsafe(DocumentRuntimeLimits.MaxConcurrentJobs)
 const unsafeJobRoots = new Set<string>()
 
@@ -626,12 +628,11 @@ function runProxy<A, E, R>(
       ).pipe(
         Effect.timeoutOrElse({
           duration:
-            request.type === "probe" ||
-            request.type === "read-office" ||
-            request.type === "read-pdf" ||
-            request.type === "create-docx"
-              ? DocumentRuntimeLimits.MaxJobDeadlineMs
-              : request.limits.jobDeadlineMs,
+            request.type === "probe"
+              ? ProbeDeadlineMs
+              : request.type === "read-office" || request.type === "read-pdf" || request.type === "create-docx"
+                ? DocumentRuntimeLimits.MaxJobDeadlineMs
+                : request.limits.jobDeadlineMs,
           orElse: () => failure("job-deadline-exceeded", "worker", true),
         }),
       ),

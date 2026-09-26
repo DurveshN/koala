@@ -78,6 +78,9 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
 import { ArtifactStoreLive } from "@/koala/artifact-store"
 
+// Bounded startup check used only when the host does not enable the document tools explicitly.
+const DocumentAvailabilityCheckMs = 15_000
+
 const documentToolIDs = new Set([
   "docx_create",
   "pptx_create",
@@ -182,9 +185,16 @@ const layer = Layer.effect(
     const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
 
     const documentRuntime = yield* DocumentRuntime.Service
-    const availability = yield* documentRuntime.availability()
+    // The probe launches a full sandbox job; never let it gate sidecar startup. The desktop enables
+    // the tools explicitly, and other hosts get a bounded check.
     const documentsEnabled =
-      availability.status === "available" || process.env.KOALA_ENABLE_DOCUMENT_TOOLS === "1"
+      process.env.KOALA_ENABLE_DOCUMENT_TOOLS === "1" ||
+      (yield* documentRuntime.availability().pipe(
+        Effect.timeoutOrElse({
+          duration: DocumentAvailabilityCheckMs,
+          orElse: () => Effect.succeed({ status: "unavailable", code: "runtime-unavailable" } as const),
+        }),
+      )).status === "available"
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("ToolRegistry.state")(function* (ctx) {

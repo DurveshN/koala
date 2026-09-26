@@ -317,6 +317,7 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
   let innerMessages = 0
   const handleInnerMessage = async (input: unknown) => {
     innerMessages++
+    if (innerMessages === 1) report("first worker message recevied")
     if (phase !== "active" || !launch || !order || terminal) {
       fail("protocol-mismatch", "transport")
       await shutdown()
@@ -350,6 +351,7 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
     order = next.state
     if (next.state.phase === "terminal") {
       terminal = event
+      report(`worker terminal event: ${event.type}${event.type === "failure" ? ` ${event.code} at ${event.stage}` : ""}`)
       if (childClosed) void shutdown()
       return
     }
@@ -815,7 +817,9 @@ export function startProxy(dependencies: ProxyDependencies = defaultDependencies
       await send({ protocolVersion: 1, type: "accepted", jobID: message.jobID, innerProcessID: child.pid })
       accepted = true
       await transport.send(DocumentRuntimeProtocol.decodeInitialRequest(message.start))
+      report(`start request delivered via ${inbox ? "inbox" : "stdin"} (worker pid ${child.pid})`)
     } catch {
+      report("start request delivery failed", error)
       fail("transport-overflow", "transport")
       return shutdown()
     }

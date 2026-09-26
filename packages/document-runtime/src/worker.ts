@@ -191,7 +191,7 @@ export function startWorker(config: WorkerConfig, transport: WorkerTransport, de
       outputOrder = DocumentRuntimeProtocol.beginOutputOrder(message)
       const jobDeadlineMs =
         message.type === "probe"
-          ? 10 * 60_000
+          ? 60_000
           : message.type === "read-office" || message.type === "read-pdf" || message.type === "create-docx"
             ? DocumentRuntimeLimits.MaxJobDeadlineMs
             : message.limits.jobDeadlineMs
@@ -303,6 +303,7 @@ async function execute(
   sanitizeNativeLoaderEnvironment()
 
   await send({ protocolVersion: 1, type: "started", jobID: request.jobID, operation: request.type })
+  process.stderr.write(`document worker: ${request.type} started\n`)
   if (request.type === "probe") {
     // Development runtimes may omit Tesseract; OCR requests then fail individually.
     const tesseract = verified.manifest.components.find((component) => component.name === "tesseract")
@@ -944,8 +945,9 @@ function isOutputFrame(event: DocumentRuntimeProtocol.WorkerOutput): event is Do
 export function startWorkerProcess(environment: NodeJS.ProcessEnv = process.env) {
   const config = workerConfigFromEnvironment(environment)
   // srt-win never forwards stdin to the sandboxed child, so Windows workers read the job inbox instead.
-  const input =
-    process.platform === "win32" ? createInboxReadable(path.join(config.jobRoot, InboxDirectoryName)) : process.stdin
+  const inbox = process.platform === "win32" ? path.join(config.jobRoot, InboxDirectoryName) : undefined
+  process.stderr.write(`document worker: started, commands from ${inbox ?? "stdin"}\n`)
+  const input = inbox ? createInboxReadable(inbox) : process.stdin
   return startWorker(config, createNodeStreamTransport(input, process.stdout))
 }
 

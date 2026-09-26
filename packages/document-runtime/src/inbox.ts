@@ -40,6 +40,7 @@ export function createInboxReadable(directory: string): Readable {
       while (!finished) {
         const frame = await readFile(path.join(directory, inboxFileName(next))).catch(() => undefined)
         if (frame) {
+          if (next === 1) process.stderr.write("document worker: first inbox frame received\n")
           next++
           readable.push(frame)
           continue
