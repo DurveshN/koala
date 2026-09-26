@@ -16,7 +16,7 @@ export async function generatePptx(content: PptxContent): Promise<Buffer> {
   if (content.title) presentation.title = content.title
   if (content.author) presentation.author = content.author
   content.slides.forEach((slide, index) => addSlide(presentation, slide, index === 0))
-  const output = await presentation.write({ outputType: "nodebuffer" })
+  const output = await presentation.write({ outputType: "nodebuffer", compression: true })
   if (typeof output === "string") return Buffer.from(output, "base64")
   if (output instanceof Uint8Array) return Buffer.from(output)
   return Buffer.from(await new Response(output).arrayBuffer())

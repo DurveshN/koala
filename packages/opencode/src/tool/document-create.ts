@@ -48,7 +48,7 @@ interface Definition {
 // only the content schema, output format, and post-generation validator differ.
 function defineDocumentCreateTool(definition: Definition) {
   const fileName = `document.${definition.format}`
-  const validate = (bytes: Uint8Array) =>
+  const validate = (bytes: Uint8Array): Promise<{ readonly pageCount?: number; readonly text?: string; readonly sectionCount?: number }> =>
     definition.format === "pdf"
       ? validatePdf(bytes, bytes.byteLength)
       : validateOoxml(bytes, definition.format, bytes.byteLength)
@@ -93,7 +93,7 @@ function defineDocumentCreateTool(definition: Definition) {
                       contents: params.contents,
                     } as DocumentRuntime.CreateDocumentInput)
                     yield* Effect.tryPromise({
-                      try: () => validate(generated.bytes) as Promise<OoxmlValidationResult>,
+                      try: () => validate(generated.bytes),
                       catch: (error) =>
                         new Error(
                           `${definition.label} validation failed: ${error instanceof Error ? error.message : String(error)}`,
