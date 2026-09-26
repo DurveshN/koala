@@ -6,6 +6,7 @@ import { Event } from "./event"
 import { FileSystem } from "./filesystem"
 import { FileSystemWatcher } from "./filesystem-watcher"
 import { InstallationEvent } from "./installation-event"
+import { KoalaAudit } from "./koala-audit"
 import { Integration } from "./integration"
 import { LegacyEvent } from "./legacy-event"
 import { LspEvent } from "./lsp-event"
@@ -79,6 +80,7 @@ export const Definitions = Event.inventory(
   ...WorkspaceEvent.Definitions,
   ...WorktreeEvent.Definitions,
   ...ServerEvent.Definitions,
+  ...KoalaAudit.Event.Definitions,
 )
 export const Latest = Event.latest(Definitions)
 export { Durable }

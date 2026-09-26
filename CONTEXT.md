@@ -1687,3 +1687,55 @@ Two follow-up issues appeared after the public model catalog was removed:
 - `packages/desktop/src/main/sidecar-env.test.ts` — 4 passed.
 - `packages/opencode/test/server/httpapi-koala-provider.test.ts` — 1 passed.
 - `packages/app/src/components/dialog-custom-provider.test.ts` — 63 passed.
+
+## Audit Log and Network Monitor (Phase 13, MVP)
+
+Implements durable, redacted audit records plus a live UI, proving the sovereign
+"no external calls" claim from the record set itself.
+
+### Backend
+
+- Network decisions: new durable table `koala_network_audit`
+  (`packages/core/src/network-audit/sql.ts`, migration
+  `packages/core/src/database/migration/20260927120000_koala_network_audit.ts`,
+  registered in `migration.gen.ts`). Domain contract
+  `packages/koala/src/network/audit.ts` (`NetworkAudit.Service` with `record` and
+  paginated `list`). SQLite-backed impl `packages/opencode/src/koala/network-audit.ts`.
+  Every outbound model request is recorded (allow/deny, origin, destination, policy
+  rule, status, duration, byte counts — no headers/credentials/body) at the capture
+  point in `packages/opencode/src/koala/model-endpoint-client.ts`.
+- Tool calls: existing `koala_tool_audit` gained a paginated read API. `list` added
+  to `IndustrialAudit` (`packages/koala/src/industrial/audit.ts` +
+  `packages/opencode/src/koala/industrial-audit.ts`).
+- HTTP: new `audit` group on `RootHttpApi` — `GET /global/audit/tools` and
+  `GET /global/audit/network` (`.../httpapi/groups/audit.ts` + `handlers/audit.ts`),
+  registered in `api.ts` and `server.ts`; numeric query overrides in `public.ts`;
+  audit service nodes added to the `app` graph. Legacy SDK regenerated
+  (`bun packages/sdk/js/script/build.ts`) → `serverSDK().client.audit.tools/network`.
+- Live tail: browser-safe events `koala.audit.tool.recorded` /
+  `koala.audit.network.recorded` (`packages/schema/src/koala-audit.ts`, registered in
+  `event-manifest.ts` `Definitions`), published via `EventV2Bridge` from both audit
+  services. Live (not durable) — the SQLite tables + REST are the durable history.
+
+### UI
+
+- Global Audit page at `/audit` (`packages/app/src/pages/audit.tsx`, route in
+  `app.tsx`): Network Monitor (allowed/denied filter, decision-colored cards, live
+  summary) and Tool Activity tabs; REST pagination + live append over the `/event`
+  SSE stream. Reachable via the home utility nav ("Audit"). i18n keys in
+  `packages/app/src/i18n/koala.ts` under `audit.*`.
+
+### Verification
+
+- `bun typecheck` clean (source) for `packages/koala`, `packages/core`,
+  `packages/schema`, `packages/opencode`, and `packages/app`.
+- Pre-existing test `packages/opencode/test/koala/model-discovery.test.ts` has type
+  errors from the new `NetworkAudit` dependency on `ModelEndpointClient` (manual test
+  layer composition); left as-is per instruction. `industrial-audit.test.ts` was
+  updated with an `EventV2Bridge` mock.
+
+### Deferred (follow-up)
+
+- Per-session Activity/Network side panels in `session-side-panel.tsx` (two-shell tab
+  surgery + `session-layout` state) — deferred to avoid risking the primary session UI.
+- Durable stores for route decisions (with reasons), sandbox runs, and model requests.

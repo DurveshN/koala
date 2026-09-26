@@ -19,9 +19,11 @@ import { Installation } from "@/installation"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
 import { McpAuth } from "@/mcp/auth"
+import { IndustrialAuditLive } from "@/koala/industrial-audit"
 import { ModelCapabilityProbe } from "@/koala/model-capability-probe"
 import { ModelDiscovery } from "@/koala/model-discovery"
 import { ModelProfileStore } from "@/koala/model-profile-store"
+import { NetworkAuditLive } from "@/koala/network-audit"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { PluginPtyEnvironment } from "@/plugin/pty-environment"
@@ -85,6 +87,7 @@ import {
 import { EventApi } from "./groups/event"
 import { PtyConnectApi } from "./groups/pty"
 import { eventHandlers } from "./handlers/event"
+import { auditHandlers } from "./handlers/audit"
 import { configHandlers } from "./handlers/config"
 import { controlHandlers } from "./handlers/control"
 import { controlPlaneHandlers } from "./handlers/control-plane"
@@ -143,7 +146,7 @@ const ptyConnectHttpApiAuthLayer = ptyConnectAuthorizationLayer.pipe(Layer.provi
 const serverHttpApiAuthLayer = serverAuthorizationLayer.pipe(Layer.provide(ServerAuth.Config.layer))
 const workspaceRoutingLive = workspaceRoutingLayer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal))
 const rootApiRoutes = HttpApiBuilder.layer(RootHttpApi).pipe(
-  Layer.provide([controlHandlers, controlPlaneHandlers, globalHandlers, modelProfileHandlers]),
+  Layer.provide([controlHandlers, controlPlaneHandlers, globalHandlers, modelProfileHandlers, auditHandlers]),
   Layer.provide(schemaErrorLayer),
   Layer.provide(httpApiAuthLayer),
 )
@@ -256,6 +259,8 @@ const app = LayerNode.group([
   ModelCapabilityProbe.node,
   ModelDiscovery.node,
   ModelProfileStore.node,
+  IndustrialAuditLive.node,
+  NetworkAuditLive.node,
   Command.node,
   Truncate.node,
   ToolRegistry.node,

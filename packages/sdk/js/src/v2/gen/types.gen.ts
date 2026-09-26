@@ -93,6 +93,8 @@ export type Event =
   | EventWorktreeFailed
   | EventServerConnected
   | EventGlobalDisposed
+  | EventKoalaAuditToolRecorded
+  | EventKoalaAuditNetworkRecorded
   | EventServerInstanceDisposed
 
 export type QuestionReplied = {
@@ -1600,6 +1602,36 @@ export type GlobalEvent = {
           [key: string]: unknown
         }
       }
+    | {
+        id: string
+        type: "koala.audit.tool.recorded"
+        properties: {
+          id: string
+          sessionID: string
+          messageID: string
+          toolCallID: string
+          tool: string
+          permission: string
+          state: "running" | "completed"
+          outcome?: string
+          timeStarted: number
+        }
+      }
+    | {
+        id: string
+        type: "koala.audit.network.recorded"
+        properties: {
+          id: string
+          providerID: string
+          origin: string
+          destination: string
+          method: string
+          decision: "allowed" | "denied"
+          rule: string
+          status?: number
+          timeStarted: number
+        }
+      }
     | EventServerInstanceDisposed
     | SyncEventSessionCreated
     | SyncEventSessionUpdated
@@ -3028,6 +3060,8 @@ export type V2Event =
   | WorktreeFailed
   | ServerConnected
   | GlobalDisposed
+  | KoalaAuditToolRecorded
+  | KoalaAuditNetworkRecorded
 
 export type V2EventStream = string
 
@@ -3957,6 +3991,333 @@ export type ModelProfileProvider = {
   baseURL: string
   secretReference?: string
   models: Array<ModelProfileModel>
+}
+
+export type IndustrialToolEngine = {
+  name: string
+  version: string
+}
+
+export type IndustrialInputSummary = {
+  sourceCount: number
+  artifactCount: number
+  pathCount: number
+  declaredOutputCount: number
+}
+
+export type IndustrialAuditRunning = {
+  id: string
+  tool:
+    | "document_extract"
+    | "ocr_extract"
+    | "vision_analyze"
+    | "knowledge_ingest"
+    | "knowledge_search"
+    | "knowledge_open"
+    | "docx_read"
+    | "docx_create"
+    | "docx_update"
+    | "pptx_read"
+    | "pptx_create"
+    | "pptx_update"
+    | "spreadsheet_read"
+    | "spreadsheet_write"
+    | "spreadsheet_update"
+    | "pdf_read"
+    | "pdf_create"
+    | "pdf_update"
+    | "calculate"
+    | "sandbox_execute"
+    | "sandbox_test"
+    | "artifact_validate"
+  permission:
+    | "document_read"
+    | "document_write"
+    | "vision_analyze"
+    | "knowledge_read"
+    | "knowledge_write"
+    | "calculate"
+    | "sandbox_execute"
+  sessionID: string
+  messageID: string
+  toolCallID: string
+  startedAt: number
+  engine: IndustrialToolEngine
+  contractVersion: 1
+  inputDigest: string
+  inputSummary: IndustrialInputSummary
+  sourceArtifactIDs: Array<string>
+  state: "running"
+}
+
+export type IndustrialAuditCompleted =
+  | {
+      id: string
+      tool:
+        | "document_extract"
+        | "ocr_extract"
+        | "vision_analyze"
+        | "knowledge_ingest"
+        | "knowledge_search"
+        | "knowledge_open"
+        | "docx_read"
+        | "docx_create"
+        | "docx_update"
+        | "pptx_read"
+        | "pptx_create"
+        | "pptx_update"
+        | "spreadsheet_read"
+        | "spreadsheet_write"
+        | "spreadsheet_update"
+        | "pdf_read"
+        | "pdf_create"
+        | "pdf_update"
+        | "calculate"
+        | "sandbox_execute"
+        | "sandbox_test"
+        | "artifact_validate"
+      permission:
+        | "document_read"
+        | "document_write"
+        | "vision_analyze"
+        | "knowledge_read"
+        | "knowledge_write"
+        | "calculate"
+        | "sandbox_execute"
+      sessionID: string
+      messageID: string
+      toolCallID: string
+      startedAt: number
+      engine: IndustrialToolEngine
+      contractVersion: 1
+      inputDigest: string
+      inputSummary: IndustrialInputSummary
+      sourceArtifactIDs: Array<string>
+      finishedAt: number
+      durationMs: number
+      producerTruncated: boolean
+      projectionTruncated: boolean
+      outputArtifactIDs: Array<string>
+      sandboxRunID?: string
+      routeDecisionID?: string
+      state: "completed"
+      outcome: "success"
+      cancelled: false
+      timedOut: false
+      errorCode?: unknown
+    }
+  | {
+      id: string
+      tool:
+        | "document_extract"
+        | "ocr_extract"
+        | "vision_analyze"
+        | "knowledge_ingest"
+        | "knowledge_search"
+        | "knowledge_open"
+        | "docx_read"
+        | "docx_create"
+        | "docx_update"
+        | "pptx_read"
+        | "pptx_create"
+        | "pptx_update"
+        | "spreadsheet_read"
+        | "spreadsheet_write"
+        | "spreadsheet_update"
+        | "pdf_read"
+        | "pdf_create"
+        | "pdf_update"
+        | "calculate"
+        | "sandbox_execute"
+        | "sandbox_test"
+        | "artifact_validate"
+      permission:
+        | "document_read"
+        | "document_write"
+        | "vision_analyze"
+        | "knowledge_read"
+        | "knowledge_write"
+        | "calculate"
+        | "sandbox_execute"
+      sessionID: string
+      messageID: string
+      toolCallID: string
+      startedAt: number
+      engine: IndustrialToolEngine
+      contractVersion: 1
+      inputDigest: string
+      inputSummary: IndustrialInputSummary
+      sourceArtifactIDs: Array<string>
+      finishedAt: number
+      durationMs: number
+      producerTruncated: boolean
+      projectionTruncated: boolean
+      outputArtifactIDs: Array<string>
+      sandboxRunID?: string
+      routeDecisionID?: string
+      state: "completed"
+      outcome: "error"
+      cancelled: false
+      timedOut: false
+      errorCode:
+        | "invalid-input"
+        | "permission-denied"
+        | "source-not-found"
+        | "source-access-denied"
+        | "source-not-owned"
+        | "source-changed"
+        | "source-invalid"
+        | "unsupported-format"
+        | "input-too-large"
+        | "limit-exceeded"
+        | "engine-unavailable"
+        | "engine-failed"
+        | "protocol-error"
+        | "sandbox-nonzero-exit"
+        | "validation-failed"
+        | "sandbox-violation"
+        | "output-truncated"
+        | "artifact-storage-failed"
+        | "audit-unavailable"
+        | "internal-error"
+    }
+  | {
+      id: string
+      tool:
+        | "document_extract"
+        | "ocr_extract"
+        | "vision_analyze"
+        | "knowledge_ingest"
+        | "knowledge_search"
+        | "knowledge_open"
+        | "docx_read"
+        | "docx_create"
+        | "docx_update"
+        | "pptx_read"
+        | "pptx_create"
+        | "pptx_update"
+        | "spreadsheet_read"
+        | "spreadsheet_write"
+        | "spreadsheet_update"
+        | "pdf_read"
+        | "pdf_create"
+        | "pdf_update"
+        | "calculate"
+        | "sandbox_execute"
+        | "sandbox_test"
+        | "artifact_validate"
+      permission:
+        | "document_read"
+        | "document_write"
+        | "vision_analyze"
+        | "knowledge_read"
+        | "knowledge_write"
+        | "calculate"
+        | "sandbox_execute"
+      sessionID: string
+      messageID: string
+      toolCallID: string
+      startedAt: number
+      engine: IndustrialToolEngine
+      contractVersion: 1
+      inputDigest: string
+      inputSummary: IndustrialInputSummary
+      sourceArtifactIDs: Array<string>
+      finishedAt: number
+      durationMs: number
+      producerTruncated: boolean
+      projectionTruncated: boolean
+      outputArtifactIDs: Array<string>
+      sandboxRunID?: string
+      routeDecisionID?: string
+      state: "completed"
+      outcome: "cancelled"
+      cancelled: true
+      timedOut: false
+      errorCode: "cancelled"
+    }
+  | {
+      id: string
+      tool:
+        | "document_extract"
+        | "ocr_extract"
+        | "vision_analyze"
+        | "knowledge_ingest"
+        | "knowledge_search"
+        | "knowledge_open"
+        | "docx_read"
+        | "docx_create"
+        | "docx_update"
+        | "pptx_read"
+        | "pptx_create"
+        | "pptx_update"
+        | "spreadsheet_read"
+        | "spreadsheet_write"
+        | "spreadsheet_update"
+        | "pdf_read"
+        | "pdf_create"
+        | "pdf_update"
+        | "calculate"
+        | "sandbox_execute"
+        | "sandbox_test"
+        | "artifact_validate"
+      permission:
+        | "document_read"
+        | "document_write"
+        | "vision_analyze"
+        | "knowledge_read"
+        | "knowledge_write"
+        | "calculate"
+        | "sandbox_execute"
+      sessionID: string
+      messageID: string
+      toolCallID: string
+      startedAt: number
+      engine: IndustrialToolEngine
+      contractVersion: 1
+      inputDigest: string
+      inputSummary: IndustrialInputSummary
+      sourceArtifactIDs: Array<string>
+      finishedAt: number
+      durationMs: number
+      producerTruncated: boolean
+      projectionTruncated: boolean
+      outputArtifactIDs: Array<string>
+      sandboxRunID?: string
+      routeDecisionID?: string
+      state: "completed"
+      outcome: "timeout"
+      cancelled: false
+      timedOut: true
+      errorCode: "deadline-exceeded"
+    }
+
+export type IndustrialAuditRecord = IndustrialAuditRunning | IndustrialAuditCompleted
+
+export type IndustrialAuditListResult = {
+  records: Array<IndustrialAuditRecord>
+  nextCursor?: number
+}
+
+export type NetworkAuditRecord = {
+  id: string
+  providerID: string
+  origin: string
+  destination: string
+  method: string
+  decision: "allowed" | "denied"
+  rule: string
+  status: number
+  durationMs: number
+  requestBytes: number
+  responseBytes: number
+  errorKind: "policy" | "redirect" | "transport"
+  timeStarted: number
+}
+
+export type NetworkAuditListResult = {
+  records: Array<NetworkAuditRecord>
+  nextCursor?: number
 }
 
 export type ProjectDirectories = Array<{
@@ -6220,6 +6581,56 @@ export type GlobalDisposed = {
   }
 }
 
+export type KoalaAuditToolRecorded = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "koala.audit.tool.recorded"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    id: string
+    sessionID: string
+    messageID: string
+    toolCallID: string
+    tool: string
+    permission: string
+    state: "running" | "completed"
+    outcome?: string
+    timeStarted: number
+  }
+}
+
+export type KoalaAuditNetworkRecorded = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "koala.audit.network.recorded"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    id: string
+    providerID: string
+    origin: string
+    destination: string
+    method: string
+    decision: "allowed" | "denied"
+    rule: string
+    status?: number
+    timeStarted: number
+  }
+}
+
 export type QuestionV2Request = {
   id: string
   sessionID: string
@@ -7167,6 +7578,38 @@ export type EventGlobalDisposed = {
   }
 }
 
+export type EventKoalaAuditToolRecorded = {
+  id: string
+  type: "koala.audit.tool.recorded"
+  properties: {
+    id: string
+    sessionID: string
+    messageID: string
+    toolCallID: string
+    tool: string
+    permission: string
+    state: "running" | "completed"
+    outcome?: string
+    timeStarted: number
+  }
+}
+
+export type EventKoalaAuditNetworkRecorded = {
+  id: string
+  type: "koala.audit.network.recorded"
+  properties: {
+    id: string
+    providerID: string
+    origin: string
+    destination: string
+    method: string
+    decision: "allowed" | "denied"
+    rule: string
+    status?: number
+    timeStarted: number
+  }
+}
+
 export type CredentialOAuth = {
   type: "oauth"
   methodID: string
@@ -7698,6 +8141,72 @@ export type ModelProfileUpdateResponses = {
 }
 
 export type ModelProfileUpdateResponse = ModelProfileUpdateResponses[keyof ModelProfileUpdateResponses]
+
+export type AuditToolsData = {
+  body?: never
+  path?: never
+  query?: {
+    limit?: number
+    cursor?: number
+    sessionID?: string
+  }
+  url: "/global/audit/tools"
+}
+
+export type AuditToolsErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * UnknownError
+   */
+  500: UnknownError1
+}
+
+export type AuditToolsError = AuditToolsErrors[keyof AuditToolsErrors]
+
+export type AuditToolsResponses = {
+  /**
+   * Tool-call audit records
+   */
+  200: IndustrialAuditListResult
+}
+
+export type AuditToolsResponse = AuditToolsResponses[keyof AuditToolsResponses]
+
+export type AuditNetworkData = {
+  body?: never
+  path?: never
+  query?: {
+    limit?: number
+    cursor?: number
+    decision?: "allowed" | "denied"
+  }
+  url: "/global/audit/network"
+}
+
+export type AuditNetworkErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * UnknownError
+   */
+  500: UnknownError1
+}
+
+export type AuditNetworkError = AuditNetworkErrors[keyof AuditNetworkErrors]
+
+export type AuditNetworkResponses = {
+  /**
+   * Network decision audit records
+   */
+  200: NetworkAuditListResult
+}
+
+export type AuditNetworkResponse = AuditNetworkResponses[keyof AuditNetworkResponses]
 
 export type EventSubscribeData = {
   body?: never

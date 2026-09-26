@@ -1,5 +1,6 @@
 import { type Accessor, createMemo, For, type JSX, onCleanup, Show, splitProps } from "solid-js"
 import { createStore } from "solid-js/store"
+import { useNavigate } from "@solidjs/router"
 import { DragDropProvider, PointerSensor } from "@dnd-kit/solid"
 import { isSortable, useSortable } from "@dnd-kit/solid/sortable"
 import { AutoScroller, Feedback, PointerActivationConstraints } from "@dnd-kit/dom"
@@ -160,8 +161,17 @@ export function HomeUtilityNav(props: {
   onOpenHelp: () => void
   language: ReturnType<typeof useLanguage>
 }) {
+  const navigate = useNavigate()
   return (
     <div class={`${props.class ?? ""} min-w-0 flex-col gap-1 pr-3`}>
+      <HomeProjectNavButton
+        type="button"
+        class="text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted"
+        onClick={() => navigate("/audit")}
+      >
+        <IconV2 name="status-active" size="small" />
+        <span class={HOME_PROJECT_NAV_LABEL}>{props.language.t("audit.nav")}</span>
+      </HomeProjectNavButton>
       <HomeProjectNavButton
         type="button"
         class="text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted"

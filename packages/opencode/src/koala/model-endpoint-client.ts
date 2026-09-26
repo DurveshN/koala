@@ -1,10 +1,12 @@
 import http from "node:http"
 import https from "node:https"
 import type { LookupFunction } from "node:net"
+import { NetworkAudit } from "@koala-ai/core/network/audit"
 import { EndpointPolicy } from "@koala-ai/core/network/endpoint-policy"
 import { ModelProfile } from "@koala-ai/core/model/profile"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Context, Effect, Layer, Schema } from "effect"
+import { NetworkAuditLive } from "./network-audit"
 import { NetworkResolver } from "./network-resolver"
 
 const forbiddenHeaders = new Set([
@@ -99,16 +101,41 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const resolver = yield* NetworkResolver.Service
+    const audit = yield* NetworkAudit.Service
+    // TEST-ONLY escape hatch: when KOALA_NETWORK_ALLOW_PUBLIC=1 the policy still
+    // parses/records every request but permits public destinations so a fast cloud
+    // API can be used during development. Leave it UNSET for sovereign local-only
+    // operation; every allowed public call is still recorded in the network audit.
+    const allowPublic = process.env.KOALA_NETWORK_ALLOW_PUBLIC === "1"
+    // Fire-and-forget: audit persistence must never fail or slow an outbound request.
+    const write = (input: NetworkAudit.RecordInput) =>
+      void Effect.runPromise(audit.record(input)).catch(() => {})
     const bind = Effect.fn("ModelEndpointClient.bind")(function* (options: Options) {
       const parsed = EndpointPolicy.parseBaseURL(options.baseURL)
-      if (!parsed.ok) return yield* new PolicyError({ rule: parsed.code, origin: "invalid" })
+      if (!parsed.ok) {
+        write({
+          providerID: options.providerID,
+          origin: "invalid",
+          destination: "invalid",
+          method: "GET",
+          decision: "denied",
+          rule: parsed.code,
+          errorKind: "policy",
+          timeStarted: Date.now(),
+        })
+        return yield* new PolicyError({ rule: parsed.code, origin: "invalid" })
+      }
 
       const endpoint = parsed.value
       const fetch: Fetch = async (input, init) => {
+        const timeStarted = Date.now()
+        const method = (input instanceof Request ? input.method : init?.method) ?? "GET"
+        let destination = endpoint.origin
         try {
           const requestURL = input instanceof Request ? input.url : input
           const authorizedRequest = EndpointPolicy.authorizeRequest(endpoint, requestURL)
           if (!authorizedRequest.ok) throw new PolicyError({ rule: authorizedRequest.code, origin: endpoint.origin })
+          destination = `${endpoint.origin}${authorizedRequest.value.pathname}`
 
           if (init && forbiddenOverrides.some((name) => Object.hasOwn(init, name))) {
             throw new PolicyError({ rule: "transport-override", origin: endpoint.origin })
@@ -128,9 +155,10 @@ export const layer = Layer.effect(
 
           if (endpoint.kind === "literal") {
             const authorized = EndpointPolicy.authorizeResolution(endpoint, [endpoint.address])
-            if (!authorized.ok) throw new PolicyError({ rule: authorized.code, origin: endpoint.origin })
+            if (!authorized.ok && !allowPublic) throw new PolicyError({ rule: authorized.code, origin: endpoint.origin })
           }
 
+          const requestBytes = contentLength(request.headers)
           const socketLookup: LookupFunction | undefined =
             endpoint.kind === "literal"
               ? undefined
@@ -143,11 +171,22 @@ export const layer = Layer.effect(
                   Effect.runPromise(resolver.resolve(hostname)).then(
                     (addresses) => {
                       const authorized = EndpointPolicy.authorizeResolution(endpoint, addresses)
-                      if (!authorized.ok) {
-                        callback(new PolicyError({ rule: authorized.code, origin: endpoint.origin }), "", 0)
+                      const address = authorized.ok
+                        ? authorized.value.addresses[0]
+                        : allowPublic && addresses.length > 0
+                          ? addresses[0]
+                          : undefined
+                      if (!address) {
+                        callback(
+                          new PolicyError({
+                            rule: authorized.ok ? "empty-resolution" : authorized.code,
+                            origin: endpoint.origin,
+                          }),
+                          "",
+                          0,
+                        )
                         return
                       }
-                      const address = authorized.value.addresses[0]
                       callback(
                         null,
                         lookupOptions.all ? [{ address: address.address, family: address.family }] : address.address,
@@ -158,8 +197,31 @@ export const layer = Layer.effect(
                   )
                 }
 
-          return await dispatch(request, authorizedRequest.value, endpoint, socketLookup)
+          const response = await dispatch(request, authorizedRequest.value, endpoint, socketLookup)
+          write({
+            providerID: options.providerID,
+            origin: endpoint.origin,
+            destination,
+            method,
+            decision: "allowed",
+            rule: endpoint.localhost ? "loopback" : allowPublic ? "public-test-allowed" : "private-allowed",
+            status: response.status,
+            durationMs: Date.now() - timeStarted,
+            requestBytes,
+            responseBytes: contentLength(response.headers),
+            timeStarted,
+          })
+          return response
         } catch (error) {
+          write({
+            providerID: options.providerID,
+            origin: endpoint.origin,
+            destination,
+            method,
+            timeStarted,
+            durationMs: Date.now() - timeStarted,
+            ...networkOutcome(error),
+          })
           if (error instanceof PolicyError || error instanceof RedirectError || error instanceof TransportError)
             throw error
           if ((input instanceof Request ? input.signal : init?.signal)?.aborted) throw abortError()
@@ -175,7 +237,26 @@ export const layer = Layer.effect(
   }),
 )
 
-export const node = LayerNode.make({ service: Service, layer, deps: [NetworkResolver.node] })
+export const node = LayerNode.make({ service: Service, layer, deps: [NetworkResolver.node, NetworkAuditLive.node] })
+
+function contentLength(headers: Headers): number | null {
+  const value = headers.get("content-length")
+  if (value === null) return null
+  const parsed = Number.parseInt(value, 10)
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null
+}
+
+function networkOutcome(error: unknown): {
+  decision: NetworkAudit.Decision
+  rule: string
+  errorKind: NetworkAudit.ErrorKind
+  status?: number
+} {
+  if (error instanceof PolicyError) return { decision: "denied", rule: error.rule, errorKind: "policy" }
+  if (error instanceof RedirectError)
+    return { decision: "denied", rule: "redirect-blocked", errorKind: "redirect", status: error.status }
+  return { decision: "allowed", rule: "transport-failed", errorKind: "transport" }
+}
 
 function dispatch(request: Request, url: URL, endpoint: EndpointPolicy.Endpoint, lookup: LookupFunction | undefined) {
   return new Promise<Response>((resolve, reject) => {
