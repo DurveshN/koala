@@ -44,6 +44,11 @@ export function createSidecarEnv(
   // - ACL permissions on runtime paths
   env.KOALA_AGENT_EXECUTION = "sandbox"
   env.KOALA_ENABLE_DOCUMENT_TOOLS = "1"
+  // Hide the upstream cloud model catalog (OpenAI/Anthropic/Google/GitHub
+  // Copilot/OpenCode Zen/OpenCode Go and the hosted "free" models) from the
+  // model-select dialog. Only locally-connected /connect model profiles remain
+  // selectable, matching the sovereign local-only workbench.
+  env.KOALA_DISABLE_MODELS_CATALOG = "1"
   // Sovereign local-only networking: public/cloud API model endpoints are denied.
   // Set KOALA_NETWORK_ALLOW_PUBLIC=1 only for temporary development testing against
   // a cloud API while local models are too slow to iterate against; every such call
